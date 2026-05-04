@@ -82,7 +82,6 @@ object SelectFilterTypeScreen {
             FilterType.ADDRESS -> FilterUiState.Address()
             FilterType.BY_LAST_DETECTION -> FilterUiState.LastDetectionInterval()
             FilterType.BY_FIRST_DETECTION -> FilterUiState.FirstDetectionInterval()
-            FilterType.BY_IS_FAVORITE -> FilterUiState.IsFavorite()
             FilterType.BY_IS_PAIRED -> FilterUiState.IsPaired()
             FilterType.BY_MANUFACTURER -> FilterUiState.Manufacturer()
             FilterType.BY_LOGIC_ALL -> FilterUiState.All()

@@ -31,6 +31,10 @@ class BootBroadcastReceiver : BroadcastReceiver() {
         if (settingsRepository.getRunOnStartup()) {
             if (permissionHelper.blePermissionsAllowed()) {
                 try {
+                    // User opted into runOnStartup → treat this as USER_EXPLICIT so the scan
+                    // survives the next app open, and isn't torn down by Connect All's mode
+                    // tracking when the user happens to visit that pane.
+                    settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.USER_EXPLICIT)
                     BgScanService.start(context)
                 } catch (error: Exception) {
                     Timber.e(error, "Failed to start service from the boot receiver")

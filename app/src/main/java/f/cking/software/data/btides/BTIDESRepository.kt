@@ -5,9 +5,14 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -30,10 +35,12 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import timber.log.Timber
+import java.io.BufferedOutputStream
 import java.io.BufferedWriter
 import java.io.File
-import java.io.FileWriter
+import java.io.FileOutputStream
 import java.io.OutputStream
+import java.io.RandomAccessFile
 
 /**
  * Persists BLE advertisement scans and GATT observations to disk in BTIDES-compatible form.
@@ -51,7 +58,6 @@ class BTIDESRepository(
     private val context: Context,
 ) {
 
-    private val writeLock = Mutex()
     private val json = Json { encodeDefaults = false }
 
     /**
@@ -71,6 +77,150 @@ class BTIDESRepository(
 
     private val logFile: File
         get() = File(context.filesDir, LOG_FILE_NAME).also { it.parentFile?.mkdirs() }
+
+    private val indexFile: File
+        get() = File(context.filesDir, INDEX_FILE_NAME).also { it.parentFile?.mkdirs() }
+
+    /**
+     * Channel-based write pipeline. Every record (advertisements, GATT enumerations, char/desc
+     * reads, and flushed gatt-session buffers) flows through this single channel into a
+     * dedicated consumer coroutine. Two consequences:
+     *  - Back-pressure: callers suspend if the channel is full (capacity 4096), satisfying the
+     *    "every ad must persist" constraint without dropping under load.
+     *  - One open FileOutputStream + BufferedOutputStream for app lifetime — replaces the per-
+     *    event `FileWriter().use { append }` pattern that allocated ~20k FileWriters/sec at
+     *    mall-scale scan rates. The previous global `writeLock` is gone; the channel itself
+     *    is the synchronisation point.
+     *
+     * The consumer also writes a sidecar index entry (`<addr> <byteOffset> <byteLen>\n`) per
+     * record so [cachedGattForDevice] can do O(records-for-this-device) lookups via
+     * RandomAccessFile.seek instead of streaming the entire JSONL.
+     */
+    private val writeChannel = Channel<JsonObject>(
+        capacity = WRITE_CHANNEL_CAPACITY,
+        onBufferOverflow = BufferOverflow.SUSPEND,
+    )
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val writerStateLock = Mutex()
+
+    private var logStream: BufferedOutputStream? = null
+    private var indexStream: BufferedOutputStream? = null
+    private var bytesInLog: Long = 0L
+
+    init {
+        // Seed bytesInLog from the on-disk log size so byte offsets in the sidecar index
+        // remain accurate across app restarts.
+        bytesInLog = if (logFile.exists()) logFile.length() else 0L
+        // Start the writer consumer. Lives for app lifetime (BTIDESRepository is a Koin single).
+        ioScope.launch { runWriterLoop() }
+        // If the index is missing or stale (e.g. first run after upgrade, or it was hand-deleted),
+        // rebuild it by walking the existing JSONL once. Runs in the background so app start
+        // isn't blocked on a 200 MB scan.
+        ioScope.launch { rebuildIndexIfMissing() }
+    }
+
+    private suspend fun runWriterLoop() {
+        var pending = 0
+        var lastFlush = System.currentTimeMillis()
+        for (record in writeChannel) {
+            try {
+                writeRecordToStreams(record)
+                pending++
+                val now = System.currentTimeMillis()
+                if (pending >= WRITER_FLUSH_RECORDS || now - lastFlush > WRITER_FLUSH_INTERVAL_MS) {
+                    writerStateLock.withLock {
+                        logStream?.flush()
+                        indexStream?.flush()
+                    }
+                    pending = 0
+                    lastFlush = now
+                }
+            } catch (t: Throwable) {
+                Timber.tag(TAG).e(t, "Writer loop failed for one record; continuing")
+            }
+        }
+    }
+
+    private suspend fun writeRecordToStreams(record: JsonObject) {
+        val serialized = json.encodeToString(JsonObject.serializer(), record)
+        val bytes = serialized.toByteArray(Charsets.UTF_8)
+        // bdaddr is the first key written by every record producer in this file. Pull it out
+        // once so we can write the sidecar index entry alongside the main log line. Type flag:
+        // 'G' = record carries a GATTArray, 'A' = only an AdvChanArray. Letting the reader
+        // filter by type avoids parsing thousands of advertisement records when looking up
+        // a device's cached GATT.
+        val address = record["bdaddr"]?.jsonPrimitive?.contentOrNull?.uppercase()
+        val typeFlag = when {
+            record["GATTArray"] != null -> RECORD_TYPE_GATT
+            record["AdvChanArray"] != null -> RECORD_TYPE_ADV
+            else -> RECORD_TYPE_OTHER
+        }
+        writerStateLock.withLock {
+            ensureStreamsOpenLocked()
+            val byteStart = bytesInLog
+            logStream!!.write(bytes)
+            logStream!!.write('\n'.code)
+            bytesInLog += bytes.size + 1
+            if (address != null) {
+                val indexLine = "$address $typeFlag $byteStart ${bytes.size}\n".toByteArray(Charsets.UTF_8)
+                indexStream!!.write(indexLine)
+            }
+        }
+    }
+
+    private fun ensureStreamsOpenLocked() {
+        if (logStream == null) {
+            logFile.parentFile?.mkdirs()
+            logStream = BufferedOutputStream(FileOutputStream(logFile, /* append = */ true))
+        }
+        if (indexStream == null) {
+            indexFile.parentFile?.mkdirs()
+            indexStream = BufferedOutputStream(FileOutputStream(indexFile, /* append = */ true))
+        }
+    }
+
+    /**
+     * Walk the JSONL and rebuild the sidecar index. Called from `init` when the index file is
+     * missing (first launch after upgrade, or user deleted it manually). Costs one full
+     * sequential pass over the log — but runs in the background and only the first time.
+     */
+    private suspend fun rebuildIndexIfMissing() {
+        if (indexFile.exists() && indexFile.length() > 0L) return
+        if (!logFile.exists() || logFile.length() == 0L) return
+        Timber.tag(TAG).i("Rebuilding BTIDES sidecar index from %d bytes of JSONL", logFile.length())
+        writerStateLock.withLock {
+            // Close the index stream so we can rewrite the file from scratch.
+            runCatching { indexStream?.close() }
+            indexStream = null
+            FileOutputStream(indexFile, /* append = */ false).use { rawOut ->
+                BufferedOutputStream(rawOut).use { out ->
+                    var offset = 0L
+                    logFile.bufferedReader().useLines { lines ->
+                        for (rawLine in lines) {
+                            val bytes = rawLine.toByteArray(Charsets.UTF_8)
+                            val m = KEY_REGEX.find(rawLine)
+                            if (m != null) {
+                                val addr = m.groupValues[1].uppercase()
+                                // Substring sniff is enough for the type tag — no need to parse
+                                // the whole JSON during rebuild. Lines always contain one of
+                                // these tokens (or neither, in which case mark as OTHER).
+                                val typeFlag = when {
+                                    rawLine.contains("\"GATTArray\":") -> RECORD_TYPE_GATT
+                                    rawLine.contains("\"AdvChanArray\":") -> RECORD_TYPE_ADV
+                                    else -> RECORD_TYPE_OTHER
+                                }
+                                val indexLine = "$addr $typeFlag $offset ${bytes.size}\n".toByteArray(Charsets.UTF_8)
+                                out.write(indexLine)
+                            }
+                            offset += bytes.size + 1
+                        }
+                    }
+                }
+            }
+            // The next writer iteration will reopen the index stream in append mode.
+        }
+        Timber.tag(TAG).i("Sidecar index rebuild complete (%d bytes)", indexFile.length())
+    }
 
     /**
      * Path that ADB can pull without root: /sdcard/Android/data/<pkg>/files/btides_log.btides
@@ -186,13 +336,9 @@ class BTIDESRepository(
         val key = bdaddr.uppercase()
         val session = sessionsLock.withLock { gattSessions.remove(key) } ?: return 0
         if (!commit || session.discarded || session.buffer.isEmpty()) return 0
-        withContext(Dispatchers.IO) {
-            writeLock.withLock {
-                FileWriter(logFile, /* append = */ true).use { writer ->
-                    for (record in session.buffer) writer.appendLine(json.encodeToString(JsonObject.serializer(), record))
-                }
-            }
-        }
+        // Funnel buffered records through the same channel as live writes so byte offsets
+        // stay sequential and every record gets a sidecar-index entry.
+        for (record in session.buffer) writeChannel.send(record)
         return session.buffer.size
     }
 
@@ -211,25 +357,29 @@ class BTIDESRepository(
         val routedToSession = sessionsLock.withLock {
             val session = gattSessions[key]
             if (session != null) {
-                if (!session.discarded) session.buffer += record
+                if (!session.discarded) {
+                    if (session.buffer.size >= MAX_GATT_SESSION_BUFFER) {
+                        // Defensive cap. In practice each device's GATT enumeration produces
+                        // <100 records (Connect All caps reads at 12 chars/device). Hitting
+                        // 1024 means something pathological — log + drop the new record so the
+                        // session can't grow without bound. Affected: GATT records only;
+                        // advertisements take a different path (`appendScan` → write directly).
+                        Timber.tag(TAG).w("GATT session buffer full for %s (size=%d), dropping record", key, session.buffer.size)
+                    } else {
+                        session.buffer += record
+                    }
+                }
                 true
             } else false
         }
         if (routedToSession) return
-        writeRecordLine(record)
+        writeChannel.send(record)
     }
 
     private suspend fun appendRecord(record: JsonObject) {
-        writeRecordLine(record)
-    }
-
-    private suspend fun writeRecordLine(record: JsonObject) {
-        val line = json.encodeToString(JsonObject.serializer(), record)
-        withContext(Dispatchers.IO) {
-            writeLock.withLock {
-                FileWriter(logFile, /* append = */ true).use { it.appendLine(line) }
-            }
-        }
+        // SUSPEND on full channel — back-pressure the caller rather than dropping the record.
+        // The single-consumer writer runs on Dispatchers.IO and persists for app lifetime.
+        writeChannel.send(record)
     }
 
     private suspend inline fun appendRecord(crossinline build: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) {
@@ -245,6 +395,7 @@ class BTIDESRepository(
      */
     private suspend fun routeLogToPerDeviceTempFiles(
         tempDir: File,
+        sourceSize: Long,
         onBytesProcessed: suspend (Long) -> Unit,
     ): LinkedHashMap<String, File> {
         val devFiles = LinkedHashMap<String, File>()
@@ -253,6 +404,10 @@ class BTIDESRepository(
         try {
             logFile.bufferedReader().useLines { lines ->
                 for (rawLine in lines) {
+                    // Stop at the snapshot boundary so we don't include records appended by
+                    // the live writer after the export started — keeps the export's view of
+                    // the log internally consistent with the snapshotted size.
+                    if (bytes >= sourceSize) break
                     bytes += rawLine.length.toLong() + 1L // +1 for newline
                     val line = rawLine.trim()
                     if (line.isEmpty()) continue
@@ -332,48 +487,55 @@ class BTIDESRepository(
         out: OutputStream,
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Int = withContext(Dispatchers.IO) {
-        writeLock.withLock {
-            val src = logFile
-            if (!src.exists() || src.length() == 0L) {
-                out.bufferedWriter().use { it.write("[]\n") }
-                onProgress?.invoke(1L, 1L)
-                return@withLock 0
+        // Snapshot the log size at export start. Live capture continues writing past this
+        // boundary; we just don't see those new records in the export. The previous design
+        // held the global writeLock for the whole multi-second export, which froze every
+        // appendScan/append… call — at mall-scale that meant tens of thousands of suspended
+        // coroutines piling up by the time the export finished.
+        val src = logFile
+        val sourceSize = writerStateLock.withLock {
+            logStream?.flush()
+            indexStream?.flush()
+            if (src.exists()) src.length() else 0L
+        }
+        if (sourceSize == 0L) {
+            out.bufferedWriter().use { it.write("[]\n") }
+            onProgress?.invoke(1L, 1L)
+            return@withContext 0
+        }
+        val totalBytes = sourceSize * 2L
+        val tempDir = File(context.cacheDir, "btides_export_tmp_${System.currentTimeMillis()}")
+        tempDir.mkdirs()
+        try {
+            onProgress?.invoke(0L, totalBytes)
+            val devFiles = routeLogToPerDeviceTempFiles(tempDir, sourceSize) { bytes ->
+                onProgress?.invoke(bytes.coerceAtMost(sourceSize), totalBytes)
             }
-            val sourceSize = src.length()
-            val totalBytes = sourceSize * 2L
-            val tempDir = File(context.cacheDir, "btides_export_tmp_${System.currentTimeMillis()}")
-            tempDir.mkdirs()
+            val writer = out.bufferedWriter()
             try {
-                onProgress?.invoke(0L, totalBytes)
-                val devFiles = routeLogToPerDeviceTempFiles(tempDir) { bytes ->
-                    onProgress?.invoke(bytes.coerceAtMost(sourceSize), totalBytes)
-                }
-                val writer = out.bufferedWriter()
-                try {
-                    writer.write("[")
-                    var idx = 0
-                    var pass2Bytes = 0L
-                    for ((key, devFile) in devFiles) {
-                        val acc = mergeOneDeviceFromFile(devFile, key) { lineBytes ->
-                            pass2Bytes += lineBytes
-                            onProgress?.invoke(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
-                        }
-                        if (idx > 0) writer.write(",")
-                        writer.write("\n  ")
-                        writer.writeJsonObjectStreaming(acc.toJsonObject(), INDENT_UNIT, INDENT_UNIT)
-                        idx++
+                writer.write("[")
+                var idx = 0
+                var pass2Bytes = 0L
+                for ((key, devFile) in devFiles) {
+                    val acc = mergeOneDeviceFromFile(devFile, key) { lineBytes ->
+                        pass2Bytes += lineBytes
+                        onProgress?.invoke(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
                     }
-                    if (devFiles.isNotEmpty()) writer.write("\n")
-                    writer.write("]\n")
-                    writer.flush()
-                    onProgress?.invoke(totalBytes, totalBytes)
-                } finally {
-                    writer.close()
+                    if (idx > 0) writer.write(",")
+                    writer.write("\n  ")
+                    writer.writeJsonObjectStreaming(acc.toJsonObject(), INDENT_UNIT, INDENT_UNIT)
+                    idx++
                 }
-                devFiles.size
+                if (devFiles.isNotEmpty()) writer.write("\n")
+                writer.write("]\n")
+                writer.flush()
+                onProgress?.invoke(totalBytes, totalBytes)
             } finally {
-                runCatching { tempDir.deleteRecursively() }
+                writer.close()
             }
+            devFiles.size
+        } finally {
+            runCatching { tempDir.deleteRecursively() }
         }
     }
 
@@ -448,27 +610,43 @@ class BTIDESRepository(
     }
 
     suspend fun clearLog() = withContext(Dispatchers.IO) {
-        writeLock.withLock {
-            val f = logFile
-            if (f.exists()) f.delete()
+        // Acquire the writer-state lock so no in-flight write is mid-flush. Close + delete
+        // both the main log and the sidecar index, reset the byte counter — the next record
+        // through the channel reopens both streams in append mode against the fresh files.
+        writerStateLock.withLock {
+            runCatching { logStream?.close() }
+            runCatching { indexStream?.close() }
+            logStream = null
+            indexStream = null
+            if (logFile.exists()) logFile.delete()
+            if (indexFile.exists()) indexFile.delete()
+            bytesInLog = 0L
         }
     }
 
     suspend fun logFileSizeBytes(): Long = withContext(Dispatchers.IO) {
+        // Flush so the on-disk size reflects everything queued up to this point. The settings
+        // screen polls this on every entry — flushing here is the cheapest way to make the
+        // displayed size match user expectation without polling the writer's internal counter.
+        writerStateLock.withLock {
+            runCatching { logStream?.flush() }
+        }
         val f = logFile
         if (f.exists()) f.length() else 0L
     }
 
     /**
-     * Scan the JSONL log for every record matching [address] (case-insensitive) and merge them
-     * into a single BTIDES device JsonObject. Returns null when the device has no GATT records
-     * captured yet.
+     * Look up the merged GATT records for [address] using the sidecar index for O(records-for-
+     * this-device) cost instead of scanning the entire JSONL log.
      *
-     * Used by the device-details screen to display previously-enumerated services + characteristic
-     * values without requiring a fresh GATT connection. A full scan of the log is acceptable for
-     * a one-shot user-triggered load — the BleScannerHelper writes a per-device session into
-     * `gattSessions` for in-memory data, but those records get flushed to disk on session close,
-     * so the JSONL is the only durable source.
+     * The index file pairs every JSONL record with `<address> <byteOffset> <byteLen>`. We read
+     * the index (small — ~30 bytes/record), find matching offsets for the target address, and
+     * `RandomAccessFile.seek` directly to read just those lines from the main log. At a 200 MB
+     * log with 1 M records and 50 records for the target device, this is ~10 ms vs. multi-second
+     * for a full scan.
+     *
+     * If the index is missing (first launch on a pre-T2 install before the background rebuild
+     * finishes), fall back to the previous full-log scan.
      */
     suspend fun cachedGattForDevice(address: String): JsonObject? = withContext(Dispatchers.IO) {
         val src = logFile
@@ -483,20 +661,56 @@ class BTIDESRepository(
                 record["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it); hadAnyMatch = true }
             }
         }
-        // Scan the JSONL log line-by-line. The KEY_REGEX is a fast first-pass filter so we don't
-        // pay the JSON parse cost on every line.
-        src.bufferedReader().useLines { lines ->
-            for (rawLine in lines) {
-                val line = rawLine.trim()
-                if (line.isEmpty()) continue
-                val m = KEY_REGEX.find(line) ?: continue
-                if (!m.groupValues[1].equals(target, ignoreCase = true)) continue
-                val obj = try {
-                    json.parseToJsonElement(line).jsonObject
-                } catch (_: Throwable) {
-                    continue
+        // Flush so the index sidecar reflects everything queued up to this point.
+        writerStateLock.withLock {
+            runCatching { logStream?.flush() }
+            runCatching { indexStream?.flush() }
+        }
+        if (indexFile.exists() && indexFile.length() > 0L) {
+            // Fast path: scan the (small) index for matching offsets, then RandomAccessFile.seek
+            // to read just those bytes from the main log. The 4-column format
+            // `<addr> <type> <off> <len>` lets us skip every advertisement record (~99% of the
+            // index for chatty devices) without paying the JSON parse cost on each one.
+            val matches = mutableListOf<Pair<Long, Int>>()
+            indexFile.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    if (!line.startsWith(target)) continue
+                    val parts = line.split(' ', limit = 4)
+                    if (parts.size != 4) continue
+                    if (parts[0] != target) continue
+                    if (parts[1] != RECORD_TYPE_GATT) continue
+                    val start = parts[2].toLongOrNull() ?: continue
+                    val len = parts[3].toIntOrNull() ?: continue
+                    matches += start to len
                 }
-                obj["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it); hadAnyMatch = true }
+            }
+            if (matches.isNotEmpty()) {
+                RandomAccessFile(src, "r").use { raf ->
+                    val maxLen = matches.maxOf { it.second }
+                    val buf = ByteArray(maxLen)
+                    for ((start, len) in matches) {
+                        raf.seek(start)
+                        raf.readFully(buf, 0, len)
+                        val line = String(buf, 0, len, Charsets.UTF_8)
+                        val obj = runCatching { json.parseToJsonElement(line).jsonObject }.getOrNull() ?: continue
+                        obj["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it); hadAnyMatch = true }
+                    }
+                }
+            }
+        } else {
+            // Fallback (rare — happens only on the first run after an upgrade, before the
+            // background rebuildIndexIfMissing finishes). Same two-stage filter (cheap
+            // substring → KEY_REGEX validator → JSON parse) as before.
+            src.bufferedReader().useLines { lines ->
+                for (rawLine in lines) {
+                    val line = rawLine.trim()
+                    if (line.isEmpty()) continue
+                    if (!line.contains(target)) continue
+                    val m = KEY_REGEX.find(line) ?: continue
+                    if (!m.groupValues[1].equals(target, ignoreCase = true)) continue
+                    val obj = runCatching { json.parseToJsonElement(line).jsonObject }.getOrNull() ?: continue
+                    obj["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it); hadAnyMatch = true }
+                }
             }
         }
         if (!hadAnyMatch) null else acc.toJsonObject()
@@ -634,6 +848,26 @@ class BTIDESRepository(
     companion object {
         private const val TAG = "BTIDESRepository"
         private const val LOG_FILE_NAME = "btides/btides_log.jsonl"
+        // Sidecar index — one line per JSONL record: `<address> <byteOffset> <byteLen>\n`.
+        // Used by [cachedGattForDevice] to seek directly into the main log instead of streaming.
+        private const val INDEX_FILE_NAME = "btides/index.jsonl"
+        // Soft cap on per-address in-memory GATT session buffer. Sized for the Connect-All
+        // worst case (services + read responses + descriptor reads, well under 100 records).
+        private const val MAX_GATT_SESSION_BUFFER = 1024
+        // Channel back-pressure threshold. At 4096 records and a typical scan rate of
+        // ~10/sec/device, the writer has ~7 minutes of headroom for a 1000-device environment
+        // before suspending callers — long enough for any disk hiccup to recover.
+        private const val WRITE_CHANNEL_CAPACITY = 4096
+        // Flush thresholds — whichever fires first. 1024 records is one full channel drain;
+        // 250 ms keeps the on-disk size visibly fresh in the Settings BTIDES log size display.
+        private const val WRITER_FLUSH_RECORDS = 1024
+        private const val WRITER_FLUSH_INTERVAL_MS = 250L
+        // Sidecar index record-type tags. Reader filters to GATT-only when looking up cached
+        // GATT — typical chatty devices have 99%+ ADV records that we'd otherwise pay the JSON
+        // parse cost on for nothing.
+        private const val RECORD_TYPE_GATT = "G"
+        private const val RECORD_TYPE_ADV = "A"
+        private const val RECORD_TYPE_OTHER = "O"
         const val EXPORT_FILE_NAME = "btides_log.btides"
         private const val INDENT_UNIT = "  "
         // Match the bdaddr + bdaddr_rand top-level fields without parsing the whole record. The

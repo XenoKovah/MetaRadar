@@ -143,6 +143,25 @@ class SettingsRepository(
         sharedPreferences.edit { putBoolean(KEY_BULK_RETRY_FOREVER, value) }
     }
 
+    /**
+     * Tracks who started the currently-running BgScanService:
+     *   - NONE: service is not running, or was started before this concept existed.
+     *   - USER_EXPLICIT: user tapped Scan FAB / kept-on toggle / boot-on. Survives app restarts.
+     *   - CONNECT_ALL_AUTO: auto-started by Connect All entry. Killed when leaving Connect All
+     *     and on next MainActivity create if leftover from a process kill.
+     * Persistent so MainActivity can clean up CONNECT_ALL_AUTO leftovers across process death.
+     */
+    fun getScanStartMode(): ScanStartMode {
+        val raw = sharedPreferences.getString(KEY_SCAN_START_MODE, null) ?: return ScanStartMode.NONE
+        return runCatching { ScanStartMode.valueOf(raw) }.getOrDefault(ScanStartMode.NONE)
+    }
+
+    fun setScanStartMode(mode: ScanStartMode) {
+        sharedPreferences.edit { putString(KEY_SCAN_START_MODE, mode.name) }
+    }
+
+    enum class ScanStartMode { NONE, USER_EXPLICIT, CONNECT_ALL_AUTO }
+
     companion object {
         private const val KEY_GARBAGING_TIME = "key_garbaging_time"
         private const val KEY_USE_GPS_ONLY = "key_use_gps_location_only"
@@ -160,6 +179,7 @@ class SettingsRepository(
         private const val KEY_BULK_SKIP_APPLE = "key_bulk_skip_apple"
         private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
         private const val KEY_BULK_RETRY_FOREVER = "key_bulk_retry_forever"
+        private const val KEY_SCAN_START_MODE = "key_scan_start_mode"
 
         const val NO_APP_LAUNCH_TIME = -1L
         const val NO_ENJOY_THE_APP_STARTING_POINT = -1L

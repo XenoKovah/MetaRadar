@@ -13,7 +13,6 @@ enum class FilterType(@StringRes val displayNameRes: Int, @StringRes val display
     BY_MIN_DETECTION_TIME(R.string.filter_by_min_lost_period, R.string.filter_by_min_lost_period_description),
     BY_FIRST_DETECTION(R.string.filter_by_first_detection_period, R.string.filter_by_first_detection_period_description),
     BY_LAST_DETECTION(R.string.filter_by_last_detection_period, R.string.filter_by_last_detection_period_description),
-    BY_IS_FAVORITE(R.string.filter_by_is_favorite, R.string.filter_by_is_favorite_description),
     BY_IS_PAIRED(R.string.filter_by_is_paired, R.string.filter_by_is_paired_description),
     BY_MANUFACTURER(R.string.filter_by_manufacturer, R.string.filter_by_manufacturer_description),
     IS_FOLLOWING(R.string.filter_device_is_following_me, R.string.filter_device_is_following_me_description),

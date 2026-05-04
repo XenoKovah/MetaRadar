@@ -67,7 +67,6 @@ class DeviceListViewModel(
     var quickFilters: List<FilterHolder> by mutableStateOf(
         listOf(
             DefaultFilters.notApple(context),
-            DefaultFilters.isFavorite(context),
         )
     )
     var enjoyTheAppState: EnjoyTheAppState by mutableStateOf(EnjoyTheAppState.None)
@@ -209,18 +208,35 @@ class DeviceListViewModel(
     private fun observeAllDevices(): Job {
         isLoading = true
         return viewModelScope.launch {
+            // Step 1: collapse filter / search / DB-tick into a single trigger. We don't
+            // collect devices here — we just use Room's flow as a "table changed" signal so
+            // the snapshot below re-runs.
             combine(
                 appliedFilter,
                 searchQuery,
                 devicesRepository.observeAllDevices(),
-            ) { filters, query, devices -> Triple(filters, query, devices) }
-                .flatMapLatest { (filters, query, devices) ->
+            ) { filters, query, _ -> filters to query }
+                .flatMapLatest { (filterHolders, query) ->
                     flow {
+                        isLoading = true
                         val result = withContext(Dispatchers.Default) {
-                            isLoading = true
+                            val filters = filterHolders.map { it.filter }
+                            // Try the SQL push-down path first. If every applied filter
+                            // translates to a WHERE clause (e.g., user only has the empty
+                            // filter set, or only IsPaired / Tag / Address / interval / Name
+                            // / non-Apple Manufacturer), the DB returns at most LIMIT rows
+                            // already filtered + sorted — orders of magnitude faster at
+                            // M=200k devices than the legacy materialise-then-filter path.
+                            val sqlSnapshot = devicesRepository.snapshotFilteredDevices(filters, query)
+                            val devices = sqlSnapshot ?: devicesRepository.getDevices(withAirdropInfo = true)
                             devices
-                                .withFilters(filters, query)
-                                .sortedWith(GENERAL_COMPARATOR)
+                                // Re-apply filters in Kotlin only on the fallback path
+                                // (sqlSnapshot==null): the SQL snapshot is already filtered
+                                // + sorted. The fallback case happens for non-pushable
+                                // filters (Apple Manufacturer / AppleAirdropContact /
+                                // IsFollowing / Device or User location).
+                                .let { list -> if (sqlSnapshot != null) list else list.withFilters(filterHolders, query) }
+                                .let { list -> if (sqlSnapshot != null) list else list.sortedWith(GENERAL_COMPARATOR) }
                                 .apply { showEnjoyTheAppIfNeeded() }
                         }
                         emit(result)
@@ -369,10 +385,6 @@ class DeviceListViewModel(
             )
         )
 
-        fun isFavorite(context: Context) = FilterHolder(
-            displayName = context.getString(R.string.favorite),
-            filter = DeviceFilter.IsFavorite(favorite = true)
-        )
     }
 
     enum class CurrentBatchSortingStrategy(
@@ -407,6 +419,12 @@ class DeviceListViewModel(
 
         companion object {
             val MAX_DEVICES_COUNT = 3
+            // EXPANDED mode cap. Without it, a 2000-device current batch would compose 2000
+            // DeviceListItem rows inside a single parent LazyColumn item — Compose can't
+            // virtualise inside an item's content. At N=50 the panel is large but bounded;
+            // the user is steered to search/filter for more via the footer hint. The proper
+            // fix (emit each row as its own LazyColumn item) is queued for Tier 3 with paging.
+            val MAX_DEVICES_COUNT_EXPANDED = 50
         }
     }
 
@@ -420,8 +438,6 @@ class DeviceListViewModel(
                 first.lastDetectTimeMs != second.lastDetectTimeMs -> first.lastDetectTimeMs.compareTo(second.lastDetectTimeMs)
 
                 first.tags.size != second.tags.size -> first.tags.size.compareTo(second.tags.size)
-                first.favorite && !second.favorite -> 1
-                !first.favorite && second.favorite -> -1
 
                 first.resolvedName != second.resolvedName -> first.resolvedName?.compareTo(second.resolvedName ?: return@Comparator 1) ?: -1
 

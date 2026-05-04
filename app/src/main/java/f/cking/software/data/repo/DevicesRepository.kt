@@ -1,11 +1,13 @@
 package f.cking.software.data.repo
 
+import androidx.sqlite.db.SimpleSQLiteQuery
 import f.cking.software.data.database.AppDatabase
 import f.cking.software.data.database.DatabaseUtils
 import f.cking.software.data.database.dao.DeviceDao
 import f.cking.software.data.database.entity.DeviceEntity
 import f.cking.software.domain.model.AppleAirDrop
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.toData
 import f.cking.software.domain.toDomain
 import f.cking.software.splitToBatches
@@ -59,6 +61,50 @@ class DevicesRepository(
 
     fun observeAllDevices(): Flow<List<DeviceData>> {
         return allDevices
+    }
+
+    /**
+     * SQL-narrowed snapshot of the `device` table for the Devices tab. Pushes whatever
+     * [filters] can be translated by [DeviceFilterSqlBuilder] into a `WHERE` clause; pushes
+     * [searchQuery] as a name+address LIKE; orders by `last_detect_time_ms DESC` (matches the
+     * primary key of GENERAL_COMPARATOR in the VM); caps the result at [DEVICE_LIST_LIMIT]
+     * rows.
+     *
+     * Returns `null` when any of the [filters] can't be expressed in SQL (Apple manufacturer
+     * with iBeacon exemption, AirDrop contacts, IsFollowing, location filters). Caller falls
+     * back to the in-Kotlin [observeAllDevices] path in that case — slower but correct for
+     * filters that need raw BLE bytes / cross-table data.
+     *
+     * The LIMIT means a fully-unfiltered view at M=1M devices renders the most-recent 1000
+     * rather than trying to materialise the entire table. Users who want to find a specific
+     * older device should narrow with the search/filter chips — those translate to SQL and
+     * the LIMIT lifts effectively (the WHERE is the actual selectivity).
+     */
+    suspend fun snapshotFilteredDevices(
+        filters: List<DeviceFilter>,
+        searchQuery: String?,
+    ): List<DeviceData>? = withContext(Dispatchers.IO) {
+        val whereClauses = mutableListOf<String>()
+        val args = mutableListOf<Any?>()
+        for (filter in filters) {
+            when (val sql = DeviceFilterSqlBuilder.toSql(filter)) {
+                is DeviceFilterSqlBuilder.Result.Pushable -> {
+                    whereClauses.add(sql.whereClause)
+                    args.addAll(sql.args)
+                }
+                DeviceFilterSqlBuilder.Result.NotPushable -> return@withContext null
+            }
+        }
+        if (!searchQuery.isNullOrBlank()) {
+            whereClauses.add("(name LIKE ? ESCAPE '\\' COLLATE NOCASE OR address LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+            val pattern = "%${searchQuery.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")}%"
+            args.add(pattern)
+            args.add(pattern)
+        }
+        val where = if (whereClauses.isEmpty()) "" else " WHERE " + whereClauses.joinToString(" AND ")
+        val sql = "SELECT * FROM device$where ORDER BY last_detect_time_ms DESC LIMIT $DEVICE_LIST_LIMIT"
+        val query = SimpleSQLiteQuery(sql, args.toTypedArray())
+        deviceDao.queryFiltered(query).map { it.toDomain() }
     }
 
     suspend fun observeLastBatch(): StateFlow<List<DeviceData>> {
@@ -198,8 +244,17 @@ class DevicesRepository(
 
     private suspend fun List<DeviceEntity>.toDomainWithAirDrop(): List<DeviceData> {
         return withContext(Dispatchers.Default) {
-            val allRelatedContacts = withContext(Dispatchers.IO) {
-                appleContactsDao.getAll().groupBy { it.associatedAddress }
+            // Only fetch the contacts whose associatedAddress is actually in this list, instead
+            // of `appleContactsDao.getAll()` (which materialised the entire table — at M=200k
+            // devices × 5 contacts each = 1M rows on every batch tick). DAO already chunks by
+            // splitToBatches under the hood for the IN-clause variable limit.
+            val addressesInPage = mapTo(mutableSetOf()) { it.address }
+            val allRelatedContacts = if (addressesInPage.isEmpty()) {
+                emptyMap()
+            } else {
+                withContext(Dispatchers.IO) {
+                    appleContactsDao.getByAddresses(addressesInPage.toList()).groupBy { it.associatedAddress }
+                }
             }
 
             map { device ->
@@ -210,5 +265,13 @@ class DevicesRepository(
                 device.toDomain(airdrop)
             }
         }
+    }
+
+    companion object {
+        // Hard cap for [snapshotFilteredDevices]. SQL ORDER BY last_detect_time_ms DESC LIMIT
+        // <this> means an unfiltered view at M=1M devices materialises the most-recent 1000
+        // rather than the whole table. Users find older devices by search/filter chips, where
+        // selectivity comes from the WHERE clause and the LIMIT is rarely the binding factor.
+        private const val DEVICE_LIST_LIMIT = 1000
     }
 }

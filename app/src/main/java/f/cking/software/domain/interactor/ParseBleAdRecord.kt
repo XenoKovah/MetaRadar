@@ -157,10 +157,45 @@ object ParseBleAdRecord {
         val companyId = ((data[1].toInt() and 0xFF) shl 8) or (data[0].toInt() and 0xFF)
         val companyName = BluetoothSIG.bluetoothSIG[companyId] ?: "Unknown"
         val payload = data.copyOfRange(2, data.size)
+
+        // iBeacon detection per Apple's spec — Apple company id (0x004C) followed by subtype
+        // 0x02, length 0x15 (21 bytes of UUID + Major + Minor + TX Power). The format is
+        // multi-vendor: Tesla, Estimote, etc. broadcast under Apple's company id, so always
+        // decode it as iBeacon when the shape matches rather than just dumping raw bytes.
+        // https://developer.apple.com/ibeacon/
+        if (companyId == APPLE_COMPANY_ID && payload.size >= IBEACON_PAYLOAD_LEN
+            && (payload[0].toInt() and 0xFF) == IBEACON_SUBTYPE
+            && (payload[1].toInt() and 0xFF) == IBEACON_LENGTH
+        ) {
+            val uuidBytes = payload.copyOfRange(2, 18)
+            val major = ((payload[18].toInt() and 0xFF) shl 8) or (payload[19].toInt() and 0xFF)
+            val minor = ((payload[20].toInt() and 0xFF) shl 8) or (payload[21].toInt() and 0xFF)
+            val txPower = payload[22].toInt() // signed int8 — RSSI at 1m calibration
+            return listOf(
+                Field("Company ID", "0x${"%04X".format(companyId)} ($companyName)"),
+                Field("Format", "iBeacon"),
+                Field("UUID", formatBigEndianUuid(uuidBytes)),
+                Field("Major", "$major (0x${"%04X".format(major)})"),
+                Field("Minor", "$minor (0x${"%04X".format(minor)})"),
+                Field("TX Power (1m)", "$txPower dBm"),
+            )
+        }
+
         return listOf(
             Field("Company ID", "0x${"%04X".format(companyId)} ($companyName)"),
             Field("String interpretation", interpretAsString(payload)),
         )
+    }
+
+    /**
+     * Formats 16 already-big-endian bytes as a canonical UUID string (8-4-4-4-12 hex). iBeacon
+     * UUIDs are big-endian on the wire (per Apple's spec), unlike SIG service UUIDs which use
+     * little-endian — don't share `bytesToUuid128` because it reverses for LE.
+     */
+    private fun formatBigEndianUuid(bytes: ByteArray): String {
+        val msb = (0..7).fold(0L) { acc, i -> (acc shl 8) or (bytes[i].toLong() and 0xFF) }
+        val lsb = (8..15).fold(0L) { acc, i -> (acc shl 8) or (bytes[i].toLong() and 0xFF) }
+        return UUID(msb, lsb).toString().uppercase()
     }
 
     /**
@@ -209,4 +244,10 @@ object ParseBleAdRecord {
         val lsb = (8..15).fold(0L) { acc, i -> (acc shl 8) or (be[i].toLong() and 0xFF) }
         return UUID(msb, lsb).toString()
     }
+
+    private const val APPLE_COMPANY_ID = 0x004C
+    private const val IBEACON_SUBTYPE = 0x02
+    private const val IBEACON_LENGTH = 0x15
+    // 2 bytes (subtype + length) + 16-byte UUID + 2-byte Major + 2-byte Minor + 1-byte TX power.
+    private const val IBEACON_PAYLOAD_LEN = 23
 }

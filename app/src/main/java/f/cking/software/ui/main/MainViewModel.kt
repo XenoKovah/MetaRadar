@@ -81,6 +81,23 @@ class MainViewModel(
         observeScanInProgress()
         observeServiceIsLaunched()
         observeGpsFreshness()
+        cleanupOrphanedAutoScan()
+    }
+
+    /**
+     * If the BgScanService is still running from a prior session and the persisted scan-start
+     * mode is CONNECT_ALL_AUTO, that's a leftover from a Connect-All auto-scan whose
+     * DisposableEffect didn't get to run (process was killed mid-pane). Stop it now so a fresh
+     * Devices-tab visit doesn't see ghost scan results — the user only opted in to scanning
+     * "while looking at Connect All".
+     */
+    private fun cleanupOrphanedAutoScan() {
+        if (BgScanService.isActive
+            && settingsRepository.getScanStartMode() == SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO
+        ) {
+            BgScanService.stop(context)
+            settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.NONE)
+        }
     }
 
     private var lastLocationHandle: LocationProvider.LocationHandle? = null
@@ -119,6 +136,9 @@ class MainViewModel(
 
     fun onScanButtonClick() {
         checkPermissions {
+            // Manual scan from the Devices-tab FAB → user-explicit mode. Survives app restarts
+            // (the foreground service keeps running) until the user stops it themselves.
+            settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.USER_EXPLICIT)
             BgScanService.scan(context)
         }
     }
@@ -132,11 +152,14 @@ class MainViewModel(
         checkPermissions {
             if (BgScanService.isActive) {
                 BgScanService.stop(context)
+                settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.NONE)
             } else if (!locationProvider.isLocationAvailable()) {
                 showLocationDisabledDialog.show()
             } else if (!bluetoothHelper.isBluetoothEnabled()) {
                 showBluetoothDisabledDialog.show()
             } else {
+                // User-initiated start → user-explicit mode. Persists across restarts.
+                settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.USER_EXPLICIT)
                 BgScanService.start(context)
             }
         }

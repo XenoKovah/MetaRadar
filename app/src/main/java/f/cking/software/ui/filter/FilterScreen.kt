@@ -75,7 +75,6 @@ object FilterScreen {
             is FilterUiState.Name -> FilterName(filterState, onDeleteClick)
             is FilterUiState.Address -> FilterAddress(router, filterState, onDeleteClick)
             is FilterUiState.AppleAirdropContact -> FilterAirdropContact(filterState, onDeleteClick)
-            is FilterUiState.IsFavorite -> FilterIsFavorite(filterState, onDeleteClick)
             is FilterUiState.IsPaired -> FilterIsPaired(filterState, onDeleteClick)
             is FilterUiState.Manufacturer -> FilterManufacturer(router, filterState, onDeleteClick)
             is FilterUiState.MinLostTime -> FilterMinLostPeriod(filterState, onDeleteClick)
@@ -432,25 +431,6 @@ object FilterScreen {
     private fun ClearIcon(modifier: Modifier = Modifier, action: () -> Unit) {
         IconButton(modifier = modifier, onClick = action) {
             Icon(imageVector = Icons.Filled.Clear, contentDescription = stringResource(R.string.clear))
-        }
-    }
-
-    @Composable
-    private fun FilterIsFavorite(
-        filter: FilterUiState.IsFavorite,
-        onDeleteClick: (child: FilterUiState) -> Unit,
-    ) {
-        FilterBase(
-            title = stringResource(R.string.filter_by_is_favorite),
-            color = colorResource(R.color.filter_is_favorite),
-            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = stringResource(R.string.is_favorite))
-                Checkbox(checked = filter.favorite, onCheckedChange = {
-                    filter.favorite = it
-                })
-            }
         }
     }
 

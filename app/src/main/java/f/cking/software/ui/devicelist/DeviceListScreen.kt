@@ -172,7 +172,11 @@ object DeviceListScreen {
 
             val devices = viewModel.devicesViewState
 
-            items(devices.size, key = { "device_${devices[it]}" }, contentType = { ListContentType.DEVICE}) { index ->
+            // Key on the BLE address (stable per device across batches) instead of `"device_${devices[it]}"`,
+            // which interpolated DeviceData.toString() — every batch produced fresh data-class instances,
+            // so Compose saw new keys and re-laid-out every visible item. With a stable key, only changed
+            // rows re-render. Critical at N>1000.
+            items(devices.size, key = { devices[it].address }, contentType = { ListContentType.DEVICE}) { index ->
                 val deviceData = devices[index]
                     DeviceListItem(
                         modifier = Modifier.animateItem(),
@@ -181,7 +185,7 @@ object DeviceListScreen {
                         onTagSelected = { viewModel.onTagSelected(it) },
                     )
 
-                val showDivider = viewModel.devicesViewState.getOrNull(index + 1)?.lastDetectTimeMs != deviceData.lastDetectTimeMs
+                val showDivider = devices.getOrNull(index + 1)?.lastDetectTimeMs != deviceData.lastDetectTimeMs
                 if (showDivider) {
                     Divider(Modifier.animateItem())
                 }
@@ -323,7 +327,10 @@ object DeviceListScreen {
         val mode = viewModel.activeScannerExpandedState
         val visibleDevices = when (mode) {
             DeviceListViewModel.ActiveScannerExpandedState.COLLAPSED -> currentBatch.take(DeviceListViewModel.ActiveScannerExpandedState.MAX_DEVICES_COUNT)
-            DeviceListViewModel.ActiveScannerExpandedState.EXPANDED -> currentBatch
+            // Cap EXPANDED so a 2000-device batch doesn't try to compose 2000 rows inside a
+            // single LazyColumn item (Compose can't virtualise within an item). Cap is also
+            // surfaced to the user via the footer when it kicks in.
+            DeviceListViewModel.ActiveScannerExpandedState.EXPANDED -> currentBatch.take(DeviceListViewModel.ActiveScannerExpandedState.MAX_DEVICES_COUNT_EXPANDED)
         }
         if (currentBatch.isNotEmpty()) {
             visibleDevices.forEachIndexed { index, deviceData ->
@@ -357,6 +364,17 @@ object DeviceListScreen {
                     )
                     Icon(painter = painterResource(id = R.drawable.ic_more), contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
                 }
+            } else if (mode == DeviceListViewModel.ActiveScannerExpandedState.EXPANDED
+                && visibleDevices.size < currentBatch.size
+            ) {
+                // Hit the EXPANDED cap. Tell the user the panel is showing a slice and steer
+                // them at the search/filter chips to narrow down further.
+                Text(
+                    text = stringResource(R.string.active_mode_capped, visibleDevices.size, currentBatch.size),
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Light,
+                )
             }
         } else {
             val text = if (viewModel.areFiltersApplied) {

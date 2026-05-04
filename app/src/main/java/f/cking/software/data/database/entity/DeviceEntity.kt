@@ -2,9 +2,16 @@ package f.cking.software.data.database.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "device")
+// Index on `last_detect_time_ms` accelerates `getByLastDetectTime` (called on every batch tick
+// via DevicesRepository.notifyLastBatchListener). Without it the query is a full table scan
+// over M=200k+ rows; with it the per-batch cost is bounded by the recently-seen window.
+@Entity(
+    tableName = "device",
+    indices = [Index(name = "index_device_last_detect_time_ms", value = ["last_detect_time_ms"])],
+)
 data class DeviceEntity(
     @PrimaryKey @ColumnInfo(name = "address") val address: String,
     @ColumnInfo(name = "name") val name: String?,
@@ -12,6 +19,8 @@ data class DeviceEntity(
     @ColumnInfo(name = "first_detect_time_ms") val firstDetectTimeMs: Long,
     @ColumnInfo(name = "detect_count") val detectCount: Int,
     @ColumnInfo(name = "custom_name") val customName: String? = null,
+    // Orphaned: the favorites feature was removed in this branch but the column stays so we
+    // don't need a Room migration. Always written as false; never read by domain code.
     @ColumnInfo(name = "favorite") val favorite: Boolean = false,
     @ColumnInfo(name = "manufacturer_id") val manufacturerId: Int? = null,
     @ColumnInfo(name = "manufacturer_name") val manufacturerName: String? = null,

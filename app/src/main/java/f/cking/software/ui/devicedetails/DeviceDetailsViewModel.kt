@@ -19,7 +19,6 @@ import f.cking.software.data.helpers.PowerModeHelper
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.LocationRepository
 import f.cking.software.domain.interactor.AddTagToDeviceInteractor
-import f.cking.software.domain.interactor.ChangeFavoriteInteractor
 import f.cking.software.domain.interactor.GetBleAdTypeName
 import f.cking.software.domain.interactor.GetBleRecordFramesFromRawInteractor
 import f.cking.software.domain.interactor.GetCharacteristicNameFromUUID
@@ -60,7 +59,6 @@ class DeviceDetailsViewModel(
     private val permissionHelper: PermissionHelper,
     private val addTagToDeviceInteractor: AddTagToDeviceInteractor,
     private val removeTagFromDeviceInteractor: RemoveTagFromDeviceInteractor,
-    private val changeFavoriteInteractor: ChangeFavoriteInteractor,
     private val bleScannerHelper: BleScannerHelper,
     private val getBleRecordFramesFromRawInteractor: GetBleRecordFramesFromRawInteractor,
     private val cluesRepository: CluesRepository,
@@ -637,13 +635,6 @@ class DeviceDetailsViewModel(
         viewModelScope.launch {
             historyPeriod = newHistoryPeriod
             refreshLocationHistory(address, autotunePeriod = autotunePeriod)
-        }
-    }
-
-    fun onFavoriteClick(device: DeviceData) {
-        viewModelScope.launch {
-            changeFavoriteInteractor.execute(device)
-            loadDevice(device.address)
         }
     }
 

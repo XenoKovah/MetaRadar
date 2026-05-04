@@ -30,10 +30,6 @@ sealed class DeviceFilter(@Transient protected val checkDifficulty: Int = 0) {
     data class Manufacturer(val manufacturerId: Int) : DeviceFilter()
 
     @Serializable
-    @SerialName("is_favorite")
-    data class IsFavorite(val favorite: Boolean) : DeviceFilter()
-
-    @Serializable
     @SerialName("is_paired")
     data class IsPaired(val isPaired: Boolean) : DeviceFilter()
 

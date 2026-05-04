@@ -56,7 +56,7 @@ class BleFiltersProvider(
                 .toSet()
 
             val shouldBeIncluded = allKnownDevices
-                .filter { it.tags.isNotEmpty() || it.favorite }
+                .filter { it.tags.isNotEmpty() }
                 .map { it.address }
                 .toSet()
 

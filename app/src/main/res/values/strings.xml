@@ -157,8 +157,6 @@
     <string name="filter_by_first_detection_period_description">Triggers if the device was first detected during the selected time period</string>
     <string name="filter_by_last_detection_period">By Last Detection</string>
     <string name="filter_by_last_detection_period_description">Triggers if the device was last detected during the selected time period</string>
-    <string name="filter_by_is_favorite">By Favorite</string>
-    <string name="filter_by_is_favorite_description">Triggers if the device is marked as a favorite</string>
     <string name="filter_by_is_paired">By Paired Status</string>
     <string name="filter_by_is_paired_description">Triggers if the device is paired with your device</string>
     <string name="filter_by_manufacturer">By Manufacturer</string>
@@ -202,7 +200,6 @@
     <string name="from_time">From time</string>
     <string name="to_date">To date</string>
     <string name="to_time">To time</string>
-    <string name="is_favorite">Is favorite</string>
     <string name="is_paired">Is paired</string>
     <string name="filter_user_location_if_no_location">Skip filter if location is not available (otherwise default value is false)</string>
     <string name="change">Change</string>
@@ -229,7 +226,6 @@
     <string name="clear_search">Clear search</string>
     <string name="not_apple">Not Apple</string>
     <string name="uuid_name_unknown">Unknown</string>
-    <string name="favorite">Favorite</string>
     <string name="enjoy_the_app_question">Do you like this app?</string>
     <string name="enjoy_the_app_yes">Yes</string>
     <string name="enjoy_the_app_not_really">Not really</string>
@@ -243,7 +239,6 @@
 
     <!-- Device Details -->
     <string name="device_details_title">Device details</string>
-    <string name="is_not_favorite">Is not favorite</string>
     <string name="device_details_name">Name</string>
     <string name="device_type">Device type</string>
     <string name="not_applicable">N/A</string>
@@ -284,6 +279,7 @@
     <string name="sort_type_by_distance">Distance</string>
     <string name="sort_type_by_device_type">Device type</string>
     <string name="active_mode_show_all">Show all %s online devices</string>
+    <string name="active_mode_capped">Showing %1$d of %2$d — use search/filter chips above to narrow further.</string>
     <string name="device_is_online">Online</string>
     <string name="services_and_characteristics_discovered">%1$d services / %2$d characteristics discovered</string>
     <plurals name="device_details_raw_data">

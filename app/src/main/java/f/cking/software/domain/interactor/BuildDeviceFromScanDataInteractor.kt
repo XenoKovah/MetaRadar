@@ -18,7 +18,6 @@ class BuildDeviceFromScanDataInteractor(
             firstDetectTimeMs = scanData.scanTimeMs,
             detectCount = 1,
             customName = null,
-            favorite = false,
             manufacturerInfo = rawData?.let {
                 getManufacturerInfoFromRawBleInteractor.execute(it, scanData.scanTimeMs)
             },

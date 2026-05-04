@@ -48,9 +48,6 @@ class FilterCheckerImpl(
             device.manufacturerInfo?.id?.let { it == filter.manufacturerId } ?: false
         }
     }
-    private val isFavorite = filterChecker<DeviceFilter.IsFavorite> { device, filter ->
-        device.favorite == filter.favorite
-    }
     private val isPaired = filterChecker<DeviceFilter.IsPaired> { device, filter ->
         device.isPaired == filter.isPaired
     }
@@ -103,7 +100,6 @@ class FilterCheckerImpl(
             is DeviceFilter.Name -> name.check(deviceData, filter)
             is DeviceFilter.Address -> address.check(deviceData, filter)
             is DeviceFilter.Manufacturer -> manufacturer.check(deviceData, filter)
-            is DeviceFilter.IsFavorite -> isFavorite.check(deviceData, filter)
             is DeviceFilter.IsPaired -> isPaired.check(deviceData, filter)
             is DeviceFilter.MinLostTime -> minLostTime.check(deviceData, filter)
             is DeviceFilter.AppleAirdropContact -> airdrop.check(deviceData, filter)

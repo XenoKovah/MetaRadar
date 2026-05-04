@@ -19,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -37,6 +38,16 @@ object ConnectAllScreen {
     @Composable
     fun Screen() {
         val viewModel: ConnectAllViewModel = koinViewModel()
+        // Kick off scanning the moment the user lands on this pane so the candidate count
+        // populates without them having to switch tabs to the Devices FAB. The VM polls every
+        // 10 s after that, so the count keeps refreshing while they sit here. On dispose
+        // (tab switch / back navigation) tear the scan down again — if Connect All started it,
+        // it should die when Connect All goes away. Manual scans started via the Devices FAB
+        // (mode == USER_EXPLICIT) are left alone by `onPaneHidden`.
+        DisposableEffect(Unit) {
+            viewModel.ensureScanRunning()
+            onDispose { viewModel.onPaneHidden() }
+        }
         // Single LazyColumn for the whole pane so the header (toggles, button, status, expandable
         // Done summary) scrolls together with the connected-device list. Only successfully-
         // enumerated devices are listed — the live candidate count appears in the status line

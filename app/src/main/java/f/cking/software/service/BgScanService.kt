@@ -13,6 +13,7 @@ import f.cking.software.data.helpers.BleScannerHelper
 import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.NotificationsHelper
 import f.cking.software.data.helpers.PermissionHelper
+import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.data.helpers.PowerModeHelper
 import f.cking.software.domain.interactor.SaveOrMergeBatchInteractor
 import f.cking.software.domain.interactor.SaveReportInteractor
@@ -44,6 +45,7 @@ class BgScanService : Service() {
 
     private val saveOrMergeBatchInteractor: SaveOrMergeBatchInteractor by inject()
     private val saveReportInteractor: SaveReportInteractor by inject()
+    private val settingsRepository: SettingsRepository by inject()
 
     private val handler = Handler(Looper.getMainLooper())
     private var failureScanCounter: AtomicInteger = AtomicInteger(0)
@@ -65,7 +67,11 @@ class BgScanService : Service() {
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + Dispatchers.IO + Dispatchers.Default)
+    // Dispatcher addition isn't composition — `Main + IO + Default` was a no-op pattern that
+    // silently pinned all coroutines to whichever dispatcher came last. The work this scope runs
+    // (batch persistence, notification rebuilds) is CPU-bound, so Default is correct; suspending
+    // calls inside use their own withContext(IO) to switch when needed.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
@@ -135,6 +141,9 @@ class BgScanService : Service() {
         locationProvider.stopLocationListening()
         handler.removeCallbacks(nextScanRunnable)
         notificationsHelper.cancel(NotificationsHelper.FOREGROUND_NOTIFICATION_ID)
+        // Reset the persisted scan-start mode so on next app open the cleanup check sees NONE
+        // instead of carrying over a stale CONNECT_ALL_AUTO/USER_EXPLICIT label.
+        settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.NONE)
     }
 
     override fun onBind(p0: Intent?): IBinder? {

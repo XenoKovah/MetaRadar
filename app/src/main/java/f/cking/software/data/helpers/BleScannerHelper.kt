@@ -26,6 +26,8 @@ import f.cking.software.toBase64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +38,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class BleScannerHelper(
     private val bleFiltersProvider: BleFiltersProvider,
@@ -67,7 +70,10 @@ class BleScannerHelper(
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothScanner: BluetoothLeScanner? = null
     private val handler: Handler = Handler(Looper.getMainLooper())
-    private val batch = hashMapOf<String, BleScanDevice>()
+    // ConcurrentHashMap because `onScanResult` (BLE binder thread) writes here while
+    // `cancelScanning` (caller thread) reads/clears. A plain HashMap would lose writes or
+    // throw ConcurrentModificationException under sustained scan rates.
+    private val batch: MutableMap<String, BleScanDevice> = ConcurrentHashMap()
     private var currentScanTimeMs: Long = System.currentTimeMillis()
     private val connections: MutableMap<String, BluetoothGatt> = ConcurrentHashMap()
 
@@ -77,6 +83,96 @@ class BleScannerHelper(
 
     init {
         tryToInitBluetoothScanner()
+    }
+
+    /**
+     * Minimum-cost copy of a [ScanResult] for handoff to the consumer coroutine. Holding the
+     * raw [ScanResult] across thread boundaries isn't safe (the system reuses the object after
+     * `onScanResult` returns), so we materialise the bytes-and-primitives we actually need.
+     */
+    private data class RawScanResult(
+        val address: String,
+        val name: String?,
+        val scanRecordRaw: ByteArray?,
+        val rssi: Int,
+        val addressType: Int?,
+        val isPaired: Boolean,
+        val deviceClass: Int?,
+        val serviceUuids: List<String>,
+        val isConnectable: Boolean,
+        val isLegacy: Boolean,
+        val scanTimeMs: Long,
+        val callbackTimeMs: Long,
+    )
+
+    /**
+     * Off-thread ingestion queue. The BLE binder callback only does field copies + a non-
+     * blocking `trySend`; everything else (BleScanDevice allocation, BTIDES JsonObject
+     * building, batch HashMap update) runs in the consumer coroutine on Dispatchers.IO.
+     *
+     * Capacity 4096 + DROP_OLDEST: at sustained overload we lose the oldest unprocessed
+     * scan rather than blocking the BLE thread (which would cause the system to drop scans
+     * upstream of us, with no signal to log). Each drop is logged so the user can see
+     * if/when they're hitting it.
+     */
+    private val rawScanChannel = Channel<RawScanResult>(
+        capacity = RAW_SCAN_CHANNEL_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    private val rawScanScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val droppedScanCount: AtomicInteger = AtomicInteger(0)
+
+    init {
+        rawScanScope.launch { consumeRawScans() }
+    }
+
+    private suspend fun consumeRawScans() {
+        for (raw in rawScanChannel) {
+            try {
+                val device = BleScanDevice(
+                    address = raw.address,
+                    name = raw.name,
+                    scanTimeMs = raw.scanTimeMs,
+                    scanRecordRaw = raw.scanRecordRaw,
+                    rssi = raw.rssi,
+                    addressType = raw.addressType,
+                    deviceClass = raw.deviceClass,
+                    isPaired = raw.isPaired,
+                    serviceUuids = raw.serviceUuids,
+                    isConnectable = raw.isConnectable,
+                )
+                batch[device.address] = device
+                recordToBTIDESOffThread(raw, device)
+            } catch (t: Throwable) {
+                Timber.tag(TAG).w(t, "Off-thread scan handler failed for %s", raw.address)
+            }
+        }
+    }
+
+    private suspend fun recordToBTIDESOffThread(raw: RawScanResult, device: BleScanDevice) {
+        val (advType, advTypeStr) = inferAdvType(raw.isLegacy, raw.isConnectable)
+        val bdaddrRand = inferBdaddrRand(raw.addressType, raw.address)
+        try {
+            btidesRepository.appendScan(
+                bdaddr = raw.address,
+                bdaddrRand = bdaddrRand,
+                advType = advType,
+                advTypeStr = advTypeStr,
+                scanTimeMs = raw.callbackTimeMs,
+                rssi = raw.rssi,
+                rawScanRecord = raw.scanRecordRaw,
+            )
+        } catch (e: Throwable) {
+            Timber.tag(TAG).w(e, "Failed to append BTIDES record for %s", raw.address)
+        }
+    }
+
+    private fun inferAdvType(isLegacy: Boolean, isConnectable: Boolean): Pair<Int, String> {
+        return when {
+            !isLegacy -> 10 to "AUX_ADV_IND"
+            isConnectable -> 0 to "ADV_IND"
+            else -> 2 to "ADV_NONCONN_IND"
+        }
     }
 
     private val callback = object : ScanCallback() {
@@ -90,62 +186,37 @@ class BleScannerHelper(
                 return
             }
 
-            result.scanRecord?.serviceUuids?.map { bleFiltersProvider.previouslyNoticedServicesUUIDs.add(it.uuid.toString()) }
-            val addressType: Int? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                result.device.addressType
-            } else {
-                null
-            }
-            val isPaired = result.device.bondState == BluetoothDevice.BOND_BONDED
-
-            val device = BleScanDevice(
-                address = result.device.address,
-                name = result.device.name ?: result.scanRecord?.deviceName,
-                scanTimeMs = currentScanTimeMs,
-                scanRecordRaw = result.scanRecord?.bytes,
+            // Field extraction MUST happen on this thread — the underlying ScanResult / device
+            // objects can be reused by the system after the callback returns. Everything past
+            // this point happens in the consumer coroutine.
+            val scanRecord = result.scanRecord
+            val device = result.device
+            val raw = RawScanResult(
+                address = device.address,
+                name = device.name ?: scanRecord?.deviceName,
+                scanRecordRaw = scanRecord?.bytes,
                 rssi = result.rssi,
-                addressType = addressType,
-                deviceClass = result.device?.bluetoothClass?.deviceClass,
-                isPaired = isPaired,
-                serviceUuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() }.orEmpty(),
+                addressType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) device.addressType else null,
+                isPaired = device.bondState == BluetoothDevice.BOND_BONDED,
+                deviceClass = device.bluetoothClass?.deviceClass,
+                serviceUuids = scanRecord?.serviceUuids?.map { it.uuid.toString() }.orEmpty(),
                 isConnectable = result.isConnectable,
+                isLegacy = result.isLegacy,
+                scanTimeMs = currentScanTimeMs,
+                callbackTimeMs = System.currentTimeMillis(),
             )
+            // Cheap side effect: update the previously-noticed-UUIDs cache. Tracked here
+            // because it gates the next BLE filter rebuild — needs to be in sync with what
+            // the system actually saw.
+            for (uuid in raw.serviceUuids) bleFiltersProvider.previouslyNoticedServicesUUIDs.add(uuid)
 
-            batch.put(device.address, device)
-            recordToBTIDES(result, addressType, device)
-        }
-
-        private fun recordToBTIDES(result: ScanResult, addressType: Int?, device: BleScanDevice) {
-            val (advType, advTypeStr) = inferAdvType(result)
-            val bdaddrRand = this@BleScannerHelper.inferBdaddrRand(addressType, device.address)
-            val raw = result.scanRecord?.bytes
-            val rssi = device.rssi
-            val timeMs = System.currentTimeMillis()
-            val address = device.address
-            btidesScope.launch {
-                try {
-                    btidesRepository.appendScan(
-                        bdaddr = address,
-                        bdaddrRand = bdaddrRand,
-                        advType = advType,
-                        advTypeStr = advTypeStr,
-                        scanTimeMs = timeMs,
-                        rssi = rssi,
-                        rawScanRecord = raw,
-                    )
-                } catch (e: Throwable) {
-                    Timber.tag(TAG).w(e, "Failed to append BTIDES record for $address")
-                }
-            }
-        }
-
-        private fun inferAdvType(result: ScanResult): Pair<Int, String> {
-            val isLegacy = result.isLegacy
-            val isConnectable = result.isConnectable
-            return when {
-                !isLegacy -> 10 to "AUX_ADV_IND"
-                isConnectable -> 0 to "ADV_IND"
-                else -> 2 to "ADV_NONCONN_IND"
+            // trySend is non-blocking: if the channel has filled up (consumer is behind), the
+            // oldest queued scan is dropped to make room. We log a one-line summary every
+            // 1000 drops so saturation is visible without flooding logcat.
+            val sent = rawScanChannel.trySend(raw).isSuccess
+            if (!sent) {
+                val n = droppedScanCount.incrementAndGet()
+                if (n % 1000 == 0) Timber.tag(TAG).w("Raw-scan channel saturated: %d drops total", n)
             }
         }
 
@@ -570,5 +641,9 @@ class BleScannerHelper(
         private const val CONNECTION_FAILED_BEFORE_INITIALIZING = 0x85
         private const val CONNECTION_FAILED_TO_ESTABLISH = 0x3E
         private const val CONNECTION_TERMINATED = 0x16
+        // 4096 raw scans buffered between the BLE callback and the consumer coroutine. At
+        // ~1 KB per RawScanResult that's ~4 MB worst-case retention. Sized for a sustained
+        // 5k advertisements/sec environment with the consumer ~1 sec behind.
+        private const val RAW_SCAN_CHANNEL_CAPACITY = 4096
     }
 }

@@ -335,14 +335,6 @@ fun DeviceListItem(
 
             Column {
                 Row(verticalAlignment = Alignment.Top) {
-                    if (device.favorite) {
-                        Icon(
-                            imageVector = Icons.Filled.Star,
-                            contentDescription = stringResource(R.string.is_favorite),
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
                     if (device.isPaired) {
                         DevicePairedIcon(true)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -567,11 +559,14 @@ fun SignalData(rssi: Int?, distance: Float?) {
                 )
                 Spacer(modifier = Modifier.width(2.dp))
                 Icon(
+                    // Decorative icon next to the RSSI/distance label — the surrounding text
+                    // already conveys meaning to a screen reader, so the icon doesn't need its own
+                    // contentDescription. (Previously misleadingly used `R.string.is_favorite`.)
                     modifier = Modifier
                         .size(16.dp)
                         .alpha(0.5f),
                     imageVector = Icons.Outlined.Info,
-                    contentDescription = stringResource(R.string.is_favorite),
+                    contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurface
                 )
             }

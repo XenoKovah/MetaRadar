@@ -25,10 +25,23 @@ class SaveOrMergeBatchInteractor(
             val existingDevices = devicesRepository.getAllByAddresses(discoveredDevices.map { it.address }).associateBy { it.address }
             val airdropContactToPreviouslySeenAtTime = mutableMapOf<Int, Long>()
 
+            // Collect every airdrop SHA in the batch and resolve them in a single SQL query
+            // (the DAO's getAllBySHA already takes a list and is chunked by splitToBatches).
+            // Previously every device with airdrop info issued its own SELECT; at N=500 that
+            // was 500 round-trips per scan tick — multi-second on a 200k-row contacts table.
+            val allShasInBatch = discoveredDevices.flatMap { device ->
+                device.manufacturerInfo?.airdrop?.contacts?.map { it.sha256 } ?: emptyList()
+            }.distinct()
+            val existingContactsBySha = if (allShasInBatch.isEmpty()) {
+                emptyMap()
+            } else {
+                devicesRepository.getAllBySHA(allShasInBatch).associateBy { it.sha256 }
+            }
+
             val mergedDevices = discoveredDevices.map { newDiscovered ->
                 val existing = existingDevices[newDiscovered.address]
                 val mergedDeviceData = existing?.mergeWithNewDetected(newDiscovered) ?: newDiscovered
-                val airdropMergeResult = mergeAirdropContactsWithExisting(mergedDeviceData.manufacturerInfo)
+                val airdropMergeResult = mergeAirdropContactsWithExisting(mergedDeviceData.manufacturerInfo, existingContactsBySha)
                 airdropContactToPreviouslySeenAtTime.putAll(airdropMergeResult.airdropContactToPreviouslySeenAtTime)
 
                 mergedDeviceData.copy(manufacturerInfo = airdropMergeResult.updatedManufacturerInfo)
@@ -61,13 +74,15 @@ class SaveOrMergeBatchInteractor(
         }
     }
 
-    private suspend fun mergeAirdropContactsWithExisting(found: ManufacturerInfo?): AirdropContactsMergeResult {
+    private fun mergeAirdropContactsWithExisting(
+        found: ManufacturerInfo?,
+        existingContactsBySha: Map<Int, AppleAirDrop.AppleContact>,
+    ): AirdropContactsMergeResult {
         val airdrop = found?.airdrop ?: return AirdropContactsMergeResult(found, emptyMap())
 
         val airdropContactToPreviouslySeenAtTime = mutableMapOf<Int, Long>()
-        val existingContacts = devicesRepository.getAllBySHA(airdrop.contacts.map { it.sha256 }).associateBy { it.sha256 }
         val mergedContacts = airdrop.contacts.map { contact ->
-            val existing = existingContacts[contact.sha256]
+            val existing = existingContactsBySha[contact.sha256]
             if (existing != null) {
                 airdropContactToPreviouslySeenAtTime[existing.sha256] = existing.lastDetectionTimeMs
             }

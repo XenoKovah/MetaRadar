@@ -15,7 +15,6 @@ data class DeviceData(
     val manufacturerInfo: ManufacturerInfo?,
     val detectCount: Int,
     val customName: String?,
-    val favorite: Boolean,
     val tags: Set<String>,
     val lastFollowingDetectionTimeMs: Long?,
     val rssi: Int?,

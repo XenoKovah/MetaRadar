@@ -31,7 +31,6 @@ object InteractorsModule {
         factory { CheckUserLocationHistoryInteractor(get()) }
         factory { AddTagToDeviceInteractor(get(), get()) }
         factory { RemoveTagFromDeviceInteractor(get()) }
-        factory { ChangeFavoriteInteractor(get()) }
         factory { GetAppUsageDaysInteractor(get()) }
         factory { SaveFirstAppLaunchTimeInteractor(get()) }
         factory { CheckNeedToShowEnjoyTheAppInteractor(get(), get()) }

@@ -42,7 +42,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 20,
+    version = 21,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -132,6 +132,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_17_18,
                     MIGRATION_18_19,
                     MIGRATION_19_20,
+                    MIGRATION_20_21,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -246,6 +247,14 @@ abstract class AppDatabase : RoomDatabase() {
             it.execSQL("DROP INDEX IF EXISTS index_profile_detect_profile_id_trigger_time;")
             it.execSQL("DROP TABLE IF EXISTS profile_detect;")
             it.execSQL("DROP TABLE IF EXISTS radar_profile;")
+        }
+
+        // Indices on the hot columns that the per-batch path queries on every scan tick. With
+        // M=200k+ devices these queries went from full table scans (multi-second freeze) to
+        // index lookups bounded by the recently-seen window.
+        val MIGRATION_20_21 = migration(20, 21) {
+            it.execSQL("CREATE INDEX IF NOT EXISTS `index_device_last_detect_time_ms` ON `device` (`last_detect_time_ms`);")
+            it.execSQL("CREATE INDEX IF NOT EXISTS `index_apple_contacts_associated_address` ON `apple_contacts` (`associated_address`);")
         }
 
         private fun migration(

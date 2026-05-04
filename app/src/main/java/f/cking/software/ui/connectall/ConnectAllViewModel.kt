@@ -6,11 +6,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.domain.interactor.BulkEnumerateGattInteractor
 import f.cking.software.domain.interactor.VendorIdentifier
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.service.BgScanService
 import f.cking.software.ui.ScreenNavigationCommands
 import f.cking.software.utils.navigation.Router
 import kotlinx.coroutines.CancellationException
@@ -30,6 +32,7 @@ class ConnectAllViewModel(
     private val router: Router,
     private val devicesRepository: DevicesRepository,
     private val vendorIdentifier: VendorIdentifier,
+    private val permissionHelper: PermissionHelper,
 ) : ViewModel() {
 
     var bulkSkipApple: Boolean by mutableStateOf(settingsRepository.getBulkSkipApple())
@@ -62,9 +65,12 @@ class ConnectAllViewModel(
     var candidateDevices: List<DeviceData> by mutableStateOf(emptyList())
     var candidateVendorFiltered: Int by mutableStateOf(0)
 
+    /** Tracks whether the pane is currently in composition — gates the scan-poll loop. */
+    private var paneVisible: Boolean = false
+    private var pollJob: Job? = null
+
     init {
         observeCandidates()
-        startCandidatePolling()
     }
 
     private fun observeCandidates() {
@@ -80,22 +86,91 @@ class ConnectAllViewModel(
      * the BLE scanner's batch StateFlow hasn't re-emitted (e.g., the same set of devices is
      * still visible — value-equal lists don't trigger StateFlow). The visible-cadence is what
      * the user sees as "dynamically updating every 10 seconds".
+     *
+     * Each tick also pokes the scanner so the list keeps refreshing — without this, the user
+     * has to start a scan from the Devices tab before any candidates show up. The loop only
+     * runs while the pane is visible; otherwise it'd resurrect a scan we'd just torn down on
+     * pane exit, which the user noticed as "I left Connect All but the scan kept restarting".
      */
     private fun startCandidatePolling() {
-        viewModelScope.launch {
-            while (true) {
+        pollJob?.cancel()
+        pollJob = viewModelScope.launch {
+            while (paneVisible) {
                 delay(CANDIDATE_POLL_INTERVAL_MS)
+                if (!paneVisible) break
+                ensureScanRunning()
                 recomputeCandidates(devicesRepository.observeLastBatch().value)
             }
         }
     }
 
+    /**
+     * Called from the screen on every entry into composition AND on every candidate-poll tick.
+     * Triggers a one-shot scan via the BgScanService so the candidate list starts populating
+     * immediately even if the user came straight here from a fresh DB clear (where lastBatch
+     * is empty).
+     *
+     * `BgScanService.scan(context)` is the same call the Devices-tab Scan FAB uses — if the
+     * service is already running it just kicks off an extra scan window; if it's not, it starts
+     * the foreground service. The `onRequestPermissions` arg is a no-op so this never
+     * re-prompts the system permission dialog: scanning either works because the user granted
+     * BLE perms during initial setup, or it silently no-ops here.
+     *
+     * Mode tracking: only mark the scan as CONNECT_ALL_AUTO when no other mode is active. If
+     * the user already started the service explicitly via the Devices-tab FAB, we leave the
+     * mode as USER_EXPLICIT so [onPaneHidden] doesn't tear down their manual scan.
+     */
+    fun ensureScanRunning() {
+        // First time the pane reports visible, start the polling loop.
+        val firstVisible = !paneVisible
+        paneVisible = true
+        if (firstVisible) startCandidatePolling()
+        permissionHelper.checkOrRequestPermission(
+            onRequestPermissions = { _, _, _ -> /* no-op: skip silently if not yet granted */ },
+            onPermissionGranted = {
+                if (settingsRepository.getScanStartMode() == SettingsRepository.ScanStartMode.NONE) {
+                    settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO)
+                }
+                BgScanService.scan(context)
+            },
+        )
+    }
+
+    /**
+     * Called when the Connect All pane leaves composition (tab switch, navigate back). If we
+     * were the ones who started the foreground service (mode == CONNECT_ALL_AUTO), tear it
+     * down so Devices doesn't show ghost scan results. If the mode is USER_EXPLICIT (started
+     * via the Devices FAB), leave it alone — the user wants that to keep running. Also
+     * cancels the candidate-poll loop so it can't resurrect the scan after we just stopped it.
+     */
+    fun onPaneHidden() {
+        paneVisible = false
+        pollJob?.cancel()
+        pollJob = null
+        if (settingsRepository.getScanStartMode() == SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO) {
+            BgScanService.stop(context)
+            settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.NONE)
+        }
+    }
+
+    /**
+     * This runs on Dispatchers.Main.immediate (the StateFlow collector that observes
+     * `devicesRepository.observeLastBatch()`). A throw here is fatal — it kills the UI thread
+     * and crashes the whole app. Per-device errors should never abort the candidate sweep, so
+     * each device is evaluated under its own try/catch and logged to the journal on failure.
+     */
     private fun recomputeCandidates(batch: List<DeviceData>) {
         val connectable = batch.filter { it.isConnectable }
         var filtered = 0
         val keep = mutableListOf<DeviceData>()
         for (d in connectable) {
-            if (vendorIdentifier.shouldSkip(d, bulkSkipApple, bulkSkipSamsung)) filtered++ else keep += d
+            val skip = try {
+                vendorIdentifier.shouldSkip(d, bulkSkipApple, bulkSkipSamsung)
+            } catch (e: Throwable) {
+                Timber.tag("ConnectAll").e(e, "vendor classification failed for ${d.address}; including in candidates")
+                false
+            }
+            if (skip) filtered++ else keep += d
         }
         candidateDevices = keep.sortedByDescending { it.rssi ?: Int.MIN_VALUE }
         candidateVendorFiltered = filtered

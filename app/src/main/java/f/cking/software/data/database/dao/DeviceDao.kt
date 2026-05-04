@@ -4,6 +4,8 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
+import androidx.sqlite.db.SupportSQLiteQuery
 import f.cking.software.data.database.entity.DeviceEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -15,6 +17,15 @@ interface DeviceDao {
 
     @Query("SELECT * FROM device")
     fun observeAll(): Flow<List<DeviceEntity>>
+
+    /**
+     * Run an arbitrary SELECT against the `device` table. Used by the repository to plug in
+     * `WHERE` clauses built by [DeviceFilterSqlBuilder] (T3.16) and a `LIMIT` (T3.15) so the
+     * Devices tab returns a bounded result set straight from SQL instead of materialising the
+     * full M-row table and filtering in Kotlin.
+     */
+    @RawQuery
+    fun queryFiltered(query: SupportSQLiteQuery): List<DeviceEntity>
 
     @Query("SELECT * FROM device ORDER BY last_detect_time_ms DESC LIMIT :limit OFFSET :offset")
     fun getPaginated(offset: Int, limit: Int): List<DeviceEntity>

@@ -175,20 +175,7 @@ object DeviceDetailsScreen {
             title = {
                 Text(text = stringResource(R.string.device_details_title))
             },
-            actions = {
-                if (deviceData != null) {
-                    IconButton(onClick = { viewModel.onFavoriteClick(deviceData) }) {
-                        val iconId =
-                            if (deviceData.favorite) R.drawable.ic_star else R.drawable.ic_star_outline
-                        val text = if (deviceData.favorite) stringResource(R.string.is_favorite) else stringResource(R.string.is_not_favorite)
-                        Icon(
-                            imageVector = ImageVector.vectorResource(id = iconId),
-                            contentDescription = text,
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-            },
+            actions = {},
             navigationIcon = {
                 IconButton(onClick = { viewModel.back() }) {
                     Icon(

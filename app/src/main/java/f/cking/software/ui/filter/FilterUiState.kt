@@ -53,14 +53,6 @@ sealed class FilterUiState {
         }
     }
 
-    class IsFavorite : FilterUiState() {
-        var favorite: Boolean by mutableStateOf(true)
-
-        override fun isCorrect(): Boolean {
-            return true
-        }
-    }
-
     class IsPaired : FilterUiState() {
         var isPaired: Boolean by mutableStateOf(true)
 

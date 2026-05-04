@@ -17,7 +17,6 @@ object FilterUiMapper {
         return when (from) {
             is FilterUiState.Name -> DeviceFilter.Name(from.name, from.ignoreCase)
             is FilterUiState.Address -> DeviceFilter.Address(from.address)
-            is FilterUiState.IsFavorite -> DeviceFilter.IsFavorite(from.favorite)
             is FilterUiState.IsPaired -> DeviceFilter.IsPaired(from.isPaired)
             is FilterUiState.Manufacturer -> DeviceFilter.Manufacturer(from.manufacturer!!.id)
             is FilterUiState.LastDetectionInterval -> DeviceFilter.LastDetectionInterval(
@@ -70,9 +69,6 @@ object FilterUiMapper {
                 this.manufacturer = BluetoothSIG.bluetoothSIG[from.manufacturerId]?.let {
                     ManufacturerInfo(from.manufacturerId, it, null,)
                 }
-            }
-            is DeviceFilter.IsFavorite -> FilterUiState.IsFavorite().apply {
-                this.favorite = from.favorite
             }
             is DeviceFilter.IsPaired -> FilterUiState.IsPaired().apply {
                 this.isPaired = from.isPaired
