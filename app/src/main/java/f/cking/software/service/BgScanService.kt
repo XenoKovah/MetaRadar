@@ -226,13 +226,14 @@ class BgScanService : Service() {
      * during an active link can degrade throughput and induce link supervision timeouts.
      */
     private fun runBrEdrInquiry() {
+        Timber.i("runBrEdrInquiry: enabled=${settingsRepository.getDiscoverBrEdrEnabled()} btOn=${brEdrDiscoveryHelper.isBluetoothEnabled()} hasGatt=${bleScannerHelper.hasOpenGattConnections()}")
         if (!settingsRepository.getDiscoverBrEdrEnabled()) {
             scheduleNextBrEdrInquiry()
             return
         }
         if (bleScannerHelper.hasOpenGattConnections()) {
             // Defer one cycle so we don't disturb an in-flight enumeration.
-            Timber.d("Deferring BR/EDR inquiry — open GATT connection in progress")
+            Timber.i("Deferring BR/EDR inquiry — open GATT connection in progress")
             scheduleNextBrEdrInquiry()
             return
         }

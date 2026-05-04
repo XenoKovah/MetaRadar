@@ -108,7 +108,7 @@ class BrEdrDiscoveryHelper(
             cleanup()
             listener.onFailure(DiscoveryFailure("startDiscovery() returned false"))
         } else {
-            Timber.tag(TAG).d("BR/EDR inquiry started")
+            Timber.tag(TAG).i("BR/EDR inquiry started")
         }
     }
 
@@ -163,7 +163,7 @@ class BrEdrDiscoveryHelper(
         val results = batch.values.toList()
         val listener = scanListener
         cleanup()
-        Timber.tag(TAG).d("BR/EDR inquiry finished; ${results.size} devices found")
+        Timber.tag(TAG).i("BR/EDR inquiry finished; ${results.size} devices found")
         listener?.onSuccess(results)
     }
 

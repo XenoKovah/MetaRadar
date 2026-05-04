@@ -598,7 +598,13 @@ class BleScannerHelper(
 
         if (bluetoothAdapter?.state == BluetoothAdapter.STATE_ON) {
             bluetoothScanner?.stopScan(callback)
-            requireAdapter().cancelDiscovery()
+            // Don't call requireAdapter().cancelDiscovery() here. The BLE scan teardown runs
+            // every ~10s; before BR/EDR support landed, this line was a no-op (no inquiry
+            // was ever in flight). With BrEdrDiscoveryHelper running on its own cadence,
+            // calling cancelDiscovery here cuts each ~12s inquiry short ~3s in, killing
+            // the ACTION_DISCOVERY_FINISHED broadcast and starving handleBrEdrInquiryResult
+            // of any data. The BR/EDR helper does its own defensive cancelDiscovery before
+            // each startDiscovery, which is the only place that needs it.
         }
 
         when (scanResult) {
