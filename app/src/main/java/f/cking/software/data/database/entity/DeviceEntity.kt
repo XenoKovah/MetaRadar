@@ -34,4 +34,10 @@ data class DeviceEntity(
     @ColumnInfo(name = "row_data_encoded") val rowDataEncoded: String? = null,
     @ColumnInfo(name = "metadata") val metadata: String? = null,
     @ColumnInfo(name = "is_connectable") val isConnectable: Boolean = false,
+    // Stores Transport.ordinal — 0=UNKNOWN, 1=LE, 2=BREDR, 3=DUAL. Default 0 keeps legacy
+    // rows neutral until a fresh observation classifies them.
+    @ColumnInfo(name = "transport", defaultValue = "0") val transport: Int = 0,
+    // SDP service-class UUIDs returned by BluetoothDevice.fetchUuidsWithSdp(); same
+    // serialization shape as `service_uuids`.
+    @ColumnInfo(name = "sdp_uuids", defaultValue = "") val sdpUuids: List<String> = emptyList(),
 )

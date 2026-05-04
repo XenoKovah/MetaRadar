@@ -2,6 +2,7 @@ package f.cking.software.domain.interactor
 
 import f.cking.software.domain.model.BleScanDevice
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.domain.model.Transport
 import f.cking.software.toBase64
 
 class BuildDeviceFromScanDataInteractor(
@@ -30,6 +31,13 @@ class BuildDeviceFromScanDataInteractor(
             servicesUuids = scanData.serviceUuids,
             rowDataEncoded = rawData?.toBase64(),
             isConnectable = scanData.isConnectable,
+            // BR/EDR inquiry sets `deviceType=DEVICE_TYPE_CLASSIC`; LE scan leaves it null.
+            // Treat null as LE (the legacy scan path) so existing devices keep their pre-BTC
+            // classification when this commit lands. Once BR/EDR discovery wires in, that path
+            // will pass an explicit deviceType.
+            transport = Transport.fromAndroidDeviceType(scanData.deviceType)
+                .let { if (it == Transport.UNKNOWN && rawData != null) Transport.LE else it },
+            sdpUuids = emptyList(),
         )
     }
 }

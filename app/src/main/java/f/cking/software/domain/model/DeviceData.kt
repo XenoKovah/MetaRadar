@@ -24,6 +24,8 @@ data class DeviceData(
     val servicesUuids: List<String>,
     val rowDataEncoded: String?,
     val isConnectable: Boolean,
+    val transport: Transport = Transport.UNKNOWN,
+    val sdpUuids: List<String> = emptyList(),
 ) {
 
     val resolvedDeviceClass: DeviceClass by lazy {
@@ -96,6 +98,11 @@ data class DeviceData(
             servicesUuids = new.servicesUuids,
             rowDataEncoded = new.rowDataEncoded,
             isConnectable = new.isConnectable,
+            // A re-detection can promote LE→DUAL or BREDR→DUAL when we observe the same
+            // address on a different transport across cycles. Preserve sdpUuids — fresh scan
+            // observations don't include SDP results, only the SDP enumeration path does.
+            transport = Transport.merge(transport, new.transport),
+            sdpUuids = if (new.sdpUuids.isNotEmpty()) new.sdpUuids else sdpUuids,
         )
     }
 }
