@@ -139,6 +139,25 @@
     <string name="app_settings_title">App settings</string>
     <string name="silent_mode_is_off_toast">Offline mode is turned off. You can change it in the settings.</string>
 
+    <!-- Discovery transports block -->
+    <string name="discovery_transports_title">Discovery transports</string>
+    <string name="discover_le_title">Discover BLE (Bluetooth Low Energy) devices</string>
+    <string name="discover_le_subtitle">Continuous BLE advertisement scans. Turn off to test BR/EDR (Classic) discovery in isolation.</string>
+    <string name="discover_br_edr_title">Discover BTC (Bluetooth Classic / BR/EDR) devices</string>
+    <string name="discover_br_edr_subtitle">Periodic BR/EDR inquiry every ~60s. Classic devices that aren\'t paired or in pairing mode often respond with name-less UUIDs only.</string>
+
+    <!-- SDP Services section in Device Details -->
+    <string name="sdp_services_section_title">SDP Services</string>
+    <string name="sdp_services_status_in_progress">Fetching SDP service classes…</string>
+    <string name="sdp_services_status_empty">No SDP services advertised by this device. Pairing the peer or putting it in pairing mode often surfaces more.</string>
+    <string name="sdp_services_status_count_template">%1$d service class(es) (last fetched %2$s)</string>
+    <string name="sdp_services_refetch">Re-fetch SDP</string>
+
+    <!-- Transport badges -->
+    <string name="transport_badge_le">LE</string>
+    <string name="transport_badge_brEdr">BR</string>
+    <string name="transport_badge_dual">Dual</string>
+
     <!-- Select manufacturer -->
     <string name="select_manufacturer">Search manufacturer</string>
 

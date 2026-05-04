@@ -16,6 +16,8 @@ import f.cking.software.data.helpers.CluesRepository
 import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.helpers.PowerModeHelper
+import f.cking.software.data.helpers.SdpEnumerationHelper
+import f.cking.software.domain.model.Transport
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.LocationRepository
 import f.cking.software.domain.interactor.AddTagToDeviceInteractor
@@ -63,6 +65,7 @@ class DeviceDetailsViewModel(
     private val getBleRecordFramesFromRawInteractor: GetBleRecordFramesFromRawInteractor,
     private val cluesRepository: CluesRepository,
     private val btidesRepository: BTIDESRepository,
+    private val sdpEnumerationHelper: SdpEnumerationHelper,
 ) : ViewModel() {
 
     var deviceState: DeviceData? by mutableStateOf(null)
@@ -75,6 +78,15 @@ class DeviceDetailsViewModel(
     var pointsStyle: PointsStyle by mutableStateOf(DEFAULT_POINTS_STYLE)
     var rawData: List<AdRecord> by mutableStateOf(listOf())
     var services: Set<ServiceData> by mutableStateOf(emptySet())
+    /**
+     * Mirrors `device.sdpUuids` resolved through CLUES for display. Empty when there are no
+     * cached SDP results AND the auto-fetch hasn't completed yet — the UI distinguishes by
+     * checking [sdpFetchInProgress].
+     */
+    var sdpServices: List<SdpServiceData> by mutableStateOf(emptyList())
+    var sdpFetchInProgress: Boolean by mutableStateOf(false)
+    var sdpLastFetchTimeMs: Long? by mutableStateOf(null)
+    private var sdpFetchJob: Job? = null
     var connectionStatus: ConnectionStatus by mutableStateOf(ConnectionStatus.DISCONNECTED)
     var recentReadFailures: Set<String> by mutableStateOf(emptySet())
     private val readFailureJobs: MutableMap<String, Job> = mutableMapOf()
@@ -95,6 +107,13 @@ class DeviceDetailsViewModel(
         val name: String?,
         val uuid: String,
         val characteristics: List<CharacteristicData>,
+        val clues: CluesInfo? = null,
+    )
+
+    /** One SDP service-class UUID resolved through CLUES for display. */
+    data class SdpServiceData(
+        val uuid: String,
+        val name: String?,
         val clues: CluesInfo? = null,
     )
 
@@ -484,11 +503,59 @@ class DeviceDetailsViewModel(
                 )
             }.toSet())
             deviceState = device
+            // Render whatever SDP UUIDs we already have for this device. Auto-fire a fresh fetch
+            // for CLASSIC/DUAL devices that don't have any yet — the user expects to see
+            // services within a few seconds of opening the screen.
+            sdpServices = device.sdpUuids.map { resolveSdpService(it) }
+            if (device.sdpUuids.isEmpty() && device.transport.isBrEdrOrDual()) {
+                fetchSdpServices()
+            }
             // Layer the previously-captured GATT data (services + characteristics + values) on
             // top of the advertised UUIDs. addServices merges by canonical UUID with the new
             // entry winning, so any cached service supersedes its bare advertised counterpart
             // and exposes the full characteristic tree even before the user reconnects.
             loadCachedGatt(address)
+        }
+    }
+
+    private fun resolveSdpService(uuid: String): SdpServiceData {
+        val canonical = uuid.lowercase()
+        return SdpServiceData(
+            uuid = canonical,
+            name = GetServiceNameFromBluetoothService.execute(canonical),
+            clues = lookupClues(canonical),
+        )
+    }
+
+    private fun Transport.isBrEdrOrDual(): Boolean = this == Transport.BREDR || this == Transport.DUAL
+
+    /**
+     * Run an SDP enumeration against the device's address. Persists results to the DB, fires a
+     * BTIDES SDPArray record (synthesized 0x07_SDP_SERVICE_SEARCH_ATTR_RSP), and refreshes the
+     * UI list. Idempotent: a second call while one is in flight cancels the in-flight job and
+     * re-runs.
+     */
+    fun fetchSdpServices() {
+        sdpFetchJob?.cancel()
+        sdpFetchJob = viewModelScope.launch {
+            sdpFetchInProgress = true
+            try {
+                val timestampMs = System.currentTimeMillis()
+                val uuids = sdpEnumerationHelper.enumerate(address)
+                val canonical = uuids.map { it.toString().lowercase() }
+                sdpServices = canonical.map { resolveSdpService(it) }
+                sdpLastFetchTimeMs = timestampMs
+                devicesRepository.updateSdpUuids(address, canonical)
+                if (uuids.isNotEmpty()) {
+                    btidesRepository.appendSDPDiscovery(address, uuids, timestampMs)
+                }
+            } catch (e: BleScannerHelper.BluetoothIsNotInitialized) {
+                Timber.w(e, "Bluetooth disabled; cannot enumerate SDP for $address")
+            } catch (e: Throwable) {
+                Timber.e(e, "SDP enumeration failed for $address")
+            } finally {
+                sdpFetchInProgress = false
+            }
         }
     }
 

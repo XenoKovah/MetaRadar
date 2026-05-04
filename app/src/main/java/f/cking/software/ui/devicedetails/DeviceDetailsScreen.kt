@@ -3,6 +3,8 @@ package f.cking.software.ui.devicedetails
 import android.bluetooth.BluetoothGattCharacteristic
 import android.graphics.Paint
 import android.view.MotionEvent
+import f.cking.software.dateTimeStringFormatLocalized
+import f.cking.software.domain.model.Transport
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -362,6 +364,7 @@ object DeviceDetailsScreen {
                     Text(text = deviceData.resolvedManufacturerName ?: stringResource(R.string.not_applicable))
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    SdpServices(viewModel)
                     Services(viewModel.services, viewModel)
                     Spacer(modifier = Modifier.height(8.dp))
 
@@ -388,6 +391,66 @@ object DeviceDetailsScreen {
                 }
             }
         }
+    }
+
+    /**
+     * Renders the SDP service-class UUIDs returned by `BluetoothDevice.fetchUuidsWithSdp()`.
+     * Hidden entirely for LE-only devices (GATT services tell the same story over there). For
+     * BR/EDR / dual-mode devices, surfaces the cached list synchronously and re-fetches when
+     * the user taps the action button — running fetch state is reflected in the section title.
+     */
+    @Composable
+    private fun SdpServices(viewModel: DeviceDetailsViewModel) {
+        val transport = viewModel.deviceState?.transport ?: return
+        if (transport != Transport.BREDR && transport != Transport.DUAL) return
+
+        val sdpServices = viewModel.sdpServices
+        val inProgress = viewModel.sdpFetchInProgress
+        val lastFetch = viewModel.sdpLastFetchTimeMs
+        val context = LocalContext.current
+
+        val title = when {
+            inProgress -> stringResource(R.string.sdp_services_status_in_progress)
+            sdpServices.isEmpty() -> stringResource(R.string.sdp_services_status_empty)
+            lastFetch != null -> stringResource(
+                R.string.sdp_services_status_count_template,
+                sdpServices.size,
+                lastFetch.dateTimeStringFormatLocalized(FormatStyle.SHORT),
+            )
+            else -> "${sdpServices.size} service classes"
+        }
+
+        Text(
+            text = stringResource(R.string.sdp_services_section_title),
+            fontWeight = FontWeight.Bold,
+        )
+        Text(text = title, fontWeight = FontWeight.Light)
+        Spacer(modifier = Modifier.height(4.dp))
+        Button(
+            onClick = { viewModel.fetchSdpServices() },
+            enabled = !inProgress,
+        ) {
+            Text(
+                text = stringResource(R.string.sdp_services_refetch),
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+        }
+        if (sdpServices.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            sdpServices.forEach { svc ->
+                val uuidLabel = displayUuid(svc.uuid)
+                val name = svc.name
+                val clues = svc.clues
+                val hasPurpose = clues?.purpose != null
+                ExpandableLine(
+                    title = { UuidTitle(uuid = uuidLabel, name = name, clues = clues) },
+                    isExpandable = hasPurpose,
+                ) {
+                    if (hasPurpose) CluesPurpose(clues!!.purpose!!)
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
     }
 
     @Composable

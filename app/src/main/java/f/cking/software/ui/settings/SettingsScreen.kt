@@ -61,6 +61,8 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(16.dp))
             ProjectInformationBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
+            DiscoveryTransportsBlock(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
             AppSettings(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             DatabaseBlock(viewModel = viewModel)
@@ -476,6 +478,30 @@ object SettingsScreen {
             subtitle = stringResource(R.string.settings_use_gps_subtitle),
             onClick = { viewModel.onUseGpsLocationOnlyClick() }
         )
+    }
+
+    @Composable
+    private fun DiscoveryTransportsBlock(viewModel: SettingsViewModel) {
+        RoundedBox(internalPaddings = 0.dp) {
+            Text(
+                modifier = Modifier.padding(16.dp),
+                text = stringResource(R.string.discovery_transports_title),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Switcher(
+                value = viewModel.discoverLeEnabled,
+                title = stringResource(R.string.discover_le_title),
+                subtitle = stringResource(R.string.discover_le_subtitle),
+                onClick = { viewModel.toggleDiscoverLe() },
+            )
+            Switcher(
+                value = viewModel.discoverBrEdrEnabled,
+                title = stringResource(R.string.discover_br_edr_title),
+                subtitle = stringResource(R.string.discover_br_edr_subtitle),
+                onClick = { viewModel.toggleDiscoverBrEdr() },
+            )
+        }
     }
 
     @Composable

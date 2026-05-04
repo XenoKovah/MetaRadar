@@ -75,6 +75,8 @@ class SettingsViewModel(
     var runOnStartup: Boolean by mutableStateOf(settingsRepository.getRunOnStartup())
     var wakeUpWhileScanning: Boolean by mutableStateOf(settingsRepository.getWakeUpScreenWhileScanning())
     var silentModeEnabled: Boolean by mutableStateOf(settingsRepository.getSilentMode())
+    var discoverLeEnabled: Boolean by mutableStateOf(settingsRepository.getDiscoverLeEnabled())
+    var discoverBrEdrEnabled: Boolean by mutableStateOf(settingsRepository.getDiscoverBrEdrEnabled())
 
     val databaseInfo by getDatabaseInfoInteractor.execute().collectAsState(viewModelScope, null)
 
@@ -295,6 +297,18 @@ class SettingsViewModel(
 
     fun changeSilentMode() {
         settingsRepository.setSilentMode(!settingsRepository.getSilentMode())
+    }
+
+    fun toggleDiscoverLe() {
+        val newValue = !settingsRepository.getDiscoverLeEnabled()
+        settingsRepository.setDiscoverLeEnabled(newValue)
+        discoverLeEnabled = newValue
+    }
+
+    fun toggleDiscoverBrEdr() {
+        val newValue = !settingsRepository.getDiscoverBrEdrEnabled()
+        settingsRepository.setDiscoverBrEdrEnabled(newValue)
+        discoverBrEdrEnabled = newValue
     }
 
     fun onReportIssueClick() {
