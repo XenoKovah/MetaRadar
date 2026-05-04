@@ -193,7 +193,8 @@ class VendorIdentifier(
      * byte advertisement whose final frame ended exactly at the buffer boundary tripped an
      * off-by-one in the data-slice indices and brought down the app on every Connect-All scan.)
      */
-    private fun parseAdvFrames(raw: ByteArray): List<BleRecordFrame> {
+    @androidx.annotation.VisibleForTesting
+    internal fun parseAdvFrames(raw: ByteArray): List<BleRecordFrame> {
         val out = ArrayList<BleRecordFrame>()
         var i = 0
         while (i < raw.size) {
