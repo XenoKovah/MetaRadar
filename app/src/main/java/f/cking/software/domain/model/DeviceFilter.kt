@@ -29,6 +29,20 @@ sealed class DeviceFilter(@Transient protected val checkDifficulty: Int = 0) {
     @SerialName("manufacturer")
     data class Manufacturer(val manufacturerId: Int) : DeviceFilter()
 
+    /**
+     * Match devices observed on a particular radio transport. Carries [Transport.ordinal] so
+     * the filter is fully serialisable and resolves identically on the SQL and in-memory
+     * paths. Use [Transport.BREDR] for the "BTC" filter chip — DUAL devices match it because
+     * a dual-mode peer responded to BR/EDR inquiry at some point. Pass [includeDual] = false
+     * to exclude DUAL.
+     */
+    @Serializable
+    @SerialName("transport")
+    data class TransportFilter(
+        val transportOrdinal: Int,
+        val includeDual: Boolean = true,
+    ) : DeviceFilter()
+
     @Serializable
     @SerialName("is_paired")
     data class IsPaired(val isPaired: Boolean) : DeviceFilter()

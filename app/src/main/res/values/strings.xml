@@ -164,6 +164,16 @@
     <string name="transport_badge_brEdr">BR</string>
     <string name="transport_badge_dual">Dual</string>
 
+    <!-- Filter chips -->
+    <string name="filter_btc">BTC</string>
+
+    <!-- Address-tag tooltip text for BR/EDR addresses -->
+    <string name="address_type_btc_tag" translatable="false">BTC</string>
+    <string name="address_type_btc_description">This is a Bluetooth Classic device address. These addresses do not change over time, so if this device remains visible due to being Discoverable, it would potentially be trackable.</string>
+
+    <!-- GATT services section header in DeviceDetails (BR/EDR-aware) -->
+    <string name="device_details_gatt_services_header">GATT: %1$d Services / %2$d Characteristics discovered</string>
+
     <!-- Select manufacturer -->
     <string name="select_manufacturer">Search manufacturer</string>
 

@@ -373,7 +373,7 @@ fun DeviceListItem(
                     Text(text = airdrop.contacts.joinToString { "0x${it.sha256.toHexString().uppercase()}" })
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                ExtendedAddressView(device.extendedAddressInfo())
+                ExtendedAddressView(device.extendedAddressInfo(), transport = device.transport)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = stringResource(
@@ -464,6 +464,7 @@ fun DeviceTypeIcon(
 @Composable
 fun ExtendedAddressView(
     extendedAddressInfo: ExtendedAddressInfo,
+    transport: Transport = Transport.UNKNOWN,
 ) {
 
     Row {
@@ -471,12 +472,20 @@ fun ExtendedAddressView(
             text = extendedAddressInfo.address,
             fontWeight = FontWeight.Light,
         )
-        val chip = extendedAddressInfo.type.toChip()
+        // BR/EDR addresses are always public per BT Core Spec, but the BLE STP semantics
+        // (and warning text) don't quite fit — surface a Classic-specific BTC chip with its
+        // own description so the user understands the trackability implication for the
+        // actual radio they're looking at.
+        val chip = if (transport == Transport.BREDR || transport == Transport.DUAL) {
+            ExtendedAddressInfoChip.BTC
+        } else {
+            extendedAddressInfo.type.toChip()
+        }
         if (chip != null) {
 
             val dialog = infoDialog(
                 title = stringResource(id = chip.descriptionRes),
-                content = stringResource(id = R.string.address_private_disclamer)
+                content = stringResource(id = chip.bodyRes),
             )
 
             Spacer(modifier = Modifier.width(8.dp))
@@ -520,26 +529,39 @@ private fun ExtendedAddressInfo.BleAddressType.toChip(): ExtendedAddressInfoChip
 private enum class ExtendedAddressInfoChip(
     val titleRes: Int,
     val descriptionRes: Int,
+    val bodyRes: Int,
     val color: @Composable () -> Color,
 ) {
     PUBLIC(
         titleRes = R.string.address_type_public_tag,
         descriptionRes = R.string.address_type_public_description,
+        bodyRes = R.string.address_private_disclamer,
+        color = { colorResource(R.color.address_tag_stp) },
+    ),
+    BTC(
+        titleRes = R.string.address_type_btc_tag,
+        descriptionRes = R.string.address_type_btc_tag,
+        bodyRes = R.string.address_type_btc_description,
+        // Classic-public addresses share the same trackability concern as STP, so reuse the
+        // STP colour to preserve at-a-glance consistency.
         color = { colorResource(R.color.address_tag_stp) },
     ),
     RANDOM(
         titleRes = R.string.address_type_random_static_tag,
         descriptionRes = R.string.address_type_random_static_description,
+        bodyRes = R.string.address_private_disclamer,
         color = { colorResource(R.color.address_tag_rst) },
     ),
     NON_RESOLVABLE(
         titleRes = R.string.address_type_non_resolvable_tag,
         descriptionRes = R.string.address_type_non_resolvable_description,
+        bodyRes = R.string.address_private_disclamer,
         color = { colorResource(R.color.address_tag_nrp) },
     ),
     RESOLVABLE(
         titleRes = R.string.address_type_resolvable_private_tag,
         descriptionRes = R.string.address_type_resolvable_private_description,
+        bodyRes = R.string.address_private_disclamer,
         color = { colorResource(R.color.address_tag_rpa) },
     ),
 }

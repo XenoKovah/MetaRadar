@@ -121,6 +121,10 @@ object FilterUiMapper {
                 this.radius = from.radiusMeters
                 this.defaultValueIfNoLocation = from.noLocationDefaultValue
             }
+            // TransportFilter is currently only constructed as a quick-filter chip (BTC), never
+            // edited through the FilterUiState builder. If a saved filter ever contains one,
+            // surface a placeholder Unknown state so the editor doesn't crash.
+            is DeviceFilter.TransportFilter -> FilterUiState.Unknown()
         }
     }
 

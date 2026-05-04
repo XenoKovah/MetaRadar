@@ -51,6 +51,16 @@ class FilterCheckerImpl(
     private val isPaired = filterChecker<DeviceFilter.IsPaired> { device, filter ->
         device.isPaired == filter.isPaired
     }
+    private val transportFilter = filterChecker<DeviceFilter.TransportFilter>(useCache = true) { device, filter ->
+        // Mirror DeviceFilterSqlBuilder's BREDR-includes-DUAL semantics: anything seen on the
+        // BR/EDR radio matches the BTC chip whether or not it also showed up on LE.
+        val deviceOrdinal = device.transport.ordinal
+        if (filter.includeDual && filter.transportOrdinal != f.cking.software.domain.model.Transport.DUAL.ordinal) {
+            deviceOrdinal == filter.transportOrdinal || deviceOrdinal == f.cking.software.domain.model.Transport.DUAL.ordinal
+        } else {
+            deviceOrdinal == filter.transportOrdinal
+        }
+    }
     private val minLostTime = filterChecker<DeviceFilter.MinLostTime> { device, filter ->
         System.currentTimeMillis() - device.lastDetectTimeMs >= filter.minLostTime
     }
@@ -101,6 +111,7 @@ class FilterCheckerImpl(
             is DeviceFilter.Address -> address.check(deviceData, filter)
             is DeviceFilter.Manufacturer -> manufacturer.check(deviceData, filter)
             is DeviceFilter.IsPaired -> isPaired.check(deviceData, filter)
+            is DeviceFilter.TransportFilter -> transportFilter.check(deviceData, filter)
             is DeviceFilter.MinLostTime -> minLostTime.check(deviceData, filter)
             is DeviceFilter.AppleAirdropContact -> airdrop.check(deviceData, filter)
             is DeviceFilter.Any -> any.check(deviceData, filter)

@@ -17,6 +17,7 @@ import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.helpers.PowerModeHelper
 import f.cking.software.data.helpers.SdpEnumerationHelper
+import f.cking.software.data.helpers.SdpServiceClassNames
 import f.cking.software.domain.model.Transport
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.LocationRepository
@@ -182,8 +183,17 @@ class DeviceDetailsViewModel(
 
     fun establishConnection() {
         connectionJob?.cancel()
+        // Pick the transport that matches what the user is investigating: BR/EDR-only or
+        // dual-mode peers connect over Classic so we exercise GATT-over-BR/EDR (and any
+        // associated pairing prompt) — Apple iPhones/iPads expose vendor-specific GATT
+        // services on this transport that aren't visible on their LE side. Pure-LE devices
+        // keep the legacy LE transport.
+        val transport = when (deviceState?.transport) {
+            Transport.BREDR, Transport.DUAL -> android.bluetooth.BluetoothDevice.TRANSPORT_BREDR
+            else -> android.bluetooth.BluetoothDevice.TRANSPORT_LE
+        }
         connectionJob = viewModelScope.launch {
-            bleScannerHelper.connectToDevice(address)
+            bleScannerHelper.connectToDevice(address, transport = transport)
                 .onStart { connectionStatus = ConnectionStatus.CONNECTING }
                 .catch { e ->
                     Timber.e(e)
@@ -533,9 +543,15 @@ class DeviceDetailsViewModel(
 
     private fun resolveSdpService(uuid: String): SdpServiceData {
         val canonical = uuid.lowercase()
+        // Prefer the SDP-specific Bluetooth SIG service-class table for naming, since BR/EDR
+        // service classes (Audio Source/Sink, HID, OBEX, etc.) are NOT in the GATT service
+        // assigned-numbers list that GetServiceNameFromBluetoothService consults. Fall back to
+        // the GATT table only when the SDP table doesn't know the UUID.
+        val name = SdpServiceClassNames.lookup(canonical)
+            ?: GetServiceNameFromBluetoothService.execute(canonical)
         return SdpServiceData(
             uuid = canonical,
-            name = GetServiceNameFromBluetoothService.execute(canonical),
+            name = name,
             clues = lookupClues(canonical),
         )
     }

@@ -62,6 +62,20 @@ object DeviceFilterSqlBuilder {
                 listOf("%,${filter.tag.escapeLike()},%"),
             )
 
+        is DeviceFilter.TransportFilter -> {
+            // BREDR + DUAL when includeDual=true (the BTC chip's contract: anything seen on
+            // the Classic radio); strict equality otherwise. Transport.DUAL.ordinal = 3.
+            val dualOrdinal = 3
+            if (filter.includeDual && filter.transportOrdinal != dualOrdinal) {
+                Result.Pushable(
+                    "transport IN (?, ?)",
+                    listOf(filter.transportOrdinal, dualOrdinal),
+                )
+            } else {
+                Result.Pushable("transport = ?", listOf(filter.transportOrdinal))
+            }
+        }
+
         is DeviceFilter.Manufacturer -> {
             if (filter.manufacturerId == ManufacturerInfo.APPLE_ID) {
                 // The Apple case routes through VendorIdentifier so iBeacon-shaped MSDs from

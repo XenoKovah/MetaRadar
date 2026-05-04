@@ -357,7 +357,7 @@ object DeviceDetailsScreen {
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(text = stringResource(R.string.device_details_address), fontWeight = FontWeight.Bold)
-                    ExtendedAddressView(deviceData.extendedAddressInfo())
+                    ExtendedAddressView(deviceData.extendedAddressInfo(), transport = deviceData.transport)
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(text = stringResource(R.string.device_details_manufacturer), fontWeight = FontWeight.Bold)
@@ -455,13 +455,28 @@ object DeviceDetailsScreen {
 
     @Composable
     private fun Services(servicesUuids: Set<DeviceDetailsViewModel.ServiceData>, viewModel: DeviceDetailsViewModel) {
+        val transport = viewModel.deviceState?.transport ?: Transport.UNKNOWN
+        val sdpIndicatesGatt = viewModel.sdpServices.any { svc ->
+            // Generic Access (0x1800) or Generic Attribute (0x1801) in the SDP UUID list means
+            // the device claims ATT-over-BR/EDR support. We surface the (likely-empty) GATT
+            // section so the user can see we tried but the connection / pairing failed.
+            val canonical = svc.uuid.lowercase()
+            canonical.startsWith("00001800-") || canonical.startsWith("00001801-") ||
+                canonical == "1800" || canonical == "1801"
+        }
+        // For BR/EDR-only devices, hide the GATT section entirely unless we either captured
+        // services (cached GATT) or SDP claimed ATT support. Avoids the misleading
+        // "0 services / 0 characteristics discovered" line on every Classic peer.
+        val isBrEdrOnly = transport == Transport.BREDR
+        if (isBrEdrOnly && servicesUuids.isEmpty() && !sdpIndicatesGatt) return
+
         val characteristicCount = servicesUuids.sumOf { it.characteristics.size }
         val title = stringResource(
-            R.string.services_and_characteristics_discovered,
+            R.string.device_details_gatt_services_header,
             servicesUuids.size,
             characteristicCount,
         )
-        ExpandableLine(title) {
+        ExpandableLine(title, initiallyExpanded = false) {
             servicesUuids.forEach { service ->
                 ServiceDetails(service, viewModel)
             }

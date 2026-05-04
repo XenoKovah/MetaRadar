@@ -278,11 +278,14 @@ class BulkEnumerateGattInteractor(
             }
             devicesRepository.updateSdpUuids(device.address, canonical)
             btidesRepository.appendSDPDiscovery(device.address, uuids, timestampMs)
-            // Optional GATT-over-BR/EDR attempt — only fires when the SDP UUID list claims ATT
-            // support. Most peers don't, so the conditional keeps wasted connection budget low.
-            if (canonical.any { it.startsWith("00001800-") || it.startsWith("00001801-") || it == "1800" || it == "1801" }) {
-                attemptGattOverBrEdr(device)
-            }
+            // Always attempt GATT-over-BR/EDR for any responsive Classic peer. Apple devices
+            // (iPhone, iPad) expose vendor-specific GATT data over BR/EDR but don't necessarily
+            // advertise Generic Access (0x1800) / Generic Attribute (0x1801) in their SDP
+            // ServiceClassIDList — the previous "only attempt when SDP says GATT" gate was too
+            // strict and skipped exactly the devices the user cares about. Peers that don't
+            // support GATT-over-BR/EDR (e.g. Beats headphones) fail-fast within the 8s
+            // BR_EDR_GATT_TIMEOUT, which is a small price for catching the Apple case.
+            attemptGattOverBrEdr(device)
             EnumResult(Outcome.SDP_SUCCESS)
         } catch (e: TimeoutFallback) {
             EnumResult(Outcome.SDP_TIMEOUT, "SDP fetch hit ${PER_DEVICE_TIMEOUT.inWholeSeconds}s timeout")

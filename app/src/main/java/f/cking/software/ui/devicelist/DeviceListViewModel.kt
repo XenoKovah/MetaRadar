@@ -67,6 +67,7 @@ class DeviceListViewModel(
     var quickFilters: List<FilterHolder> by mutableStateOf(
         listOf(
             DefaultFilters.notApple(context),
+            DefaultFilters.btc(context),
         )
     )
     var enjoyTheAppState: EnjoyTheAppState by mutableStateOf(EnjoyTheAppState.None)
@@ -383,6 +384,19 @@ class DeviceListViewModel(
             filter = DeviceFilter.Not(
                 filter = DeviceFilter.Manufacturer(ManufacturerInfo.APPLE_ID)
             )
+        )
+
+        /**
+         * "BTC" quick-filter: any device seen on the BR/EDR radio. Includes DUAL because a
+         * dual-mode device that responded to inquiry IS a BR/EDR-discoverable device, even
+         * if its LE side also surfaced.
+         */
+        fun btc(context: Context) = FilterHolder(
+            displayName = context.getString(R.string.filter_btc),
+            filter = DeviceFilter.TransportFilter(
+                transportOrdinal = f.cking.software.domain.model.Transport.BREDR.ordinal,
+                includeDual = true,
+            ),
         )
 
     }
