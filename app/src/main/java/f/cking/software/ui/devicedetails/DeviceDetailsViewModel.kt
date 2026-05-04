@@ -67,6 +67,19 @@ class DeviceDetailsViewModel(
 
     var deviceState: DeviceData? by mutableStateOf(null)
     var pointsState: List<LocationModel> by mutableStateOf(emptyList())
+    /**
+     * Per-detection RSSI keyed by [LocationModel.time]. Sidecar to [pointsState] so the
+     * existing markers/path rendering code stays untouched, while the heatmap renderer can
+     * colour each point by signal strength. Keys are missing (not null) for older detections
+     * recorded before migration 21→22.
+     */
+    var rssiByTime: Map<Long, Int?> by mutableStateOf(emptyMap())
+    /**
+     * Weighted-centroid "best-fit" position computed from the RSSI samples in
+     * [pointsState]/[rssiByTime]. Null when there's not enough data (no samples with RSSI, or
+     * all samples within a few metres of each other). Rendered as a black marker on the map.
+     */
+    var bestFitLocation: LocationModel? by mutableStateOf(null)
     var cameraState: MapCameraState by mutableStateOf(DEFAULT_MAP_CAMERA_STATE)
     var historyPeriod by mutableStateOf(DEFAULT_HISTORY_PERIOD)
     var markersInLoadingState by mutableStateOf(false)
@@ -591,25 +604,73 @@ class DeviceDetailsViewModel(
 
     private suspend fun refreshLocationHistory(address: String, autotunePeriod: Boolean) {
         val fromTime = System.currentTimeMillis() - historyPeriod.periodMills
-        val fetched = locationRepository.getAllLocationsByAddress(address, fromTime = fromTime)
+        // Use the RSSI-aware query so the heatmap and best-fit marker have signal-strength
+        // data. Markers/path code only needs lat/lng/time, so we project the rows down to
+        // LocationModel for [pointsState] and keep RSSI in a sidecar map keyed by time.
+        val fetchedRows = locationRepository.getRssiLocationsByAddress(address, fromTime = fromTime)
         val nextStep = historyPeriod.next()
 
-        val shouldStepNext = autotunePeriod && fetched.isEmpty() && nextStep != null
+        val shouldStepNext = autotunePeriod && fetchedRows.isEmpty() && nextStep != null
 
         if (shouldStepNext) {
             selectHistoryPeriodSelected(nextStep, address, autotunePeriod)
         }
 
-        if (fetched.size > MAX_POINTS_FOR_MARKERS) {
+        if (fetchedRows.size > MAX_POINTS_FOR_MARKERS) {
             pointsStyle = PointsStyle.PATH
         }
 
-        if (fetched.size > MAX_POINTS_FOR_HEATMAP) {
+        if (fetchedRows.size > MAX_POINTS_FOR_HEATMAP) {
             useHeatmap = false
         }
 
-        pointsState = fetched
+        pointsState = fetchedRows.map { LocationModel(lat = it.lat, lng = it.lng, time = it.time) }
+        rssiByTime = fetchedRows.associate { it.time to it.rssi }
+        bestFitLocation = computeBestFitLocation(fetchedRows)
         updateCameraPosition(pointsState, currentLocation)
+    }
+
+    /**
+     * Weighted centroid of [rows], weighting by linear power (10^(rssi/10)) so a -45 dBm
+     * sample carries ~5600× the influence of a -82 dBm one. This is the standard simple
+     * approach for RSSI-based positioning when transmit power is unknown — it doesn't
+     * estimate distances, just biases the centroid toward strong-signal samples.
+     *
+     * Returns null if no rows have RSSI (older data only) or if the result would be
+     * indistinguishable from the input cloud (≤ 1 m apart from every input point — no
+     * meaningful "best fit" to extract). The threshold rules out rendering a redundant
+     * marker on top of a single visited spot.
+     */
+    private fun computeBestFitLocation(rows: List<f.cking.software.data.database.dao.RssiLocationRow>): LocationModel? {
+        val withRssi = rows.filter { it.rssi != null }
+        if (withRssi.isEmpty()) return null
+
+        var sumW = 0.0
+        var sumLat = 0.0
+        var sumLng = 0.0
+        for (r in withRssi) {
+            // Power weight: 10^(rssi/10). Strong signal → big weight. Mathematically the
+            // linear-scale equivalent of the RSSI dBm reading.
+            val w = Math.pow(10.0, (r.rssi ?: continue) / 10.0)
+            sumW += w
+            sumLat += w * r.lat
+            sumLng += w * r.lng
+        }
+        if (sumW <= 0.0) return null
+        val estLat = sumLat / sumW
+        val estLng = sumLng / sumW
+        val tMs = withRssi.maxOf { it.time }
+
+        // Reject when the cloud is essentially a single point — the centroid would land on
+        // top of every sample and clutter the map.
+        val minDistanceMetersFromAny = withRssi.minOf {
+            LocationModel(lat = it.lat, lng = it.lng, time = it.time)
+                .distanceTo(LocationModel(lat = estLat, lng = estLng, time = tMs))
+                .toDouble()
+        }
+        if (withRssi.size < 2 && minDistanceMetersFromAny < 1.0) return null
+
+        return LocationModel(lat = estLat, lng = estLng, time = tMs)
     }
 
     private fun updateCameraPosition(points: List<LocationModel>, currentLocation: LocationModel?) {

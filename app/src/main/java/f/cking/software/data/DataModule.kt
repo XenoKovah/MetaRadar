@@ -30,7 +30,7 @@ class DataModule(
         single { globalScope }
         single { BTIDESRepository(get()) }
         single { CluesRepository(get()) }
-        single { BleScannerHelper(get(), get(), get(), get(), get()) }
+        single { BleScannerHelper(get(), get(), get(), get(), get(), get()) }
         single { BleFiltersProvider(get()) }
         single { get<Context>().getSharedPreferences(sharedPreferencesName, MODE_PRIVATE) }
         single { SettingsRepository(get()) }

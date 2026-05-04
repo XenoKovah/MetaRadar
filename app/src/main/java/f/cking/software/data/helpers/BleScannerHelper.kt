@@ -21,6 +21,7 @@ import android.os.Handler
 import android.os.Looper
 import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.repo.SettingsRepository
+import f.cking.software.domain.interactor.VendorIdentifier
 import f.cking.software.domain.model.BleScanDevice
 import f.cking.software.toBase64
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,7 @@ class BleScannerHelper(
     private val powerModeHelper: PowerModeHelper,
     private val settingsRepository: SettingsRepository,
     private val btidesRepository: BTIDESRepository,
+    private val vendorIdentifier: VendorIdentifier,
 ) {
 
     private val btidesScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -150,6 +152,24 @@ class BleScannerHelper(
     }
 
     private suspend fun recordToBTIDESOffThread(raw: RawScanResult, device: BleScanDevice) {
+        // When scanning was started by the Connect All pane (mode == CONNECT_ALL_AUTO) and the
+        // user has the corresponding vendor-skip toggle on, we omit the advertisement from the
+        // BTIDES log entirely. This matches the GATT-side behaviour (Connect All never tries
+        // to enumerate Apple/Samsung when the toggles are on, and discards the buffered GATT
+        // records on a mid-enumeration vendor match).
+        //
+        // Other scan modes (USER_EXPLICIT from the Devices-tab FAB, or NONE / background) keep
+        // the toggles ignored — they exist to gate Connect All, not to filter scans the user
+        // started for general-purpose capture.
+        val skipMode = settingsRepository.getScanStartMode() == SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO
+        if (skipMode) {
+            val skipApple = settingsRepository.getBulkSkipApple()
+            val skipSamsung = settingsRepository.getBulkSkipSamsung()
+            if (vendorIdentifier.shouldSkipByScanRecord(raw.scanRecordRaw, raw.address, raw.addressType, skipApple, skipSamsung)) {
+                return
+            }
+        }
+
         val (advType, advTypeStr) = inferAdvType(raw.isLegacy, raw.isConnectable)
         val bdaddrRand = inferBdaddrRand(raw.addressType, raw.address)
         try {
@@ -531,7 +551,10 @@ class BleScannerHelper(
         }
 
         if (inProgress.value) {
-            Timber.tag(TAG).e("BLE Scan failed because previous scan is not finished")
+            // Not actually a failure — happens normally when the Connect All candidate-poll
+            // ticks while an earlier scan window is still in flight. Demoted to debug so we
+            // don't spam logcat at red-error level for an expected race.
+            Timber.tag(TAG).d("Scan request ignored: previous scan is still in flight")
         } else {
             this@BleScannerHelper.scanListener = scanListener
             batch.clear()

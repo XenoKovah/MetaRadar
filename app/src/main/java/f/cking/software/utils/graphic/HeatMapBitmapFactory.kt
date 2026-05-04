@@ -26,7 +26,30 @@ import kotlin.math.tan
  */
 object HeatMapBitmapFactory {
 
-    data class Position(val location: Location, val radiusMeters: Float)
+    /**
+     * One sample plotted on the heatmap.
+     * @param rssi optional RSSI in dBm (e.g. -45 for very strong, -100 for very weak). When
+     * present and the renderer is in [ColorMode.RSSI] mode, the sample's pixel colour comes
+     * from this value rather than from sample density. Null means "no RSSI information" —
+     * the renderer falls back to density-only colouring for the affected pixel.
+     */
+    data class Position(
+        val location: Location,
+        val radiusMeters: Float,
+        val rssi: Int? = null,
+    )
+
+    enum class ColorMode {
+        /** Original behaviour: per-pixel colour follows sample-density (low → red, high → green). */
+        DENSITY,
+
+        /**
+         * RSSI-based colouring: per-pixel colour follows the strongest RSSI of any contributing
+         * sample. -45 dBm or higher → red, -100 dBm or lower → green, linear gradient between.
+         * Alpha still tracks density so blank areas remain transparent.
+         */
+        RSSI,
+    }
     data class Tile(val topLeft: Location, val bottomRight: Location) {
 
         /**
@@ -127,6 +150,7 @@ object HeatMapBitmapFactory {
         widthPx: Int,
         downsample: Int,
         blurSigmaPx: Float,
+        colorMode: ColorMode,
     ): Bitmap {
         fun metersPerDegLat(): Double = 111_320.0
         fun metersPerDegLng(atLatDeg: Double): Double =
@@ -160,6 +184,10 @@ object HeatMapBitmapFactory {
         fun idxL(x: Int, y: Int) = y * wL + x
 
         val intensityL = FloatArray(sizeL)
+        // Per-pixel best (highest) RSSI of any contributing sample. Initialized to a sentinel
+        // below RSSI_MIN_DBM so the first contributing sample always wins. Only allocated when
+        // we'll actually use it — saves ~4 MB at full tile resolution.
+        val rssiL: FloatArray? = if (colorMode == ColorMode.RSSI) FloatArray(sizeL) { Float.NEGATIVE_INFINITY } else null
 
         fun smoothstep(t: Float): Float {
             val x = t.coerceIn(0f, 1f)
@@ -190,7 +218,10 @@ object HeatMapBitmapFactory {
             }
         }
 
-        // MAX-union stamping
+        // MAX-union stamping. Two parallel max passes when in RSSI mode: density (alpha) and
+        // RSSI (colour). They evolve independently because a strong-RSSI sample with a small
+        // kernel weight should still win the colour for its pixel even if a weaker-RSSI sample
+        // has higher density there.
         for (pos in positions) {
             val (cx, cy) = latLngToPixelLow(pos.location.latitude, pos.location.longitude)
             val rPxF = max(1f, pos.radiusMeters * pxPerMeter_L.toFloat())
@@ -202,6 +233,7 @@ object HeatMapBitmapFactory {
             val x0 = floor(cx - rPx).toInt()
             val y0 = floor(cy - rPx).toInt()
 
+            val posRssi = pos.rssi?.toFloat()
             for (ky in 0 until d) {
                 val y = y0 + ky
                 if (y !in 0 until hL) continue
@@ -214,6 +246,9 @@ object HeatMapBitmapFactory {
                     if (v <= 0f) continue
                     val id = rowBase + x
                     if (v > intensityL[id]) intensityL[id] = v
+                    if (rssiL != null && posRssi != null && posRssi > rssiL[id]) {
+                        rssiL[id] = posRssi
+                    }
                 }
             }
         }
@@ -223,11 +258,14 @@ object HeatMapBitmapFactory {
         }
 
         val blurredL = gaussianBlurSeparable(intensityL, wL, hL, blurSigmaPx)
+        // RSSI grid is upsampled with nearest-neighbour (no Gaussian blur). Blurring it would
+        // smear strong-RSSI pixels into nearby weak-RSSI cells; the user expects the strongest
+        // sample's location to stay distinctly red.
 
         // Upscale + colorize (proper gradient)
         val out = IntArray(widthPx * heightPx)
 
-        fun sampleLow(x: Float, y: Float): Float {
+        fun sampleLow(buf: FloatArray, x: Float, y: Float): Float {
             val x0i = floor(x).toInt().coerceIn(0, wL - 1)
             val y0i = floor(y).toInt().coerceIn(0, hL - 1)
             val x1i = (x0i + 1).coerceIn(0, wL - 1)
@@ -235,10 +273,10 @@ object HeatMapBitmapFactory {
             val fx = x - x0i
             val fy = y - y0i
 
-            val v00 = blurredL[idxL(x0i, y0i)]
-            val v10 = blurredL[idxL(x1i, y0i)]
-            val v01 = blurredL[idxL(x0i, y1i)]
-            val v11 = blurredL[idxL(x1i, y1i)]
+            val v00 = buf[idxL(x0i, y0i)]
+            val v10 = buf[idxL(x1i, y0i)]
+            val v01 = buf[idxL(x0i, y1i)]
+            val v11 = buf[idxL(x1i, y1i)]
 
             val vx0 = v00 * (1 - fx) + v10 * fx
             val vx1 = v01 * (1 - fx) + v11 * fx
@@ -247,20 +285,32 @@ object HeatMapBitmapFactory {
 
         // visibility boost so lone blobs aren't too faint
         val alphaScale = 1.6f
+        // RSSI → colour mapping. RSSI_MAX_DBM → fully red, RSSI_MIN_DBM → fully green; linear
+        // interpolation in between.
+        val rssiSpan = (RSSI_MAX_DBM - RSSI_MIN_DBM).toFloat()
 
         var iOut = 0
         for (y in 0 until heightPx) {
             val yL = y.toFloat() / ds
             for (x in 0 until widthPx) {
                 val xL = x.toFloat() / ds
-                val vRaw = sampleLow(xL, yL).coerceIn(0f, 1f)
-
+                val vRaw = sampleLow(blurredL, xL, yL).coerceIn(0f, 1f)
                 val v = min(1f, vRaw * alphaScale)
-
                 val a = (v * 255f).toInt()
-                val r = ((1f - v) * 255f).toInt()
-                val g = (v * 255f).toInt()
-                val b = 0
+
+                val (r, g, b) = if (rssiL != null) {
+                    // Sample the un-blurred RSSI grid. Cells with no data are at -∞; treat
+                    // those as RSSI_MIN_DBM so they end up as green-ish (matching low-signal).
+                    val xi = (xL.toInt()).coerceIn(0, wL - 1)
+                    val yi = (yL.toInt()).coerceIn(0, hL - 1)
+                    val rssi = rssiL[idxL(xi, yi)]
+                    val rssiDbm = if (rssi.isFinite()) rssi else RSSI_MIN_DBM.toFloat()
+                    val t = ((rssiDbm - RSSI_MIN_DBM) / rssiSpan).coerceIn(0f, 1f)
+                    Triple((255f * t).toInt(), (255f * (1f - t)).toInt(), 0)
+                } else {
+                    // Density mode (legacy): low density = red, high density = green.
+                    Triple(((1f - v) * 255f).toInt(), (v * 255f).toInt(), 0)
+                }
 
                 out[iOut++] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
@@ -402,7 +452,8 @@ object HeatMapBitmapFactory {
         val renderPaddingMeters: Double,
         val downsample: Int = 5,
         val blurSigmaPxLow: Float = 4f,
-        val debugBorderPx: Int = 0
+        val debugBorderPx: Int = 0,
+        val colorMode: ColorMode = ColorMode.DENSITY,
     )
 
     private val bitmapCache = LruCache<BitmapCacheKey, Bitmap>(maxSize = 100)
@@ -461,11 +512,12 @@ object HeatMapBitmapFactory {
         renderPaddingMeters: Double,
         downsample: Int = 4,
         blurSigmaPxLow: Float = 4f,
-        debugBorderPx: Int = 0
+        debugBorderPx: Int = 0,
+        colorMode: ColorMode = ColorMode.DENSITY,
     ): Bitmap {
         require(widthPxCore > 0)
 
-        val key = BitmapCacheKey(positionsAll, coreTile, widthPxCore, renderPaddingMeters, downsample, blurSigmaPxLow, debugBorderPx)
+        val key = BitmapCacheKey(positionsAll, coreTile, widthPxCore, renderPaddingMeters, downsample, blurSigmaPxLow, debugBorderPx, colorMode)
 
         val cachedBitmap = bitmapCache[key]
         if (cachedBitmap != null) return cachedBitmap
@@ -484,6 +536,7 @@ object HeatMapBitmapFactory {
             widthPx = computeWidthForRenderTile(coreTile, renderTile, widthPxCore),
             downsample = downsample,
             blurSigmaPx = blurSigmaPxLow,
+            colorMode = colorMode,
         )
 
         // 4) Crop padded bitmap back to core area
@@ -650,6 +703,18 @@ object HeatMapBitmapFactory {
 
         return result
     }
+
+    /**
+     * Strongest signal we treat as fully red on the RSSI heatmap. Anything stronger gets
+     * clamped to the same red. -45 dBm is "device almost on top of the receiver."
+     */
+    const val RSSI_MAX_DBM: Int = -45
+
+    /**
+     * Weakest signal we treat as fully green on the RSSI heatmap. Anything weaker gets
+     * clamped to the same green. -100 dBm is at the floor of usable BLE reception.
+     */
+    const val RSSI_MIN_DBM: Int = -100
 
     private fun drawDebugBorder(
         bitmap: Bitmap,

@@ -15,7 +15,6 @@ import f.cking.software.domain.model.DeviceData
 import f.cking.software.service.BgScanService
 import f.cking.software.ui.ScreenNavigationCommands
 import f.cking.software.utils.navigation.Router
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -33,6 +32,7 @@ class ConnectAllViewModel(
     private val devicesRepository: DevicesRepository,
     private val vendorIdentifier: VendorIdentifier,
     private val permissionHelper: PermissionHelper,
+    private val connectAllSession: ConnectAllSession,
 ) : ViewModel() {
 
     var bulkSkipApple: Boolean by mutableStateOf(settingsRepository.getBulkSkipApple())
@@ -53,9 +53,6 @@ class ConnectAllViewModel(
     var errorDetails: List<ErrorEntry> by mutableStateOf(emptyList())
     /** Whether the persistent "Done: …" summary is expanded to reveal the per-device errors. */
     var errorsExpanded: Boolean by mutableStateOf(false)
-    private var bulkJob: Job? = null
-    /** Addresses already enumerated this session — never re-attempted under "Retry forever". */
-    private val successfulAddresses: MutableSet<String> = mutableSetOf()
 
     /**
      * Live preview of devices the next "Connect to all" pass would attempt — visible + connectable
@@ -71,12 +68,33 @@ class ConnectAllViewModel(
 
     init {
         observeCandidates()
+        observeSession()
     }
 
     private fun observeCandidates() {
         viewModelScope.launch {
             devicesRepository.observeLastBatch().collect { batch ->
                 recomputeCandidates(batch)
+            }
+        }
+    }
+
+    /**
+     * Mirror the singleton [ConnectAllSession] state into the local Compose-observable fields
+     * so screen code keeps reading from the same `viewModel.connectedDevices`,
+     * `viewModel.statusLine`, etc. surface as before. This is what makes a boot-started
+     * Connect All session visible in the UI when the user later opens the app — the session
+     * has been accumulating connectedDevices, and the first VM observation pulls them in.
+     */
+    private fun observeSession() {
+        viewModelScope.launch {
+            connectAllSession.state.collect { s ->
+                inProgress = s.inProgress
+                statusLine = s.statusLine
+                lastDoneSummary = s.lastDoneSummary
+                connectedDevices = s.connectedDevices
+                errorDetails = s.errorDetails.map { ErrorEntry(it.device, it.outcome, it.message) }
+                errorsExpanded = s.errorsExpanded
             }
         }
     }
@@ -147,6 +165,11 @@ class ConnectAllViewModel(
         paneVisible = false
         pollJob?.cancel()
         pollJob = null
+        // Don't tear down the foreground scan service if a Connect All session is still
+        // running — including a session that was started by the boot receiver. The user can
+        // navigate away from the pane and back; the underlying capture must survive both
+        // transitions or the boot-started behaviour would silently die on first pane exit.
+        if (connectAllSession.isActive) return
         if (settingsRepository.getScanStartMode() == SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO) {
             BgScanService.stop(context)
             settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.NONE)
@@ -196,93 +219,15 @@ class ConnectAllViewModel(
     }
 
     fun onToggleErrorsExpanded() {
-        errorsExpanded = !errorsExpanded
+        connectAllSession.toggleErrorsExpanded()
     }
 
     fun onConnectAllClick() {
-        if (bulkJob?.isActive == true) {
-            bulkJob?.cancel()
+        if (connectAllSession.isActive) {
+            connectAllSession.stop()
             return
         }
-        // A fresh session — reset everything we accumulated for the previous one.
-        connectedDevices = emptyList()
-        errorDetails = emptyList()
-        errorsExpanded = false
-        lastDoneSummary = ""
-        successfulAddresses.clear()
-        bulkJob = viewModelScope.launch {
-            inProgress = true
-            statusLine = ""
-            try {
-                runEnumerationLoop()
-            } catch (ce: CancellationException) {
-                statusLine = "Cancelled"
-                throw ce
-            } catch (e: Throwable) {
-                Timber.tag("ConnectAll").e(e)
-                statusLine = "Failed: ${e.message ?: e::class.java.simpleName}"
-            } finally {
-                inProgress = false
-            }
-        }
-    }
-
-    /**
-     * Runs the enumeration once. If [retryForever] is enabled, immediately starts another pass
-     * after each finishes — but always with [successfulAddresses] excluded so previously-captured
-     * peers are not re-attempted. The loop exits when the user cancels the surrounding job.
-     */
-    private suspend fun runEnumerationLoop() {
-        var pass = 0
-        while (true) {
-            pass++
-            // Per-pass error list — each round shows only the failures from that round.
-            val passErrors = mutableListOf<ErrorEntry>()
-            bulkEnumerateGattInteractor.execute(skipAddresses = successfulAddresses.toSet()).collect { progress ->
-                when (progress) {
-                    is BulkEnumerateGattInteractor.Progress.Started -> {
-                        statusLine = if (progress.total == 0 && progress.skippedAdvFilter == 0) {
-                            if (retryForever) "Pass $pass: nothing to attempt — waiting for new visible devices"
-                            else "No connectable devices visible"
-                        } else {
-                            val passLabel = if (retryForever) "Pass $pass — " else ""
-                            "${passLabel}Starting on ${progress.total} device${if (progress.total == 1) "" else "s"} " +
-                                    "(${progress.skippedAdvFilter} pre-skipped)"
-                        }
-                    }
-                    is BulkEnumerateGattInteractor.Progress.DeviceStarted -> {
-                        statusLine = "Connecting ${progress.index + 1}/${progress.total}: " +
-                                progress.device.buildDisplayName()
-                    }
-                    is BulkEnumerateGattInteractor.Progress.DeviceFinished -> {
-                        statusLine = "${progress.index + 1}/${progress.total} ${progress.device.buildDisplayName()} → ${progress.outcome}"
-                        when (progress.outcome) {
-                            BulkEnumerateGattInteractor.Outcome.SUCCESS -> {
-                                connectedDevices = connectedDevices + progress.device
-                                successfulAddresses += progress.device.address.uppercase()
-                            }
-                            BulkEnumerateGattInteractor.Outcome.ERROR,
-                            BulkEnumerateGattInteractor.Outcome.TIMEOUT,
-                            -> {
-                                passErrors += ErrorEntry(progress.device, progress.outcome, progress.errorMessage)
-                            }
-                            BulkEnumerateGattInteractor.Outcome.SKIPPED_VENDOR -> Unit
-                        }
-                    }
-                    is BulkEnumerateGattInteractor.Progress.Done -> {
-                        errorDetails = passErrors.toList()
-                        lastDoneSummary = "Done: ${progress.succeeded} connected, " +
-                                "${progress.advSkipped + progress.skippedVendor} skipped, " +
-                                "${progress.errors} errors"
-                        statusLine = lastDoneSummary
-                    }
-                }
-            }
-            if (!retryForever) return
-            // Brief pause between passes so the BLE stack can settle and advertisements arrive
-            // before we re-snapshot the visible-device list.
-            delay(NEXT_PASS_DELAY_MS)
-        }
+        connectAllSession.start(retryForever = retryForever)
     }
 
     fun onDeviceClick(device: DeviceData) {
@@ -290,7 +235,6 @@ class ConnectAllViewModel(
     }
 
     companion object {
-        private const val NEXT_PASS_DELAY_MS = 1000L
         private const val CANDIDATE_POLL_INTERVAL_MS = 10_000L
     }
 }

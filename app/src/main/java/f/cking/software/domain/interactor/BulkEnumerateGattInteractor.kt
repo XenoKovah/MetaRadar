@@ -54,52 +54,95 @@ class BulkEnumerateGattInteractor(
     private data class EnumResult(val outcome: Outcome, val errorMessage: String? = null)
 
     /**
-     * @param skipAddresses devices already successfully enumerated in this session that should
-     * be skipped silently — used by the Connect All "Retry forever" loop so we don't re-attempt
-     * connections to peers that already gave us their full GATT.
+     * Drives one pass.
+     *
+     * Re-snapshots the last batch *between every attempt* and re-sorts by RSSI, so a device
+     * that got closer (better RSSI) since the previous attempt jumps ahead of one that got
+     * further. Matches the user-walking case: by the time you've processed device #3, the
+     * RSSI ranking of devices #4..N is no longer the ranking from when the pass started.
+     *
+     * @param skipAddresses devices already successfully enumerated in this session — never
+     * re-attempted (across passes; managed by the VM).
+     * @param attemptCounts session-wide attempt counter (address.uppercase() → count). Mutated
+     * in place: incremented on every connect attempt. Devices whose count reaches
+     * [maxAttemptsPerDevice] get filtered out of subsequent picks for the rest of the session.
+     * The map is owned by the VM so the cap survives across passes under "Retry forever".
      */
-    fun execute(skipAddresses: Set<String> = emptySet()): Flow<Progress> = channelFlow {
+    fun execute(
+        skipAddresses: Set<String> = emptySet(),
+        attemptCounts: MutableMap<String, Int> = mutableMapOf(),
+        maxAttemptsPerDevice: Int = MAX_ATTEMPTS_PER_DEVICE,
+    ): Flow<Progress> = channelFlow {
         val skipApple = settingsRepository.getBulkSkipApple()
         val skipSamsung = settingsRepository.getBulkSkipSamsung()
-
-        val snapshot = devicesRepository.observeLastBatch().first().toList()
-        val connectable = snapshot.filter { it.isConnectable }
         val normalizedSkip = skipAddresses.map { it.uppercase() }.toSet()
 
-        // Pre-filter on advertisement-time signals (MSD/OUI/UUIDs) and on the already-enumerated
-        // skip set.
-        val advSkipped = mutableListOf<DeviceData>()
-        val candidates = mutableListOf<DeviceData>()
-        for (d in connectable) {
-            if (d.address.uppercase() in normalizedSkip) continue
-            if (vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)) advSkipped += d else candidates += d
+        // Initial snapshot: count vendor-pre-filtered devices for the Started progress event so
+        // the user sees "(N pre-skipped)" up front. The same vendor filter is re-applied on each
+        // re-snapshot below.
+        val initialSnapshot = devicesRepository.observeLastBatch().first().toList()
+        val initialConnectable = initialSnapshot.filter { it.isConnectable }
+        val initialAdvSkippedCount = initialConnectable.count { d ->
+            d.address.uppercase() !in normalizedSkip &&
+                vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)
         }
-
-        val ordered = candidates.sortedByDescending { it.rssi ?: Int.MIN_VALUE }
-        send(Progress.Started(total = ordered.size, skippedAdvFilter = advSkipped.size))
+        val initialCandidateCount = initialConnectable.count { d ->
+            d.address.uppercase() !in normalizedSkip &&
+                !vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)
+        }
+        send(Progress.Started(total = initialCandidateCount, skippedAdvFilter = initialAdvSkippedCount))
 
         var succeeded = 0
         var skippedVendor = 0
         var errors = 0
+        var attemptIndex = 0
+        // Addresses we've completed an attempt on this pass — even if not yet hitting the
+        // session-wide cap, we don't loop on the same device twice in one pass.
+        val attemptedThisPass = mutableSetOf<String>()
 
-        ordered.forEachIndexed { index, device ->
-            send(Progress.DeviceStarted(index = index, total = ordered.size, device = device))
-            val result = enumerateOne(device, skipApple, skipSamsung)
+        while (true) {
+            val snapshot = devicesRepository.observeLastBatch().first().toList()
+            val candidates = snapshot
+                .asSequence()
+                .filter { it.isConnectable }
+                .filter { it.address.uppercase() !in normalizedSkip }
+                .filter { it.address.uppercase() !in attemptedThisPass }
+                .filter { (attemptCounts[it.address.uppercase()] ?: 0) < maxAttemptsPerDevice }
+                .filterNot { vendorIdentifier.shouldSkip(it, skipApple, skipSamsung) }
+                .toList()
+
+            if (candidates.isEmpty()) break
+
+            // Pick the highest-RSSI device that hasn't been attempted yet this pass — this is
+            // the "re-sort after every attempt" behaviour. Null RSSI sorts last.
+            val nextDevice = candidates.maxByOrNull { it.rssi ?: Int.MIN_VALUE } ?: break
+            val key = nextDevice.address.uppercase()
+
+            // Display total: max(initial, attempts_so_far + remaining_at_this_iter). Lets the
+            // UI keep counting up if extra devices appeared mid-pass.
+            val displayTotal = maxOf(initialCandidateCount, attemptIndex + candidates.size)
+            send(Progress.DeviceStarted(index = attemptIndex, total = displayTotal, device = nextDevice))
+
+            attemptCounts[key] = (attemptCounts[key] ?: 0) + 1
+            attemptedThisPass += key
+
+            val result = enumerateOne(nextDevice, skipApple, skipSamsung)
             when (result.outcome) {
                 Outcome.SUCCESS -> succeeded++
                 Outcome.SKIPPED_VENDOR -> skippedVendor++
                 Outcome.ERROR, Outcome.TIMEOUT -> errors++
             }
-            send(Progress.DeviceFinished(index, ordered.size, device, result.outcome, result.errorMessage))
+            send(Progress.DeviceFinished(attemptIndex, displayTotal, nextDevice, result.outcome, result.errorMessage))
+            attemptIndex++
         }
 
         send(
             Progress.Done(
-                total = ordered.size,
+                total = attemptIndex,
                 succeeded = succeeded,
                 skippedVendor = skippedVendor,
                 errors = errors,
-                advSkipped = advSkipped.size,
+                advSkipped = initialAdvSkippedCount,
             )
         )
     }
@@ -238,6 +281,9 @@ class BulkEnumerateGattInteractor(
     companion object {
         private const val TAG = "BulkEnumerateGatt"
         private const val MAX_CHARS_PER_DEVICE = 12
+        // Per-Connect-All-session retry cap — once a device has failed this many times the
+        // user has to Stop and re-press "Connect to all" to give it another chance.
+        const val MAX_ATTEMPTS_PER_DEVICE = 5
         private val PER_DEVICE_TIMEOUT = 20.seconds
     }
 }

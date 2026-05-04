@@ -42,7 +42,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 21,
+    version = 22,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -133,6 +133,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_18_19,
                     MIGRATION_19_20,
                     MIGRATION_20_21,
+                    MIGRATION_21_22,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -255,6 +256,14 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_20_21 = migration(20, 21) {
             it.execSQL("CREATE INDEX IF NOT EXISTS `index_device_last_detect_time_ms` ON `device` (`last_detect_time_ms`);")
             it.execSQL("CREATE INDEX IF NOT EXISTS `index_apple_contacts_associated_address` ON `apple_contacts` (`associated_address`);")
+        }
+
+        // Per-detection RSSI on device_to_location. Older rows have NULL (we never recorded it
+        // before this migration); new rows record the RSSI of the strongest sample in the
+        // batch. Used by: BTIDES export's "highest-RSSI lat/lng per device" enrichment, the
+        // RSSI-coloured heatmap, and the weighted-centroid best-fit marker.
+        val MIGRATION_21_22 = migration(21, 22) {
+            it.execSQL("ALTER TABLE device_to_location ADD COLUMN rssi INTEGER DEFAULT NULL;")
         }
 
         private fun migration(

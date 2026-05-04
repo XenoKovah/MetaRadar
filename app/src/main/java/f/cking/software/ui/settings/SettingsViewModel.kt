@@ -73,6 +73,14 @@ class SettingsViewModel(
     var useGpsLocationOnly: Boolean by mutableStateOf(settingsRepository.getUseGpsLocationOnly())
     var locationData: LocationProvider.LocationHandle? by mutableStateOf(null)
     var runOnStartup: Boolean by mutableStateOf(settingsRepository.getRunOnStartup())
+    var runConnectAllOnStartup: Boolean by mutableStateOf(settingsRepository.getRunConnectAllOnStartup())
+    /**
+     * True while the "disable battery optimisations?" dialog should be shown. Triggered when
+     * either auto-start toggle is flipped on (and the app isn't already on the OS's
+     * ignore-battery-optimisations list). Single-shot per toggle action; dismissed by either
+     * "Open settings" (opens the system page) or "Skip".
+     */
+    var batteryOptimizationDialogVisible: Boolean by mutableStateOf(false)
     var wakeUpWhileScanning: Boolean by mutableStateOf(settingsRepository.getWakeUpScreenWhileScanning())
     var silentModeEnabled: Boolean by mutableStateOf(settingsRepository.getSilentMode())
 
@@ -282,6 +290,45 @@ class SettingsViewModel(
         val newValue = !settingsRepository.getRunOnStartup()
         settingsRepository.setRunOnStartup(newValue)
         runOnStartup = newValue
+        if (newValue) {
+            // Mutually exclusive with the Connect All variant.
+            settingsRepository.setRunConnectAllOnStartup(false)
+            runConnectAllOnStartup = false
+            maybePromptBatteryOptimization()
+        }
+    }
+
+    /**
+     * Toggle the Connect All boot-start. Mutually exclusive with [setRunOnStartup]: enabling
+     * one disables the other so we never have two boot-time scan owners contending for the
+     * foreground service. When turning ON, also prompts the user to opt the app out of
+     * battery optimisation (Android otherwise kills foreground scan services after a while).
+     */
+    fun setRunConnectAllOnStartup() {
+        val newValue = !settingsRepository.getRunConnectAllOnStartup()
+        settingsRepository.setRunConnectAllOnStartup(newValue)
+        runConnectAllOnStartup = newValue
+        if (newValue) {
+            settingsRepository.setRunOnStartup(false)
+            runOnStartup = false
+            maybePromptBatteryOptimization()
+        }
+    }
+
+    private fun maybePromptBatteryOptimization() {
+        // Skip the dialog if the app is already exempt — nothing to ask the user for.
+        val pm = context.getSystemService(Application.POWER_SERVICE) as? android.os.PowerManager
+        val alreadyIgnored = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+        if (!alreadyIgnored) batteryOptimizationDialogVisible = true
+    }
+
+    fun onBatteryOptimizationDialogDismiss() {
+        batteryOptimizationDialogVisible = false
+    }
+
+    fun onBatteryOptimizationDialogOpenSettings() {
+        batteryOptimizationDialogVisible = false
+        intentHelper.openIgnoreBatteryOptimizationSettings()
     }
 
     fun toggleWakeUpOnScreen() {

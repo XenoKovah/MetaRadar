@@ -57,6 +57,30 @@ class IntentHelper(
         activityProvider.requireActivity().startActivity(intent)
     }
 
+    /**
+     * Open the system battery-optimisation page so the user can add this app to the
+     * "ignore battery optimisation" list. Required for the boot-launched scan / Connect All
+     * to keep running long-term — Android otherwise kills foreground services after a few
+     * minutes on a battery-saving doze cycle.
+     *
+     * Falls back to general battery-saver settings if the request-ignore intent isn't
+     * resolvable on this device (some OEMs hide it).
+     */
+    fun openIgnoreBatteryOptimizationSettings() {
+        val activity = activityProvider.requireActivity()
+        // Show the app already pre-selected on the system list so the user doesn't have to
+        // hunt for it. ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS opens directly into the
+        // confirmation dialog when the URI is the package name.
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.fromParts("package", context.packageName, null)
+        }
+        try {
+            activity.startActivity(intent)
+        } catch (_: Throwable) {
+            activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
     fun openLocationSettings() {
         val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
         activityProvider.requireActivity().startActivity(intent)

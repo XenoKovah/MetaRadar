@@ -267,6 +267,38 @@ object SettingsScreen {
     }
 
     @Composable
+    private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+        // Same dialog scaffold as CancelBTIDESExportDialog. Confirm → IntentHelper opens the
+        // OS battery-optimisation page; dismiss → just hide the dialog (the toggle remains
+        // ON, the user just chose not to opt out — the auto-start may then be killed by doze).
+        val dialogState = rememberMaterialDialogState(initialValue = true)
+        LaunchedEffect(dialogState.showing) {
+            if (!dialogState.showing) onDismiss()
+        }
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.background_startup_battery_dialog_dismiss),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.background_startup_battery_dialog_open_settings),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) {
+                    dialogState.hide()
+                    onConfirm()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(text = stringResource(R.string.background_startup_battery_dialog_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = stringResource(R.string.background_startup_battery_dialog_message))
+            }
+        }
+    }
+
+    @Composable
     private fun CancelBTIDESExportDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         val dialogState = rememberMaterialDialogState(initialValue = true)
         // Tying onCloseRequest into the VM happens via the dialog buttons below; observe state
@@ -480,6 +512,12 @@ object SettingsScreen {
 
     @Composable
     private fun AppSettings(viewModel: SettingsViewModel) {
+        if (viewModel.batteryOptimizationDialogVisible) {
+            BatteryOptimizationDialog(
+                onConfirm = { viewModel.onBatteryOptimizationDialogOpenSettings() },
+                onDismiss = { viewModel.onBatteryOptimizationDialogDismiss() },
+            )
+        }
         RoundedBox(internalPaddings = 0.dp) {
             Text(modifier = Modifier.padding(16.dp), text = stringResource(id = R.string.app_settings_title), fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(4.dp))
@@ -494,6 +532,12 @@ object SettingsScreen {
                 title = stringResource(R.string.launch_on_system_startup_title),
                 subtitle = null,
                 onClick = { viewModel.setRunOnStartup() }
+            )
+            Switcher(
+                value = viewModel.runConnectAllOnStartup,
+                title = stringResource(R.string.launch_connect_all_on_startup_title),
+                subtitle = stringResource(R.string.launch_connect_all_on_startup_subtitle),
+                onClick = { viewModel.setRunConnectAllOnStartup() }
             )
 
             Switcher(

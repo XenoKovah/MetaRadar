@@ -43,6 +43,20 @@ import java.io.OutputStream
 import java.io.RandomAccessFile
 
 /**
+ * The strongest-RSSI sample that placed a device at a known lat/lng. Returned by the export
+ * lookup function to enrich the per-device export record with "where this device's signal was
+ * strongest" metadata. The data lives in Room (device_to_location.rssi joined to location);
+ * BTIDESRepository receives it via a lookup function so it doesn't have to depend on the
+ * location tables directly.
+ */
+data class StrongestRssiLocation(
+    val lat: Double,
+    val lng: Double,
+    val rssi: Int?,
+    val timeMs: Long,
+)
+
+/**
  * Persists BLE advertisement scans and GATT observations to disk in BTIDES-compatible form.
  *
  * Live capture appends one JSONL record per advertisement / GATT event to a single log file.
@@ -485,6 +499,7 @@ class BTIDESRepository(
      */
     suspend fun exportTo(
         out: OutputStream,
+        strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Int = withContext(Dispatchers.IO) {
         // Snapshot the log size at export start. Live capture continues writing past this
@@ -521,9 +536,13 @@ class BTIDESRepository(
                         pass2Bytes += lineBytes
                         onProgress?.invoke(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
                     }
+                    // Look up the strongest-RSSI location for this device. Fail-soft: any lookup
+                    // failure or missing data is silently ignored (older detections pre-migration
+                    // 21→22 have no RSSI; offline-mode users have no locations at all).
+                    val strongest = runCatching { strongestRssiLookup(acc.bdaddr) }.getOrNull()
                     if (idx > 0) writer.write(",")
                     writer.write("\n  ")
-                    writer.writeJsonObjectStreaming(acc.toJsonObject(), INDENT_UNIT, INDENT_UNIT)
+                    writer.writeJsonObjectStreaming(acc.toJsonObject(strongest), INDENT_UNIT, INDENT_UNIT)
                     idx++
                 }
                 if (devFiles.isNotEmpty()) writer.write("\n")
@@ -584,10 +603,11 @@ class BTIDESRepository(
 
     suspend fun exportTo(
         uri: Uri,
+        strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Int = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        resolver.openOutputStream(uri, "wt")?.use { exportTo(it, onProgress) }
+        resolver.openOutputStream(uri, "wt")?.use { exportTo(it, strongestRssiLookup, onProgress) }
             ?: throw RuntimeException("Cannot open output stream for $uri")
     }
 
@@ -596,12 +616,13 @@ class BTIDESRepository(
      * the user is never left with a half-written `.btides` file masquerading as a complete one.
      */
     suspend fun exportToExternalFilesDir(
+        strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Pair<File, Int> = withContext(Dispatchers.IO) {
         val target = externalExportFile() ?: throw RuntimeException("External files dir is unavailable")
         target.parentFile?.mkdirs()
         val count = try {
-            target.outputStream().use { exportTo(it, onProgress) }
+            target.outputStream().use { exportTo(it, strongestRssiLookup, onProgress) }
         } catch (t: Throwable) {
             runCatching { target.delete() }
             throw t
@@ -741,12 +762,24 @@ class BTIDESRepository(
             }
         }
 
-        fun toJsonObject(): JsonObject = buildJsonObject {
+        fun toJsonObject(strongest: StrongestRssiLocation? = null): JsonObject = buildJsonObject {
             put("bdaddr", bdaddr)
             put("bdaddr_rand", rand)
             if (advChan.isNotEmpty()) put("AdvChanArray", JsonArray(advChan))
             if (services.isNotEmpty()) {
                 put("GATTArray", buildJsonArray { services.values.forEach { add(it.toJsonObject()) } })
+            }
+            // XenoMetaRadar extension (not part of upstream BTIDES): the lat/lng of the
+            // strongest sample we ever recorded for this device. Only emitted when we have
+            // both a location and an RSSI for at least one detection. The XMR_ prefix marks
+            // it as a vendor extension so downstream BTIDES parsers can ignore it cleanly.
+            if (strongest != null) {
+                putJsonObject("XMR_strongest_rssi_location") {
+                    put("lat", strongest.lat)
+                    put("lng", strongest.lng)
+                    if (strongest.rssi != null) put("rssi", strongest.rssi)
+                    put("unix_time_milli", strongest.timeMs)
+                }
             }
         }
     }

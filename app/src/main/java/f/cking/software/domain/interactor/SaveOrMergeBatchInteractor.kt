@@ -63,7 +63,13 @@ class SaveOrMergeBatchInteractor(
 
             val detectTime = batch.firstOrNull()?.scanTimeMs
             if (location != null && detectTime != null) {
-                locationRepository.saveLocation(location.toDomain(detectTime), batch.map { it.address })
+                // Per-detection RSSI: if the same address appears multiple times in the same
+                // batch (rare but possible), keep the strongest sample — that's what the
+                // RSSI-coloured heatmap and the trilateration weighted-centroid both want.
+                val rssiByAddress: Map<String, Int?> = batch
+                    .groupBy { it.address }
+                    .mapValues { (_, samples) -> samples.mapNotNull { it.rssi }.maxOrNull() }
+                locationRepository.saveLocation(location.toDomain(detectTime), rssiByAddress)
             }
 
             val knownDevicesCount = mergedDevices.count(isKnownDeviceInteractor::execute)

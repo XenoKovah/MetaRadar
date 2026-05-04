@@ -937,6 +937,9 @@ object DeviceDetailsScreen {
                 frameRate = frameRate,
                 provideIsCancelled = { !scope.isActive },
                 onBatchCompleted = { batchId, map ->
+                    // Re-assert best-fit z-order every batch: the inserts above pushed regular
+                    // markers onto the end of the overlays list, displacing the best-fit pin.
+                    map.overlays.bringBestFitToTop()
                     if (batchId % 10 == 0) {
                         map.invalidate()
                     }
@@ -955,6 +958,7 @@ object DeviceDetailsScreen {
                 },
                 onComplete = { map ->
                     isLoading.invoke(false)
+                    map.overlays.bringBestFitToTop()
                     map.invalidate()
                 },
                 onCancelled = { map ->
@@ -1055,8 +1059,59 @@ object DeviceDetailsScreen {
                 val committedViewport = committedViewport ?: return@LaunchedEffect
                 renderHeatmap(mapUpdate, committedViewport, viewModel, tilesState)
             }
+
+            // Best-fit black marker. Re-emitted whenever the underlying RSSI samples or the
+            // PointsStyle change — including pointsStyle in the keys ensures the marker is
+            // re-asserted (i.e. moved to the end of the overlays list, so it draws last and
+            // stays visible) after a style switch into PATH or HIDE_NON_BEST_FIT_MARKERS, both
+            // of which mutate `mapView.overlays` and could otherwise cover the marker.
+            val context = androidx.compose.ui.platform.LocalContext.current
+            LaunchedEffect(mapView, viewModel.bestFitLocation, viewModel.pointsState, viewModel.pointsStyle) {
+                val best = viewModel.bestFitLocation
+                mapView.overlays.removeAll { it is BestFitMarker }
+                if (best != null) {
+                    val marker = BestFitMarker(mapView).apply {
+                        position = GeoPoint(best.lat, best.lng)
+                        title = BEST_FIT_MARKER_TITLE
+                        // Tint the default osmdroid pin black to mark this as a fitted estimate
+                        // rather than an actual detected sample.
+                        val pin = androidx.core.content.ContextCompat
+                            .getDrawable(context, org.osmdroid.library.R.drawable.marker_default)
+                            ?.mutate()
+                        pin?.colorFilter = android.graphics.PorterDuffColorFilter(
+                            android.graphics.Color.BLACK,
+                            android.graphics.PorterDuff.Mode.SRC_IN,
+                        )
+                        if (pin != null) icon = pin
+                    }
+                    // Append → drawn last → on top.
+                    mapView.overlays.add(marker)
+                    mapView.invalidate()
+                }
+            }
         }
     }
+
+    /**
+     * Move the best-fit marker (if any) to the end of [this] so osmdroid draws it last and it
+     * never gets covered by a per-detection marker / polyline / fast-point overlay added after
+     * the best-fit was first inserted. Cheap O(N) — overlays list rarely has more than a few
+     * thousand entries on the Device Details screen.
+     */
+    private fun MutableList<Overlay>.bringBestFitToTop() {
+        val best = firstOrNull { it is BestFitMarker } ?: return
+        remove(best)
+        add(best)
+    }
+
+    /**
+     * Marker subclass used solely as a tag so the best-fit pin can be selectively removed
+     * without disturbing the per-detection markers — both rely on osmdroid's [Marker] type so
+     * a generic [removeAll] would clear them indiscriminately.
+     */
+    private class BestFitMarker(map: MapView) : Marker(map)
+
+    private val BEST_FIT_MARKER_TITLE = "Best-fit (RSSI-weighted)"
 
     private fun initMapState(map: MapView, colorScheme: ColorScheme) {
         map.setMultiTouchControls(true)
@@ -1141,9 +1196,14 @@ object DeviceDetailsScreen {
                         withContext(Dispatchers.Default) {
 
                             val positionsForTile = locations
-                                .mapNotNull {
-                                    it.takeIf { tile.contains(it, PADDING_METERS) }
-                                        ?.let { HeatMapBitmapFactory.Position(it, PADDING_METERS.toFloat()) }
+                                .mapNotNull { loc ->
+                                    if (!tile.contains(loc, PADDING_METERS)) return@mapNotNull null
+                                    // Pull the per-detection RSSI from the VM sidecar (keyed by
+                                    // location time). Missing entries carry null, which the
+                                    // factory treats as "no RSSI info" — those pixels stay
+                                    // green-by-default so old data doesn't disappear.
+                                    val rssi = viewModel.rssiByTime[loc.time]
+                                    HeatMapBitmapFactory.Position(loc, PADDING_METERS.toFloat(), rssi)
                                 }
                             val existedTile = tilesState.tiles[tile]
 
@@ -1170,6 +1230,7 @@ object DeviceDetailsScreen {
                                 widthPxCore = 300,
                                 renderPaddingMeters = PADDING_METERS,
                                 debugBorderPx = 0,
+                                colorMode = HeatMapBitmapFactory.ColorMode.RSSI,
                             )
 
                             yield()
@@ -1263,18 +1324,26 @@ object DeviceDetailsScreen {
 
                 val fastPointOverlay = SimpleFastPointOverlay(pt, fastPointOverlayOptions)
                 mapUpdate.map.overlays.add(fastPointOverlay)
+                mapUpdate.map.overlays.bringBestFitToTop()
                 mapUpdate.map.invalidate()
             }
 
             DeviceDetailsViewModel.PointsStyle.HIDE_MARKERS -> {
                 batchProcessor.cancel()
+                // Strip per-detection markers but leave the best-fit pin (clearPoints already
+                // spares BestFitMarker + the heatmap GroundOverlay). Re-assert z-order so the
+                // best-fit ends up on top of the heatmap rather than under it.
                 mapUpdate.map.overlays.clearPoints()
+                mapUpdate.map.overlays.bringBestFitToTop()
                 mapUpdate.map.invalidate()
             }
         }
     }
 
     private fun MutableList<Overlay>.clearPoints() {
-        this.removeAll { it !is GroundOverlay }
+        // Keep the heatmap (GroundOverlay) and the best-fit estimate marker (BestFitMarker).
+        // Both have their own LaunchedEffect-driven update paths and shouldn't be torn down by
+        // the per-detection-marker refresh.
+        this.removeAll { it !is GroundOverlay && it !is BestFitMarker }
     }
 }

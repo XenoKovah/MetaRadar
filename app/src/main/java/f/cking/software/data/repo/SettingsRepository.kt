@@ -46,6 +46,21 @@ class SettingsRepository(
         sharedPreferences.edit().putBoolean(KEY_RUN_ON_STARTUP, value).apply()
     }
 
+    /**
+     * "Launch Connect All at system startup". Mutually exclusive with [getRunOnStartup] —
+     * the SettingsViewModel enforces that, this layer just stores the flag. When true and
+     * BOOT_COMPLETED arrives, [BootBroadcastReceiver] starts the BLE service AND kicks off a
+     * Connect All retry-forever pass via [ConnectAllSession]. The Skip Apple / Skip Samsung
+     * toggles are respected via the existing settings (read each pass).
+     */
+    fun getRunConnectAllOnStartup(): Boolean {
+        return sharedPreferences.getBoolean(KEY_RUN_CONNECT_ALL_ON_STARTUP, false)
+    }
+
+    fun setRunConnectAllOnStartup(value: Boolean) {
+        sharedPreferences.edit().putBoolean(KEY_RUN_CONNECT_ALL_ON_STARTUP, value).apply()
+    }
+
     fun getFirstAppLaunchTime(): Long {
         return sharedPreferences.getLong(KEY_FIRST_APP_LAUNCH_TIME, NO_APP_LAUNCH_TIME)
     }
@@ -167,6 +182,7 @@ class SettingsRepository(
         private const val KEY_USE_GPS_ONLY = "key_use_gps_location_only"
         private const val KEY_PERMISSIONS_INTRO_WAS_SHOWN = "key_permissions_intro_was_shown"
         private const val KEY_RUN_ON_STARTUP = "key_run_on_startup"
+        private const val KEY_RUN_CONNECT_ALL_ON_STARTUP = "key_run_connect_all_on_startup"
         private const val KEY_FIRST_APP_LAUNCH_TIME = "key_first_app_launch_time"
         private const val KEY_ENJOY_THE_APP_ANSWERED = "key_enjoy_the_app_answered_v1"
         private const val KEY_ENJOY_THE_APP_STARTING_POINT = "key_enjoy_the_app_starting_point"

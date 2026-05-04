@@ -75,6 +75,59 @@ class VendorIdentifier(
         return (skipApple && vendor == Vendor.APPLE) || (skipSamsung && vendor == Vendor.SAMSUNG)
     }
 
+    /**
+     * Same idea as [shouldSkip], but starting from raw advertisement bytes plus the BD address.
+     * Used at scan-ingest time (before a [DeviceData] has been built) to decide whether the
+     * current advertisement should be omitted from the BTIDES log when the user has Connect
+     * All's "Skip Apple" / "Skip Samsung" toggles on.
+     *
+     * Mirrors the data sources of [identifyVendor]:
+     *   1. MSD company id from any 0xFF AD frame (excluding iBeacons, which are multi-vendor).
+     *   2. IEEE OUI of public BDADDRs.
+     *   3. Service UUIDs (16/32/128-bit) carried in the advertisement.
+     *
+     * `addressType` follows the Android convention: 0 = PUBLIC, 1 = RANDOM, null = unknown.
+     */
+    fun shouldSkipByScanRecord(
+        rawScanRecord: ByteArray?,
+        address: String,
+        addressType: Int?,
+        skipApple: Boolean,
+        skipSamsung: Boolean,
+    ): Boolean {
+        if (!skipApple && !skipSamsung) return false
+        if (rawScanRecord == null || rawScanRecord.isEmpty()) return false
+        val frames = parseAdvFrames(rawScanRecord)
+
+        val msdCompanyIds = frames
+            .filter { it.type == TYPE_MSD && it.data.size >= 2 }
+            .filterNot { isIBeaconMsd(it.data) }
+            .map { (it.data[0].toInt() and 0xFF) or ((it.data[1].toInt() and 0xFF) shl 8) }
+
+        val advUuids = mutableListOf<String>()
+        for (frame in frames) {
+            val type = frame.type.toInt() and 0xFF
+            when (type) {
+                0x02, 0x03, 0x14 -> readUuids(frame.data, 2).forEach { advUuids += le16ToHex(it) }
+                0x04, 0x05, 0x1F -> readUuids(frame.data, 4).forEach { advUuids += le32ToHex(it) }
+                0x06, 0x07, 0x15 -> readUuid128s(frame.data).forEach { advUuids += it }
+                0x16 -> if (frame.data.size >= 2) advUuids += le16ToHex(le16(frame.data, 0))
+                0x20 -> if (frame.data.size >= 4) advUuids += le32ToHex(le32(frame.data, 0))
+                0x21 -> if (frame.data.size >= 16) advUuids += bytesToUuid128(frame.data, 0)
+            }
+        }
+
+        val oui = if (addressType == ADDRESS_TYPE_PUBLIC) parseOui(address) else null
+
+        val vendor = identify(
+            companyId = null,
+            oui = oui,
+            uuids = advUuids,
+            msdCompanyIds = msdCompanyIds,
+        ) ?: return false
+        return (skipApple && vendor == Vendor.APPLE) || (skipSamsung && vendor == Vendor.SAMSUNG)
+    }
+
     private fun identify(
         companyId: Int?,
         oui: Int?,

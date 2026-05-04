@@ -1,6 +1,7 @@
 package f.cking.software.ui
 
 import f.cking.software.ui.backgroundlocationrequest.BackgroundLocationRequestViewModel
+import f.cking.software.ui.connectall.ConnectAllSession
 import f.cking.software.ui.connectall.ConnectAllViewModel
 import f.cking.software.ui.devicedetails.DeviceDetailsViewModel
 import f.cking.software.ui.devicelist.DeviceListViewModel
@@ -19,6 +20,9 @@ object UiModule {
     val module = module {
         single { RouterImpl() }
         single<Router> { get<RouterImpl>() }
+        // App-singleton holder for the Connect All session so the loop can be driven by either
+        // the UI or the boot receiver. Lives in the application coroutine scope (DataModule).
+        single { ConnectAllSession(get(), get(), get()) }
         viewModel { MainViewModel(get(), get(), get(), get(), get(), get(), get()) }
         viewModel { DeviceListViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
@@ -26,7 +30,7 @@ object UiModule {
         viewModel { SelectDeviceViewModel(get(), get()) }
         viewModel { DeviceDetailsViewModel(address = it[0], get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { JournalViewModel(get(), get(), get()) }
-        viewModel { ConnectAllViewModel(get(), get(), get(), get(), get(), get(), get()) }
+        viewModel { ConnectAllViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { MapViewModel(get(), get(), get()) }
         viewModel { BackgroundLocationRequestViewModel(get(), get()) }
     }
