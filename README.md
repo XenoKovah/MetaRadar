@@ -1,6 +1,10 @@
 # Bluetooth Radar
 
-This is a copy of [https://github.com/BLE-Research-Group/MetaRadar](https://github.com/BLE-Research-Group/MetaRadar) that has been stripped for parts and modded (Clauded ;)) to be the minimal functionality I need: enumerating all GATT devices and exporting the data in [BTIDES](https://github.com/BLE-Research-Group/MetaRadar) format (with GPS data for the devices as a nice-to-have).
+This is a copy of [https://github.com/BLE-Research-Group/MetaRadar](https://github.com/BLE-Research-Group/MetaRadar) that has been stripped for parts and modded (Clauded ;)) to be the minimal functionality I need for collecting more [Blue2thprinting](https://github.com/darkmentorllc/BTIDES_Schema) data: 
+* Enumerate all connectable BLE devices' GATT Services & Characteristics (+ read from all readable Characteristics)
+* Added BT BR/EDR ("BT Classic") scanning support (which obviously the original BLE-focused tool didn't have), and enumerating all connectable devices' services with SDP. 
+  * Attempting GATT enumeration for devices which indicate support for ATT over BR/EDR.
+* Export collected data in [BTIDES](https://github.com/darkmentorllc/BTIDES_Schema) format (with GPS data for the devices as a nice-to-have, but not a must-have. Data still collected even in absense of GPS, unlike e.g. [WiGLE](https://wigle.net).)
 
 # Install app via macOS
 
