@@ -128,7 +128,12 @@ class ConnectAllSession(
                         val text = "${progress.index + 1}/${progress.total} " +
                                 "${progress.device.buildDisplayName()} → ${progress.outcome}"
                         when (progress.outcome) {
-                            BulkEnumerateGattInteractor.Outcome.SUCCESS -> {
+                            // SDP_SUCCESS is BR/EDR-only — same UI treatment as SUCCESS (the
+                            // device captured something useful), but distinct in the outcome
+                            // enum so consumers can split full-GATT from SDP-only summaries.
+                            BulkEnumerateGattInteractor.Outcome.SUCCESS,
+                            BulkEnumerateGattInteractor.Outcome.SDP_SUCCESS,
+                            -> {
                                 successfulAddresses += progress.device.address.uppercase()
                                 _state.update {
                                     it.copy(
@@ -139,6 +144,7 @@ class ConnectAllSession(
                             }
                             BulkEnumerateGattInteractor.Outcome.ERROR,
                             BulkEnumerateGattInteractor.Outcome.TIMEOUT,
+                            BulkEnumerateGattInteractor.Outcome.SDP_TIMEOUT,
                             -> {
                                 passErrors += ErrorEntry(progress.device, progress.outcome, progress.errorMessage)
                                 _state.update { it.copy(statusLine = text) }

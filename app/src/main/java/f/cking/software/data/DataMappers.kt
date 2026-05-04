@@ -10,6 +10,7 @@ import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.JournalEntry
 import f.cking.software.domain.model.LocationModel
 import f.cking.software.domain.model.ManufacturerInfo
+import f.cking.software.domain.model.Transport
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import timber.log.Timber
@@ -54,6 +55,8 @@ fun DeviceEntity.toDomain(appleAirDrop: AppleAirDrop? = null): DeviceData {
         servicesUuids = serviceUuids,
         rowDataEncoded = rowDataEncoded,
         isConnectable = isConnectable,
+        transport = Transport.entries.getOrElse(transport) { Transport.UNKNOWN },
+        sdpUuids = sdpUuids,
     )
 }
 
@@ -77,6 +80,8 @@ fun DeviceData.toData(): DeviceEntity {
         rowDataEncoded = rowDataEncoded,
         metadata = null,
         isConnectable = isConnectable,
+        transport = transport.ordinal,
+        sdpUuids = sdpUuids,
     )
 }
 

@@ -9,8 +9,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.widget.Toast
 import f.cking.software.R
+import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.helpers.BleScannerHelper
+import f.cking.software.data.helpers.BrEdrDiscoveryHelper
 import f.cking.software.data.helpers.LocationProvider
+import f.cking.software.data.helpers.SdpEnumerationHelper
 import f.cking.software.data.helpers.NotificationsHelper
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.SettingsRepository
@@ -39,6 +42,9 @@ class BgScanService : Service() {
 
     private val permissionHelper: PermissionHelper by inject()
     private val bleScannerHelper: BleScannerHelper by inject()
+    private val brEdrDiscoveryHelper: BrEdrDiscoveryHelper by inject()
+    private val sdpEnumerationHelper: SdpEnumerationHelper by inject()
+    private val btidesRepository: BTIDESRepository by inject()
     private val locationProvider: LocationProvider by inject()
     private val notificationsHelper: NotificationsHelper by inject()
     private val powerModeHelper: PowerModeHelper by inject()
@@ -57,6 +63,15 @@ class BgScanService : Service() {
         scan()
     }
 
+    /**
+     * BR/EDR inquiry runs on its own slower cadence — driven by [scheduleNextBrEdrInquiry]
+     * with [BR_EDR_INTERVAL_NORMAL_MS] / [BR_EDR_INTERVAL_LOW_POWER_MS]. Decoupled from the
+     * LE rhythm so toggling either transport doesn't disturb the other.
+     */
+    private val nextBrEdrInquiryRunnable = Runnable {
+        runBrEdrInquiry()
+    }
+
     private val bleListener = object : BleScannerHelper.ScanListener {
         override fun onFailure(exception: Exception) {
             handleError(exception)
@@ -64,6 +79,21 @@ class BgScanService : Service() {
 
         override fun onSuccess(batch: List<BleScanDevice>) {
             handleScanResult(batch)
+        }
+    }
+
+    private val brEdrListener = object : BleScannerHelper.ScanListener {
+        override fun onFailure(exception: Exception) {
+            // BR/EDR errors should not tear down the service — the LE side may still be working
+            // fine, and inquiry frequently fails benignly (system busy, BT off-then-on, etc.).
+            // Log and reschedule the next inquiry; do not call handleError(), which would
+            // increment the LE failure counter.
+            Timber.w(exception, "BR/EDR inquiry failed")
+            scheduleNextBrEdrInquiry()
+        }
+
+        override fun onSuccess(batch: List<BleScanDevice>) {
+            handleBrEdrInquiryResult(batch)
         }
     }
 
@@ -76,6 +106,10 @@ class BgScanService : Service() {
     override fun onCreate() {
         super.onCreate()
         observeScreenBrightnessJob = powerModeHelper.observeScreenBrightnessMode()
+        // ACTION_UUID broadcasts arrive on the system's schedule, not ours — register the
+        // receiver once for the service's lifetime so any concurrent SDP fetch can land
+        // its result without racing the screen lifecycle.
+        sdpEnumerationHelper.ensureReceiverRegistered()
         updateState(ScannerState.IDLING)
     }
 
@@ -138,8 +172,12 @@ class BgScanService : Service() {
         observeScreenBrightnessJob?.cancel()
         updateState(ScannerState.DISABLED)
         bleScannerHelper.stopScanning()
+        brEdrDiscoveryHelper.cancel()
+        sdpEnumerationHelper.release()
         locationProvider.stopLocationListening()
         handler.removeCallbacks(nextScanRunnable)
+        handler.removeCallbacks(nextBrEdrInquiryRunnable)
+        brEdrInquiryLoopStarted = false
         notificationsHelper.cancel(NotificationsHelper.FOREGROUND_NOTIFICATION_ID)
         // Reset the persisted scan-start mode so on next app open the cleanup check sees NONE
         // instead of carrying over a stale CONNECT_ALL_AUTO/USER_EXPLICIT label.
@@ -151,6 +189,18 @@ class BgScanService : Service() {
     }
 
     private fun scan() {
+        // First call after onCreate — kick the BR/EDR inquiry loop too. Idempotent: subsequent
+        // calls re-enter the LE-scan path normally; the inquiry handler reschedules itself.
+        ensureBrEdrInquiryLoopStarted()
+
+        // Honor the user's "Discover BLE" toggle. Skipping with scheduleNextScan() keeps the
+        // LE cadence intact so re-enabling just rejoins the rhythm without restarting the
+        // service.
+        if (!settingsRepository.getDiscoverLeEnabled()) {
+            updateState(ScannerState.IDLING)
+            scheduleNextScan()
+            return
+        }
         scope.launch {
             try {
                 updateState(ScannerState.SCANNING)
@@ -167,6 +217,83 @@ class BgScanService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    /**
+     * Run a single BR/EDR inquiry if the user's toggle is on. Inquiry takes ~12.8s and runs
+     * concurrently with LE scanning (the radio multiplexes them at the controller level).
+     * Skips the cycle when a GATT connection is currently open: cancelDiscovery / inquiry
+     * during an active link can degrade throughput and induce link supervision timeouts.
+     */
+    private fun runBrEdrInquiry() {
+        Timber.i("runBrEdrInquiry: enabled=${settingsRepository.getDiscoverBrEdrEnabled()} btOn=${brEdrDiscoveryHelper.isBluetoothEnabled()} hasGatt=${bleScannerHelper.hasOpenGattConnections()}")
+        if (!settingsRepository.getDiscoverBrEdrEnabled()) {
+            scheduleNextBrEdrInquiry()
+            return
+        }
+        if (bleScannerHelper.hasOpenGattConnections()) {
+            // Defer one cycle so we don't disturb an in-flight enumeration.
+            Timber.i("Deferring BR/EDR inquiry — open GATT connection in progress")
+            scheduleNextBrEdrInquiry()
+            return
+        }
+        if (!brEdrDiscoveryHelper.isBluetoothEnabled()) {
+            scheduleNextBrEdrInquiry()
+            return
+        }
+        try {
+            brEdrDiscoveryHelper.discover(brEdrListener)
+        } catch (e: Throwable) {
+            Timber.w(e, "Failed to start BR/EDR inquiry")
+            scheduleNextBrEdrInquiry()
+        }
+    }
+
+    private fun handleBrEdrInquiryResult(batch: List<BleScanDevice>) {
+        scope.launch {
+            if (batch.isNotEmpty()) {
+                try {
+                    saveOrMergeBatchInteractor.execute(batch)
+                } catch (e: Throwable) {
+                    Timber.w(e, "Failed to persist BR/EDR inquiry batch (${batch.size} devices)")
+                }
+                // Capture the Class-of-Device byte for each inquired device. EIR ClassOfDevice
+                // is the only BR/EDR-specific schema record we can populate from the high-level
+                // Android API today (PageScanRepetitionMode is not exposed). One record per
+                // device per inquiry — DeviceAccumulator dedups by `type` on export.
+                for (device in batch) {
+                    val cod = device.deviceClass ?: continue
+                    try {
+                        btidesRepository.appendEirClassOfDevice(
+                            bdaddr = device.address,
+                            cod = cod,
+                            timestampMs = device.scanTimeMs,
+                        )
+                    } catch (e: Throwable) {
+                        Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
+                    }
+                }
+            }
+            scheduleNextBrEdrInquiry()
+        }
+    }
+
+    private var brEdrInquiryLoopStarted: Boolean = false
+    private fun ensureBrEdrInquiryLoopStarted() {
+        if (brEdrInquiryLoopStarted) return
+        brEdrInquiryLoopStarted = true
+        // Fire the first inquiry shortly after the service starts, then it self-reschedules.
+        handler.postDelayed(nextBrEdrInquiryRunnable, BR_EDR_FIRST_INQUIRY_DELAY_MS)
+    }
+
+    private fun scheduleNextBrEdrInquiry() {
+        val interval = if (powerModeHelper.powerMode().useRestrictedBleConfig) {
+            BR_EDR_INTERVAL_LOW_POWER_MS
+        } else {
+            BR_EDR_INTERVAL_NORMAL_MS
+        }
+        handler.removeCallbacks(nextBrEdrInquiryRunnable)
+        handler.postDelayed(nextBrEdrInquiryRunnable, interval)
     }
 
     private fun handleScanResult(batch: List<BleScanDevice>) {
@@ -278,6 +405,13 @@ class BgScanService : Service() {
 
         private const val ACTION_STOP_SERVICE = "stop_ble_scan_service"
         private const val ACTION_SCAN_NOW = "ble_scan_now"
+
+        // BR/EDR inquiry takes ~12.8s of radio time per pass. 60s baseline keeps total radio
+        // utilization well below LE's percentage while still surfacing pairing-mode peers
+        // promptly. Low-power mode stretches to 15min.
+        private const val BR_EDR_FIRST_INQUIRY_DELAY_MS = 5_000L
+        private const val BR_EDR_INTERVAL_NORMAL_MS = 60_000L
+        private const val BR_EDR_INTERVAL_LOW_POWER_MS = 15 * 60_000L
 
         var state = MutableStateFlow(ScannerState.DISABLED)
             private set

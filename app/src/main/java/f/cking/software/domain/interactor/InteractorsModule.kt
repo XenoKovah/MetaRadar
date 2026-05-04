@@ -26,7 +26,7 @@ object InteractorsModule {
         factory { ExportBTIDESInteractor(get(), get()) }
         factory { ClearBTIDESLogInteractor(get()) }
         single { VendorIdentifier(get()) }
-        factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get()) }
+        factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get(), get()) }
         factory { CheckDeviceLocationHistoryInteractor(get()) }
         factory { CheckUserLocationHistoryInteractor(get()) }
         factory { AddTagToDeviceInteractor(get(), get()) }

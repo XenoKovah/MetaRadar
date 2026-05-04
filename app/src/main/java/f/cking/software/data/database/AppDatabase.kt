@@ -42,7 +42,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 22,
+    version = 23,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -134,6 +134,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_19_20,
                     MIGRATION_20_21,
                     MIGRATION_21_22,
+                    MIGRATION_22_23,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -264,6 +265,14 @@ abstract class AppDatabase : RoomDatabase() {
         // RSSI-coloured heatmap, and the weighted-centroid best-fit marker.
         val MIGRATION_21_22 = migration(21, 22) {
             it.execSQL("ALTER TABLE device_to_location ADD COLUMN rssi INTEGER DEFAULT NULL;")
+        }
+
+        // Adds the columns that back BR/EDR (Bluetooth Classic) support. `transport` is the
+        // ordinal of `domain.model.Transport` (0=UNKNOWN, 1=LE, 2=BREDR, 3=DUAL); `sdp_uuids`
+        // mirrors the `service_uuids` storage shape (TEXT JSON list).
+        val MIGRATION_22_23 = migration(22, 23) {
+            it.execSQL("ALTER TABLE device ADD COLUMN transport INTEGER NOT NULL DEFAULT 0;")
+            it.execSQL("ALTER TABLE device ADD COLUMN sdp_uuids TEXT NOT NULL DEFAULT '';")
         }
 
         private fun migration(

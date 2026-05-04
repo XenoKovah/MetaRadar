@@ -159,6 +159,21 @@ class SettingsRepository(
     }
 
     /**
+     * Independent toggles for the two discovery transports — both default to true so out-of-the-
+     * box behaviour matches today's app (LE-only) plus opt-in BR/EDR. Each can be turned off
+     * independently to test one transport in isolation.
+     */
+    fun getDiscoverLeEnabled(): Boolean = sharedPreferences.getBoolean(KEY_DISCOVER_LE_ENABLED, true)
+    fun setDiscoverLeEnabled(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_DISCOVER_LE_ENABLED, value) }
+    }
+
+    fun getDiscoverBrEdrEnabled(): Boolean = sharedPreferences.getBoolean(KEY_DISCOVER_BR_EDR_ENABLED, true)
+    fun setDiscoverBrEdrEnabled(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_DISCOVER_BR_EDR_ENABLED, value) }
+    }
+
+    /**
      * Tracks who started the currently-running BgScanService:
      *   - NONE: service is not running, or was started before this concept existed.
      *   - USER_EXPLICIT: user tapped Scan FAB / kept-on toggle / boot-on. Survives app restarts.
@@ -196,6 +211,8 @@ class SettingsRepository(
         private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
         private const val KEY_BULK_RETRY_FOREVER = "key_bulk_retry_forever"
         private const val KEY_SCAN_START_MODE = "key_scan_start_mode"
+        private const val KEY_DISCOVER_LE_ENABLED = "key_discover_le_enabled"
+        private const val KEY_DISCOVER_BR_EDR_ENABLED = "key_discover_br_edr_enabled"
 
         const val NO_APP_LAUNCH_TIME = -1L
         const val NO_ENJOY_THE_APP_STARTING_POINT = -1L

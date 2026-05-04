@@ -81,6 +81,7 @@ import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import f.cking.software.R
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.ExtendedAddressInfo
+import f.cking.software.domain.model.Transport
 import f.cking.software.dpToPx
 import f.cking.software.pxToDp
 import f.cking.software.toHexString
@@ -346,6 +347,7 @@ fun DeviceListItem(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.width(8.dp))
+                    TransportBadge(transport = device.transport)
                     if (showSignalData) {
                         Spacer(modifier = Modifier.width(8.dp))
                         SignalData(rssi = device.rssi, distance = device.distance())
@@ -676,6 +678,40 @@ private val colorsDark = listOf(
 fun colorByHash(hash: Int): Color {
     val colors = if (isSystemInDarkTheme()) colorsDark else colorsLight
     return colors[abs(Random(hash).nextInt() % colors.size)]
+}
+
+/**
+ * Small inline label showing the radio transport a device was observed on (LE / BR / Dual).
+ * Renders nothing for [Transport.UNKNOWN] so legacy rows that pre-date the migration stay
+ * visually unchanged.
+ */
+@Composable
+fun TransportBadge(transport: Transport) {
+    if (transport == Transport.UNKNOWN) return
+    val (label, container) = when (transport) {
+        Transport.LE -> stringResource(R.string.transport_badge_le) to MaterialTheme.colorScheme.secondaryContainer
+        Transport.BREDR -> stringResource(R.string.transport_badge_brEdr) to MaterialTheme.colorScheme.tertiaryContainer
+        Transport.DUAL -> stringResource(R.string.transport_badge_dual) to MaterialTheme.colorScheme.primaryContainer
+        Transport.UNKNOWN -> return
+    }
+    val onContainer = when (transport) {
+        Transport.LE -> MaterialTheme.colorScheme.onSecondaryContainer
+        Transport.BREDR -> MaterialTheme.colorScheme.onTertiaryContainer
+        Transport.DUAL -> MaterialTheme.colorScheme.onPrimaryContainer
+        Transport.UNKNOWN -> MaterialTheme.colorScheme.onSurface
+    }
+    Box(
+        modifier = Modifier
+            .background(container, shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = label,
+            color = onContainer,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
 }
 
 @Composable

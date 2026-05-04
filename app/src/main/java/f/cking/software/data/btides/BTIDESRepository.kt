@@ -167,6 +167,8 @@ class BTIDESRepository(
         val typeFlag = when {
             record["GATTArray"] != null -> RECORD_TYPE_GATT
             record["AdvChanArray"] != null -> RECORD_TYPE_ADV
+            record["SDPArray"] != null -> RECORD_TYPE_SDP
+            record["EIRArray"] != null -> RECORD_TYPE_EIR
             else -> RECORD_TYPE_OTHER
         }
         writerStateLock.withLock {
@@ -221,6 +223,8 @@ class BTIDESRepository(
                                 val typeFlag = when {
                                     rawLine.contains("\"GATTArray\":") -> RECORD_TYPE_GATT
                                     rawLine.contains("\"AdvChanArray\":") -> RECORD_TYPE_ADV
+                                    rawLine.contains("\"SDPArray\":") -> RECORD_TYPE_SDP
+                                    rawLine.contains("\"EIRArray\":") -> RECORD_TYPE_EIR
                                     else -> RECORD_TYPE_OTHER
                                 }
                                 val indexLine = "$addr $typeFlag $offset ${bytes.size}\n".toByteArray(Charsets.UTF_8)
@@ -323,6 +327,56 @@ class BTIDESRepository(
         val gattArray = BTIDESGattBuilder.buildDescriptorReadArray(descriptor, value, status)
         if (gattArray.isEmpty()) return
         appendGattRecord(bdaddr, bdaddrRand, gattArray)
+    }
+
+    /**
+     * Append a synthesized SDP enumeration result for [bdaddr]. Android only exposes the parsed
+     * service-class UUID list — never raw SDP/L2CAP bytes — so we synthesize a schema-valid
+     * `0x07_SDP_SERVICE_SEARCH_ATTR_RSP` PDU via [BTIDESSdpBuilder] and tag it with
+     * `std_optional_fields.src_file = "android-fetchUuidsWithSdp"` so wire-captured records
+     * remain distinguishable downstream.
+     *
+     * BR/EDR addresses are always public per BT Core Spec — `bdaddr_rand` is hardcoded to 0.
+     */
+    suspend fun appendSDPDiscovery(
+        bdaddr: String,
+        uuids: List<java.util.UUID>,
+        timestampMs: Long = System.currentTimeMillis(),
+    ) {
+        val sdpRecord = BTIDESSdpBuilder.synthesizeSearchAttrRspRecord(uuids, timestampMs)
+        appendRecord {
+            put("bdaddr", bdaddr.uppercase())
+            put("bdaddr_rand", 0)
+            put("SDPArray", buildJsonArray { add(sdpRecord) })
+        }
+    }
+
+    /**
+     * Append an EIR ClassOfDevice record (BTIDES_EIR.json type=2). Carries the Android-derived
+     * 24-bit Class-of-Device value as a 6-char lower-hex string, matching the schema's
+     * `CoD_hex_str` shape. BR/EDR-only — `bdaddr_rand` is 0.
+     */
+    suspend fun appendEirClassOfDevice(
+        bdaddr: String,
+        cod: Int,
+        timestampMs: Long = System.currentTimeMillis(),
+    ) {
+        val codHex = "%06x".format(cod and 0xFFFFFF)
+        val eirEntry = buildJsonObject {
+            putJsonObject("std_optional_fields") {
+                putJsonObject("time") {
+                    put("unix_time_milli", timestampMs)
+                    put("unix_time", timestampMs / 1000L)
+                }
+            }
+            put("type", 2)
+            put("CoD_hex_str", codHex)
+        }
+        appendRecord {
+            put("bdaddr", bdaddr.uppercase())
+            put("bdaddr_rand", 0)
+            put("EIRArray", buildJsonArray { add(eirEntry) })
+        }
     }
 
     /** Begin a buffered GATT capture session for an address (idempotent). */
@@ -473,6 +527,8 @@ class BTIDESRepository(
                 }
                 obj["AdvChanArray"]?.jsonArray?.let { acc.advChan.addAll(it) }
                 obj["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it) }
+                obj["SDPArray"]?.jsonArray?.let { acc.mergeSdp(it) }
+                obj["EIRArray"]?.jsonArray?.let { acc.mergeEir(it) }
                 currentCoroutineContext().ensureActive()
                 onLineConsumed(byteLen)
             }
@@ -750,6 +806,13 @@ class BTIDESRepository(
         val advChan: MutableList<JsonElement> = mutableListOf()
         // service key = "begin_handle|UUID" — handle disambiguates duplicate UUIDs.
         val services: LinkedHashMap<String, ServiceAccumulator> = linkedMapOf()
+        // SDP enumeration is one synthesized 0x07 PDU per fetch; multiple fetches for the same
+        // device are last-write-wins (the most recent enumeration is the truth). Storing them
+        // additively would just produce a stack of duplicates downstream tools have to dedup.
+        var sdpRecord: JsonObject? = null
+        // EIR entries (ClassOfDevice, PageScanRepetitionMode) are typed; collapse duplicates by
+        // type so a device that's been inquired 100 times doesn't emit 100 identical CoD rows.
+        val eirByType: LinkedHashMap<Int, JsonObject> = linkedMapOf()
 
         fun mergeGatt(gattArray: JsonArray) {
             for (entry in gattArray) {
@@ -762,12 +825,35 @@ class BTIDESRepository(
             }
         }
 
+        fun mergeSdp(sdpArray: JsonArray) {
+            for (entry in sdpArray) {
+                val rec = entry as? JsonObject ?: continue
+                // We only synthesize 0x07 SERVICE_SEARCH_ATTR_RSP records, one at a time.
+                // Multiple fetches → last one wins.
+                sdpRecord = rec
+            }
+        }
+
+        fun mergeEir(eirArray: JsonArray) {
+            for (entry in eirArray) {
+                val rec = entry as? JsonObject ?: continue
+                val type = rec["type"]?.jsonPrimitive?.intOrNull ?: continue
+                eirByType[type] = rec
+            }
+        }
+
         fun toJsonObject(strongest: StrongestRssiLocation? = null): JsonObject = buildJsonObject {
             put("bdaddr", bdaddr)
             put("bdaddr_rand", rand)
             if (advChan.isNotEmpty()) put("AdvChanArray", JsonArray(advChan))
             if (services.isNotEmpty()) {
                 put("GATTArray", buildJsonArray { services.values.forEach { add(it.toJsonObject()) } })
+            }
+            sdpRecord?.let { rec ->
+                put("SDPArray", buildJsonArray { add(rec) })
+            }
+            if (eirByType.isNotEmpty()) {
+                put("EIRArray", buildJsonArray { eirByType.values.forEach { add(it) } })
             }
             // XenoMetaRadar extension (not part of upstream BTIDES): the lat/lng of the
             // strongest sample we ever recorded for this device. Only emitted when we have
@@ -900,6 +986,8 @@ class BTIDESRepository(
         // parse cost on for nothing.
         private const val RECORD_TYPE_GATT = "G"
         private const val RECORD_TYPE_ADV = "A"
+        private const val RECORD_TYPE_SDP = "S"
+        private const val RECORD_TYPE_EIR = "E"
         private const val RECORD_TYPE_OTHER = "O"
         const val EXPORT_FILE_NAME = "btides_log.btides"
         private const val INDENT_UNIT = "  "

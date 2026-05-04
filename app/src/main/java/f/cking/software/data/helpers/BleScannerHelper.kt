@@ -247,8 +247,21 @@ class BleScannerHelper(
         }
     }
 
+    /**
+     * Connect to a peer at [address] over the chosen transport. Default is LE — every existing
+     * caller stays bit-for-bit compatible. Pass [BluetoothDevice.TRANSPORT_BREDR] to force a
+     * BR/EDR ATT connection (used for the experimental GATT-over-BR/EDR path on CLASSIC-only
+     * devices that advertise Generic Access / Generic Attribute via SDP). In practice fewer
+     * than ~5% of BR/EDR-only devices support that path; expect graceful failure on most.
+     *
+     * Defensively cancels any pending BR/EDR inquiry before connecting — Android documents this
+     * as a precondition for `connectGatt`, and it's cheap when no inquiry is running.
+     */
     @SuppressLint("MissingPermission")
-    fun connectToDevice(address: String): Flow<DeviceConnectResult> {
+    fun connectToDevice(
+        address: String,
+        transport: Int = BluetoothDevice.TRANSPORT_LE,
+    ): Flow<DeviceConnectResult> {
         return callbackFlow {
             val services = mutableSetOf<BluetoothGattService>()
             val device = requireAdapter().getRemoteDevice(address)
@@ -398,8 +411,16 @@ class BleScannerHelper(
                 }
             }
 
-            Timber.tag(TAG_CONNECT).d("Connecting to device $address")
-            gatt = device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
+            // Cancel any in-flight BR/EDR inquiry — Android requires this before connectGatt.
+            // Safe no-op when nothing is running.
+            runCatching { requireAdapter().cancelDiscovery() }
+            val transportLabel = when (transport) {
+                BluetoothDevice.TRANSPORT_BREDR -> "BR/EDR"
+                BluetoothDevice.TRANSPORT_LE -> "LE"
+                else -> "AUTO"
+            }
+            Timber.tag(TAG_CONNECT).d("Connecting to device $address over $transportLabel")
+            gatt = device.connectGatt(appContext, false, callback, transport)
 
             awaitClose {
                 Timber.tag(TAG_CONNECT).d("Closing connection to device $address")
@@ -590,13 +611,23 @@ class BleScannerHelper(
         cancelScanning(ScanResultInternal.Canceled)
     }
 
+    /** True if at least one GATT connection is currently held. Used by BgScanService to defer
+     *  BR/EDR inquiry windows during in-flight enumeration. */
+    fun hasOpenGattConnections(): Boolean = connections.isNotEmpty()
+
     @SuppressLint("MissingPermission")
     private fun cancelScanning(scanResult: ScanResultInternal) {
         inProgress.tryEmit(false)
 
         if (bluetoothAdapter?.state == BluetoothAdapter.STATE_ON) {
             bluetoothScanner?.stopScan(callback)
-            requireAdapter().cancelDiscovery()
+            // Don't call requireAdapter().cancelDiscovery() here. The BLE scan teardown runs
+            // every ~10s; before BR/EDR support landed, this line was a no-op (no inquiry
+            // was ever in flight). With BrEdrDiscoveryHelper running on its own cadence,
+            // calling cancelDiscovery here cuts each ~12s inquiry short ~3s in, killing
+            // the ACTION_DISCOVERY_FINISHED broadcast and starving handleBrEdrInquiryResult
+            // of any data. The BR/EDR helper does its own defensive cancelDiscovery before
+            // each startDiscovery, which is the only place that needs it.
         }
 
         when (scanResult) {
