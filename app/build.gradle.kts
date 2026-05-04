@@ -200,6 +200,11 @@ dependencies {
     testImplementation(libs.ktx.testing)
     testImplementation(libs.ktx.testing.core)
     androidTestImplementation(libs.ktx.testing)
+    // androidx.test.ext:junit doesn't pull in the runner classes — add them explicitly so
+    // AndroidJUnitRunner is loadable on-device.
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("junit:junit:4.13.2")
 }
 
 private fun getEnvJavaConfigVersion(): String {

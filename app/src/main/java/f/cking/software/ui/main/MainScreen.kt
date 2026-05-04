@@ -56,7 +56,6 @@ import f.cking.software.R
 import f.cking.software.ui.GlobalUiState
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import f.cking.software.utils.graphic.ThemedDialog
-import f.cking.software.utils.graphic.infoDialog
 import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -203,28 +202,6 @@ object MainScreen {
 
         var checkAndStartService: (() -> Boolean)? = null
 
-        val disclaimerDialog = infoDialog(
-            title = stringResource(R.string.disclaimer),
-            content = stringResource(R.string.unlowful_usage_disclaimer),
-            buttons = { state ->
-                {
-                    negativeButton(
-                        stringResource(R.string.decline),
-                        textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
-                    ) { state.hide() }
-
-                    positiveButton(
-                        stringResource(R.string.accept),
-                        textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
-                    ) {
-                        viewModel.disclaimerWasAccepted()
-                        state.hide()
-                        checkAndStartService?.invoke()
-                    }
-                }
-            }
-        )
-
         val permissionsIntro = permissionsIntroDialog(
             onPassed = {
                 viewModel.userHasPassedPermissionsIntro()
@@ -238,11 +215,6 @@ object MainScreen {
 
         checkAndStartService = {
             when {
-                viewModel.needToShowDisclaimer() -> {
-                    disclaimerDialog.show()
-                    false
-                }
-
                 viewModel.needToShowPermissionsIntro() -> {
                     permissionsIntro.show()
                     false

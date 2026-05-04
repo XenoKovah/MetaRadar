@@ -63,11 +63,14 @@ class SdpEnumerationHelper(
     /** Register the broadcast receiver. Call once from BgScanService.onCreate(). */
     fun ensureReceiverRegistered() {
         if (!receiverRegistered.compareAndSet(false, true)) return
+        // BluetoothDevice.ACTION_UUID is a system-protected broadcast. RECEIVER_EXPORTED is
+        // correct because the system (not another app) is the sender — see same reasoning in
+        // BrEdrDiscoveryHelper.
         ContextCompat.registerReceiver(
             appContext,
             receiver,
             IntentFilter(BluetoothDevice.ACTION_UUID),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
+            ContextCompat.RECEIVER_EXPORTED,
         )
         Timber.tag(TAG).d("ACTION_UUID receiver registered")
     }

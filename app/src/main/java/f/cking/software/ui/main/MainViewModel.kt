@@ -181,14 +181,6 @@ class MainViewModel(
         settingsRepository.setPermissionsIntroWasShown(true)
     }
 
-    fun needToShowDisclaimer(): Boolean {
-        return !settingsRepository.getDisclaimerWasAccepted()
-    }
-
-    fun disclaimerWasAccepted() {
-        settingsRepository.setDisclaimerWasAccepted(true)
-    }
-
     fun checkAndShowAboutApp() {
         if (!settingsRepository.getWhatIsThisAppForWasShown()) {
             router.navigate(ScreenNavigationCommands.OpenAboutScreen)

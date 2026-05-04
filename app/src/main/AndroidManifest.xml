@@ -9,7 +9,18 @@
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!--
+        usesPermissionFlags="neverForLocation" tells Android the app does not derive a
+        physical location FROM Bluetooth scan results. The app DOES tag scans with the
+        device's current location (sourced from LocationProvider's system API), but it
+        never infers a location from the scan data itself. Setting this flag is required
+        for BluetoothAdapter.startDiscovery() and BluetoothLeScanner.startScan() to
+        return results when the OS doesn't have a recent location fix — important for
+        BR/EDR discovery in environments without GPS coverage.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

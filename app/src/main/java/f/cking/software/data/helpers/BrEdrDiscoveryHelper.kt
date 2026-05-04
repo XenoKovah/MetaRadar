@@ -9,6 +9,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import f.cking.software.domain.model.BleScanDevice
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -40,6 +42,11 @@ class BrEdrDiscoveryHelper(
     private val batch: MutableMap<String, BleScanDevice> = ConcurrentHashMap()
     private var scanListener: BleScannerHelper.ScanListener? = null
     private var registeredReceiver: BroadcastReceiver? = null
+    private val mainHandler: Handler = Handler(Looper.getMainLooper())
+    private val timeoutRunnable: Runnable = Runnable {
+        Timber.tag(TAG).w("BR/EDR inquiry timed out after %dms — synthesizing finish event", INQUIRY_TIMEOUT_MS)
+        handleFinished()
+    }
 
     private fun adapter(): BluetoothAdapter? =
         appContext.getSystemService(BluetoothManager::class.java)?.adapter
@@ -79,14 +86,17 @@ class BrEdrDiscoveryHelper(
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
-        // RECEIVER_NOT_EXPORTED is required on targetSdk 33+ for non-protected broadcasts; the
-        // BluetoothDevice/BluetoothAdapter actions ARE protected, but specifying the flag
-        // explicitly keeps lint happy and documents intent.
+        // BluetoothDevice.ACTION_FOUND / BluetoothAdapter.ACTION_DISCOVERY_FINISHED are
+        // system-protected broadcasts (only system can send them). Empirically, registering
+        // with RECEIVER_NOT_EXPORTED on some OEM Android builds causes the system to
+        // silently drop these — onReceive never fires, despite startDiscovery() returning
+        // true. RECEIVER_EXPORTED is correct for system broadcasts since they originate
+        // outside the app's UID.
         ContextCompat.registerReceiver(
             appContext,
             receiver,
             filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED,
+            ContextCompat.RECEIVER_EXPORTED,
         )
 
         val bluetoothAdapter = adapter()
@@ -109,6 +119,13 @@ class BrEdrDiscoveryHelper(
             listener.onFailure(DiscoveryFailure("startDiscovery() returned false"))
         } else {
             Timber.tag(TAG).i("BR/EDR inquiry started")
+            // Belt-and-suspenders: in environments where ACTION_DISCOVERY_FINISHED never reaches
+            // our receiver (e.g. some OEM Bluetooth stacks, or transient system-state issues),
+            // synthesise a finish event after the spec'd inquiry duration plus a small grace
+            // window. Without this the periodic-inquiry loop would lock up after the first
+            // call because scheduleNextBrEdrInquiry is only invoked from the listener's
+            // onSuccess/onFailure handlers.
+            mainHandler.postDelayed(timeoutRunnable, INQUIRY_TIMEOUT_MS)
         }
     }
 
@@ -163,6 +180,8 @@ class BrEdrDiscoveryHelper(
     }
 
     private fun handleFinished() {
+        if (!inProgress.get()) return // already torn down — ignore late duplicate fire
+        mainHandler.removeCallbacks(timeoutRunnable)
         val results = batch.values.toList()
         val listener = scanListener
         cleanup()
@@ -171,6 +190,7 @@ class BrEdrDiscoveryHelper(
     }
 
     private fun cleanup() {
+        mainHandler.removeCallbacks(timeoutRunnable)
         registeredReceiver?.let {
             runCatching { appContext.unregisterReceiver(it) }
                 .onFailure { Timber.tag(TAG).w(it, "unregisterReceiver failed (already unregistered?)") }
@@ -186,5 +206,8 @@ class BrEdrDiscoveryHelper(
         private const val TAG = "BrEdrDiscoveryHelper"
         private const val MIN_RSSI: Short = Short.MIN_VALUE
         private const val ADDRESS_TYPE_PUBLIC = 0
+        // Spec: ~12.8s for the inquiry window itself; allow a 5s grace so the late
+        // ACTION_DISCOVERY_FINISHED still wins over our synthesized finish.
+        private const val INQUIRY_TIMEOUT_MS: Long = 18_000L
     }
 }
