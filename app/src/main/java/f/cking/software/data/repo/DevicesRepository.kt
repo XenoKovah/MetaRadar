@@ -130,6 +130,19 @@ class DevicesRepository(
         }
     }
 
+    /**
+     * Persist a fresh SDP service-class UUID list for [address]. No-op if the row doesn't
+     * exist (e.g. user wiped the DB between SDP fetch and result delivery). Treats UUIDs as
+     * canonical lower-case strings — same shape as `service_uuids`.
+     */
+    suspend fun updateSdpUuids(address: String, uuids: List<String>) {
+        withContext(Dispatchers.IO) {
+            val existing = deviceDao.findByAddress(address) ?: return@withContext
+            deviceDao.insert(existing.copy(sdpUuids = uuids))
+            notifyLastBatchListener()
+        }
+    }
+
     suspend fun saveFollowingDetection(device: DeviceData, detectionTime: Long) {
         withContext(Dispatchers.IO) {
             val new = device.copy(lastFollowingDetectionTimeMs = detectionTime)

@@ -9,6 +9,7 @@ import f.cking.software.data.helpers.BleFiltersProvider
 import f.cking.software.data.helpers.BleScannerHelper
 import f.cking.software.data.helpers.BrEdrDiscoveryHelper
 import f.cking.software.data.helpers.CluesRepository
+import f.cking.software.data.helpers.SdpEnumerationHelper
 import f.cking.software.data.helpers.IntentHelper
 import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.NotificationsHelper
@@ -33,6 +34,7 @@ class DataModule(
         single { CluesRepository(get()) }
         single { BleScannerHelper(get(), get(), get(), get(), get()) }
         single { BrEdrDiscoveryHelper(get()) }
+        single { SdpEnumerationHelper(get()) }
         single { BleFiltersProvider(get()) }
         single { get<Context>().getSharedPreferences(sharedPreferencesName, MODE_PRIVATE) }
         single { SettingsRepository(get()) }

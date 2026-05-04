@@ -9,9 +9,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.widget.Toast
 import f.cking.software.R
+import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.helpers.BleScannerHelper
 import f.cking.software.data.helpers.BrEdrDiscoveryHelper
 import f.cking.software.data.helpers.LocationProvider
+import f.cking.software.data.helpers.SdpEnumerationHelper
 import f.cking.software.data.helpers.NotificationsHelper
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.SettingsRepository
@@ -41,6 +43,8 @@ class BgScanService : Service() {
     private val permissionHelper: PermissionHelper by inject()
     private val bleScannerHelper: BleScannerHelper by inject()
     private val brEdrDiscoveryHelper: BrEdrDiscoveryHelper by inject()
+    private val sdpEnumerationHelper: SdpEnumerationHelper by inject()
+    private val btidesRepository: BTIDESRepository by inject()
     private val locationProvider: LocationProvider by inject()
     private val notificationsHelper: NotificationsHelper by inject()
     private val powerModeHelper: PowerModeHelper by inject()
@@ -102,6 +106,10 @@ class BgScanService : Service() {
     override fun onCreate() {
         super.onCreate()
         observeScreenBrightnessJob = powerModeHelper.observeScreenBrightnessMode()
+        // ACTION_UUID broadcasts arrive on the system's schedule, not ours — register the
+        // receiver once for the service's lifetime so any concurrent SDP fetch can land
+        // its result without racing the screen lifecycle.
+        sdpEnumerationHelper.ensureReceiverRegistered()
         updateState(ScannerState.IDLING)
     }
 
@@ -165,6 +173,7 @@ class BgScanService : Service() {
         updateState(ScannerState.DISABLED)
         bleScannerHelper.stopScanning()
         brEdrDiscoveryHelper.cancel()
+        sdpEnumerationHelper.release()
         locationProvider.stopLocationListening()
         handler.removeCallbacks(nextScanRunnable)
         handler.removeCallbacks(nextBrEdrInquiryRunnable)
@@ -246,6 +255,22 @@ class BgScanService : Service() {
                     saveOrMergeBatchInteractor.execute(batch)
                 } catch (e: Throwable) {
                     Timber.w(e, "Failed to persist BR/EDR inquiry batch (${batch.size} devices)")
+                }
+                // Capture the Class-of-Device byte for each inquired device. EIR ClassOfDevice
+                // is the only BR/EDR-specific schema record we can populate from the high-level
+                // Android API today (PageScanRepetitionMode is not exposed). One record per
+                // device per inquiry — DeviceAccumulator dedups by `type` on export.
+                for (device in batch) {
+                    val cod = device.deviceClass ?: continue
+                    try {
+                        btidesRepository.appendEirClassOfDevice(
+                            bdaddr = device.address,
+                            cod = cod,
+                            timestampMs = device.scanTimeMs,
+                        )
+                    } catch (e: Throwable) {
+                        Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
+                    }
                 }
             }
             scheduleNextBrEdrInquiry()
