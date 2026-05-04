@@ -567,6 +567,10 @@ class BleScannerHelper(
         cancelScanning(ScanResultInternal.Canceled)
     }
 
+    /** True if at least one GATT connection is currently held. Used by BgScanService to defer
+     *  BR/EDR inquiry windows during in-flight enumeration. */
+    fun hasOpenGattConnections(): Boolean = connections.isNotEmpty()
+
     @SuppressLint("MissingPermission")
     private fun cancelScanning(scanResult: ScanResultInternal) {
         inProgress.tryEmit(false)
