@@ -227,8 +227,21 @@ class BleScannerHelper(
         }
     }
 
+    /**
+     * Connect to a peer at [address] over the chosen transport. Default is LE — every existing
+     * caller stays bit-for-bit compatible. Pass [BluetoothDevice.TRANSPORT_BREDR] to force a
+     * BR/EDR ATT connection (used for the experimental GATT-over-BR/EDR path on CLASSIC-only
+     * devices that advertise Generic Access / Generic Attribute via SDP). In practice fewer
+     * than ~5% of BR/EDR-only devices support that path; expect graceful failure on most.
+     *
+     * Defensively cancels any pending BR/EDR inquiry before connecting — Android documents this
+     * as a precondition for `connectGatt`, and it's cheap when no inquiry is running.
+     */
     @SuppressLint("MissingPermission")
-    fun connectToDevice(address: String): Flow<DeviceConnectResult> {
+    fun connectToDevice(
+        address: String,
+        transport: Int = BluetoothDevice.TRANSPORT_LE,
+    ): Flow<DeviceConnectResult> {
         return callbackFlow {
             val services = mutableSetOf<BluetoothGattService>()
             val device = requireAdapter().getRemoteDevice(address)
@@ -378,8 +391,16 @@ class BleScannerHelper(
                 }
             }
 
-            Timber.tag(TAG_CONNECT).d("Connecting to device $address")
-            gatt = device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
+            // Cancel any in-flight BR/EDR inquiry — Android requires this before connectGatt.
+            // Safe no-op when nothing is running.
+            runCatching { requireAdapter().cancelDiscovery() }
+            val transportLabel = when (transport) {
+                BluetoothDevice.TRANSPORT_BREDR -> "BR/EDR"
+                BluetoothDevice.TRANSPORT_LE -> "LE"
+                else -> "AUTO"
+            }
+            Timber.tag(TAG_CONNECT).d("Connecting to device $address over $transportLabel")
+            gatt = device.connectGatt(appContext, false, callback, transport)
 
             awaitClose {
                 Timber.tag(TAG_CONNECT).d("Closing connection to device $address")
