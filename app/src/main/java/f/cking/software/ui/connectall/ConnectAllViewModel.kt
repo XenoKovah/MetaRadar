@@ -257,12 +257,14 @@ class ConnectAllViewModel(
                     is BulkEnumerateGattInteractor.Progress.DeviceFinished -> {
                         statusLine = "${progress.index + 1}/${progress.total} ${progress.device.buildDisplayName()} → ${progress.outcome}"
                         when (progress.outcome) {
-                            BulkEnumerateGattInteractor.Outcome.SUCCESS -> {
+                            BulkEnumerateGattInteractor.Outcome.SUCCESS,
+                            BulkEnumerateGattInteractor.Outcome.SDP_SUCCESS -> {
                                 connectedDevices = connectedDevices + progress.device
                                 successfulAddresses += progress.device.address.uppercase()
                             }
                             BulkEnumerateGattInteractor.Outcome.ERROR,
                             BulkEnumerateGattInteractor.Outcome.TIMEOUT,
+                            BulkEnumerateGattInteractor.Outcome.SDP_TIMEOUT,
                             -> {
                                 passErrors += ErrorEntry(progress.device, progress.outcome, progress.errorMessage)
                             }

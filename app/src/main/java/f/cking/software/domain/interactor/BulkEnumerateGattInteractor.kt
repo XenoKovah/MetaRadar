@@ -3,11 +3,14 @@ package f.cking.software.domain.interactor
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattService
+import android.bluetooth.BluetoothDevice
 import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.helpers.BleScannerHelper
+import f.cking.software.data.helpers.SdpEnumerationHelper
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.domain.model.Transport
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -34,6 +37,7 @@ class BulkEnumerateGattInteractor(
     private val btidesRepository: BTIDESRepository,
     private val settingsRepository: SettingsRepository,
     private val vendorIdentifier: VendorIdentifier,
+    private val sdpEnumerationHelper: SdpEnumerationHelper,
 ) {
 
     sealed interface Progress {
@@ -49,7 +53,18 @@ class BulkEnumerateGattInteractor(
         data class Done(val total: Int, val succeeded: Int, val skippedVendor: Int, val errors: Int, val advSkipped: Int) : Progress
     }
 
-    enum class Outcome { SUCCESS, SKIPPED_VENDOR, ERROR, TIMEOUT }
+    /**
+     * - [SUCCESS]        : full GATT enumeration captured (LE / dual-mode peer).
+     * - [SDP_SUCCESS]    : BR/EDR-only peer; SDP UUID list was captured (with or without a
+     *                      follow-up GATT-over-BR/EDR attempt). Distinct from SUCCESS so the UI
+     *                      summary line can split BLE-style "connected" from BR/EDR-style
+     *                      "service-classes only".
+     * - [SDP_TIMEOUT]    : BR/EDR SDP fetch produced no UUIDs within the helper's timeout —
+     *                      typically an unbonded peer that's not in pairing mode.
+     * - [SKIPPED_VENDOR] : Apple/Samsung filter matched the device.
+     * - [ERROR]/[TIMEOUT]: the existing LE-side outcomes.
+     */
+    enum class Outcome { SUCCESS, SDP_SUCCESS, SDP_TIMEOUT, SKIPPED_VENDOR, ERROR, TIMEOUT }
 
     private data class EnumResult(val outcome: Outcome, val errorMessage: String? = null)
 
@@ -86,9 +101,9 @@ class BulkEnumerateGattInteractor(
             send(Progress.DeviceStarted(index = index, total = ordered.size, device = device))
             val result = enumerateOne(device, skipApple, skipSamsung)
             when (result.outcome) {
-                Outcome.SUCCESS -> succeeded++
+                Outcome.SUCCESS, Outcome.SDP_SUCCESS -> succeeded++
                 Outcome.SKIPPED_VENDOR -> skippedVendor++
-                Outcome.ERROR, Outcome.TIMEOUT -> errors++
+                Outcome.SDP_TIMEOUT, Outcome.ERROR, Outcome.TIMEOUT -> errors++
             }
             send(Progress.DeviceFinished(index, ordered.size, device, result.outcome, result.errorMessage))
         }
@@ -105,6 +120,12 @@ class BulkEnumerateGattInteractor(
     }
 
     private suspend fun enumerateOne(device: DeviceData, skipApple: Boolean, skipSamsung: Boolean): EnumResult {
+        // BR/EDR-only peer: the LE GATT path won't connect, so run SDP enumeration instead.
+        // DUAL devices keep the LE path — Android typically exposes GATT only over LE on those,
+        // so the LE branch is the right fit.
+        if (device.transport == Transport.BREDR) {
+            return enumerateBrEdrOne(device, skipApple, skipSamsung)
+        }
         btidesRepository.beginGattSession(device.address)
         var vendorMatched = false
         var pendingChars: List<BluetoothGattCharacteristic> = emptyList()
@@ -189,6 +210,89 @@ class BulkEnumerateGattInteractor(
         }
     }
 
+    /**
+     * BR/EDR-only branch of the bulk pipeline. Runs SDP enumeration via [SdpEnumerationHelper]
+     * (Semaphore(4) bounded internally), persists discovered UUIDs into the DB and BTIDES log,
+     * and — when the device's SDP UUID list contains Generic Access (0x1800) or Generic
+     * Attribute (0x1801) — attempts a GATT-over-BR/EDR connection with `TRANSPORT_BREDR`.
+     * Most BR/EDR-only peers reject that connection; the failure is logged at INFO and does
+     * NOT roll back the SDP capture.
+     */
+    private suspend fun enumerateBrEdrOne(device: DeviceData, skipApple: Boolean, skipSamsung: Boolean): EnumResult {
+        return try {
+            val timestampMs = System.currentTimeMillis()
+            val uuids = withTimeoutOrFallback(PER_DEVICE_TIMEOUT) {
+                sdpEnumerationHelper.enumerate(device.address)
+            }
+            val canonical = uuids.map { it.toString().lowercase() }
+            // Run the same vendor filter that LE devices get — Apple/Samsung peers showing up
+            // via SDP shouldn't sneak past the user's bulk-skip toggle.
+            if (vendorIdentifier.shouldSkipByServiceUuids(canonical, skipApple, skipSamsung)) {
+                return EnumResult(Outcome.SKIPPED_VENDOR)
+            }
+            if (canonical.isEmpty()) {
+                return EnumResult(Outcome.SDP_TIMEOUT, "No SDP UUIDs returned within ${PER_DEVICE_TIMEOUT.inWholeSeconds}s")
+            }
+            devicesRepository.updateSdpUuids(device.address, canonical)
+            btidesRepository.appendSDPDiscovery(device.address, uuids, timestampMs)
+            // Optional GATT-over-BR/EDR attempt — only fires when the SDP UUID list claims ATT
+            // support. Most peers don't, so the conditional keeps wasted connection budget low.
+            if (canonical.any { it.startsWith("00001800-") || it.startsWith("00001801-") || it == "1800" || it == "1801" }) {
+                attemptGattOverBrEdr(device)
+            }
+            EnumResult(Outcome.SDP_SUCCESS)
+        } catch (e: TimeoutFallback) {
+            EnumResult(Outcome.SDP_TIMEOUT, "SDP fetch hit ${PER_DEVICE_TIMEOUT.inWholeSeconds}s timeout")
+        } catch (e: BleScannerHelper.BluetoothIsNotInitialized) {
+            EnumResult(Outcome.ERROR, "Bluetooth disabled")
+        } catch (e: Throwable) {
+            Timber.tag(TAG).w(e, "BR/EDR SDP enum failed for ${device.address}")
+            EnumResult(Outcome.ERROR, e.message ?: e::class.java.simpleName)
+        }
+    }
+
+    /**
+     * Best-effort GATT-over-BR/EDR connection. Most BR/EDR-only devices don't expose ATT over
+     * the BR/EDR transport even when SDP claims Generic Attribute — Android's connectGatt
+     * returns GATT_FAILURE / CONNECTION_FAILED_TO_ESTABLISH and we move on. SDP results are
+     * already committed; this is purely additive.
+     */
+    private suspend fun attemptGattOverBrEdr(device: DeviceData) {
+        Timber.tag(TAG).i("Attempting GATT-over-BR/EDR on ${device.address} (SDP indicated ATT support)")
+        btidesRepository.beginGattSession(device.address)
+        var connected = false
+        var gattRef: BluetoothGatt? = null
+        try {
+            withTimeoutOrFallback(BR_EDR_GATT_TIMEOUT) {
+                bleScannerHelper.connectToDevice(device.address, transport = BluetoothDevice.TRANSPORT_BREDR)
+                    .collectUntil { event ->
+                        when (event) {
+                            is BleScannerHelper.DeviceConnectResult.Connected -> {
+                                connected = true
+                                gattRef = event.gatt
+                                bleScannerHelper.discoverServices(event.gatt)
+                                false
+                            }
+                            is BleScannerHelper.DeviceConnectResult.AvailableServices -> {
+                                bleScannerHelper.disconnect(event.gatt)
+                                false
+                            }
+                            is BleScannerHelper.DeviceConnectResult.Disconnected -> true
+                            is BleScannerHelper.DeviceConnectResult.DisconnectedWithError -> true
+                            else -> false
+                        }
+                    }
+            }
+        } catch (e: TimeoutFallback) {
+            gattRef?.let { runCatching { bleScannerHelper.disconnect(it) } }
+        } catch (e: Throwable) {
+            Timber.tag(TAG).i(e, "GATT-over-BR/EDR not supported by ${device.address}")
+        }
+        // Commit only if we actually got services back; otherwise discard so a failed
+        // connection attempt doesn't leave a phantom GATTArray entry in BTIDES.
+        btidesRepository.closeGattSession(device.address, commit = connected)
+    }
+
     private fun pickReadableCharacteristics(services: List<BluetoothGattService>): List<BluetoothGattCharacteristic> {
         val result = mutableListOf<BluetoothGattCharacteristic>()
         for (s in services) {
@@ -239,5 +343,8 @@ class BulkEnumerateGattInteractor(
         private const val TAG = "BulkEnumerateGatt"
         private const val MAX_CHARS_PER_DEVICE = 12
         private val PER_DEVICE_TIMEOUT = 20.seconds
+        // Most BR/EDR-only peers reject the ATT-over-BR/EDR connection; fail fast so the bulk
+        // pass keeps moving.
+        private val BR_EDR_GATT_TIMEOUT = 8.seconds
     }
 }
