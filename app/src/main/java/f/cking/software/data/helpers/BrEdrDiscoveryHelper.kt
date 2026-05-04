@@ -148,10 +148,13 @@ class BrEdrDiscoveryHelper(
             deviceClass = cls?.deviceClass,
             isPaired = device.bondState == BluetoothDevice.BOND_BONDED,
             serviceUuids = device.uuids?.map { it.uuid.toString() }.orEmpty(),
-            // Classic devices are only "connectable" via SDP/RFCOMM/L2CAP — the LE notion of
-            // "connectable advertisement" doesn't apply. Bond-able peers report via SDP, which
-            // we run on tap.
-            isConnectable = false,
+            // BR/EDR devices that responded to inquiry ARE connectable in the only sense
+            // Connect-All cares about — we can issue an SDP fetch (and possibly a GATT-over-
+            // BR/EDR connect on dual-mode peers). The LE-flavoured "connectable advertisement"
+            // bit doesn't translate one-to-one for BR/EDR, but mapping inquiry-respondents to
+            // true keeps them in BulkEnumerateGattInteractor's candidate pool, which is the
+            // user-visible contract behind Connect All.
+            isConnectable = true,
             deviceType = device.type,
         )
         // Coalesce duplicate ACTION_FOUND broadcasts for the same address within one inquiry —

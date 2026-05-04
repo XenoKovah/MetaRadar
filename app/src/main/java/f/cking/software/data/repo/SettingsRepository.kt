@@ -136,7 +136,11 @@ class SettingsRepository(
     }
 
     fun getWakeUpScreenWhileScanning(): Boolean {
-        return sharedPreferences.getBoolean(KEY_WAKE_UP_SCREEN_WHILE_SCANNING, false)
+        // Default true: Android pauses BLE scans aggressively when the screen is off, and the
+        // user-visible cost (the wakelock and the ~10s screen-on burst) is low compared to
+        // missing scan windows. Pre-existing installs with the false-default value persisted
+        // in prefs keep their choice.
+        return sharedPreferences.getBoolean(KEY_WAKE_UP_SCREEN_WHILE_SCANNING, true)
     }
 
     fun setWakeUpScreenWhileScanning(value: Boolean) {

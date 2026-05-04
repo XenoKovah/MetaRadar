@@ -133,6 +133,12 @@ class BgScanService : Service() {
         } else if (intent != null && intent.action == ACTION_SCAN_NOW) {
             Timber.d("Background service scan now command")
             scan()
+            // The user explicitly asked for a scan — don't make them wait up to 60s for the
+            // next BR/EDR inquiry to fire on its own cadence. Cancel any pending runnable and
+            // re-post at +0 so the inquiry kicks off right now. The runnable's own gates
+            // (toggle / Bluetooth-on / open-GATT-connection) still apply.
+            handler.removeCallbacks(nextBrEdrInquiryRunnable)
+            handler.post(nextBrEdrInquiryRunnable)
         } else {
             Timber.d("Background service launched")
             try {
@@ -191,6 +197,8 @@ class BgScanService : Service() {
     private fun scan() {
         // First call after onCreate — kick the BR/EDR inquiry loop too. Idempotent: subsequent
         // calls re-enter the LE-scan path normally; the inquiry handler reschedules itself.
+        // The user-tap ("Scan now") path additionally kicks an immediate BR/EDR inquiry — see
+        // [scanNow] / the ACTION_SCAN_NOW branch in [onStartCommand].
         ensureBrEdrInquiryLoopStarted()
 
         // Honor the user's "Discover BLE" toggle. Skipping with scheduleNextScan() keeps the

@@ -111,7 +111,7 @@
     <string name="connect_all_description">Connect to every visible connectable device in RSSI order (strongest first) and capture GATT enumeration into the BTIDES log. The vendor filters below are enforced both at advertisement time and mid-enumeration: any device whose service UUIDs match a filtered vendor is dropped from the log.</string>
     <string name="connect_all_start">Connect to all connectable devices</string>
     <string name="connect_all_stop">Stop</string>
-    <string name="connect_all_empty">No devices have completed GATT enumeration yet.</string>
+    <string name="connect_all_empty">No devices have completed service discovery yet.</string>
     <string name="connect_all_candidates_count">%1$d potentially connectable devices visible (%2$d vendor-filtered)</string>
     <string name="menu_connect_all">Connect All</string>
     <string name="journal_open_button">Open Error Logs</string>
@@ -131,8 +131,8 @@
     <string name="app_info_build_type_debug">Build type: Debug</string>
     <string name="app_info_distribution">Distribution: %s</string>
     <string name="modify_settings_toast">This permission is needed to dim your screen while background scanning to safe battery</string>
-    <string name="settings_keep_screen_on_while_scanning_title">Keep Screen On for BLE Scanning</string>
-    <string name="settings_keep_screen_on_while_scanning_description">Enabling this feature keeps the screen temporarily awake while the app scans for BLE devices. On Android, BLE scanning is limited or paused when the screen is off, so turning this on ensures accurate device detection. Disabling this feature saves battery, but scanning may be less accurate when the screen is off.</string>
+    <string name="settings_keep_screen_on_while_scanning_title">Keep Screen On for Bluetooth Scanning</string>
+    <string name="settings_keep_screen_on_while_scanning_description">Enabling this feature keeps the screen temporarily awake while the app scans for Bluetooth devices. On Android, BLE scanning is limited or paused when the screen is off, so turning this on ensures accurate device detection. Disabling this feature saves battery, but scanning may be less accurate when the screen is off.</string>
     <string name="project_github_title">%s is an open-source project. You can find the source on GitHub. Feel free to ask your questions, contribute, and star the repository!</string>
     <string name="open_github">Go to GitHub</string>
     <string name="silent_mode_title">Offline mode</string>
@@ -330,7 +330,7 @@
     <string name="device_map_disclaimer_content">The map does not display the device’s actual location; it only records your smartphone’s coordinates at the moment of scanning. The location marker reflects where the device was detected, not where it truly is. The map is not designed to locate devices, but to show where they were previously observed and how their movement relates to your own.</string>
 
     <!-- Main Screen -->
-    <string name="menu_device_list">Device list</string>
+    <string name="menu_device_list">Devices</string>
     <string name="menu_journal">Error Logs</string>
     <string name="menu_settings">Settings</string>
     <string name="stop">Stop</string>
