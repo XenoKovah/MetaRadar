@@ -13,15 +13,12 @@ import f.cking.software.data.database.dao.AppleContactDao
 import f.cking.software.data.database.dao.DeviceDao
 import f.cking.software.data.database.dao.JournalDao
 import f.cking.software.data.database.dao.LocationDao
-import f.cking.software.data.database.dao.RadarProfileDao
 import f.cking.software.data.database.dao.TagDao
 import f.cking.software.data.database.entity.AppleContactEntity
 import f.cking.software.data.database.entity.DeviceEntity
 import f.cking.software.data.database.entity.DeviceToLocationEntity
 import f.cking.software.data.database.entity.JournalEntryEntity
 import f.cking.software.data.database.entity.LocationEntity
-import f.cking.software.data.database.entity.ProfileDetectEntity
-import f.cking.software.data.database.entity.RadarProfileEntity
 import f.cking.software.data.database.entity.TagEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,13 +29,11 @@ import java.io.File
 @Database(
     entities = [
         DeviceEntity::class,
-        RadarProfileEntity::class,
         AppleContactEntity::class,
         LocationEntity::class,
         DeviceToLocationEntity::class,
         JournalEntryEntity::class,
         TagEntity::class,
-        ProfileDetectEntity::class,
     ],
     autoMigrations = [
         AutoMigration(from = 7, to = 8),
@@ -47,13 +42,12 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 19,
+    version = 20,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun deviceDao(): DeviceDao
-    abstract fun radarProfileDao(): RadarProfileDao
     abstract fun appleContactDao(): AppleContactDao
     abstract fun locationDao(): LocationDao
     abstract fun journalDao(): JournalDao
@@ -137,6 +131,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_16_17,
                     MIGRATION_17_18,
                     MIGRATION_18_19,
+                    MIGRATION_19_20,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -241,10 +236,16 @@ abstract class AppDatabase : RoomDatabase() {
             )
             it.execSQL(
                 """
-                CREATE INDEX IF NOT EXISTS index_profile_detect_profile_id_trigger_time 
+                CREATE INDEX IF NOT EXISTS index_profile_detect_profile_id_trigger_time
                 ON profile_detect(profile_id, trigger_time)
             """.trimIndent()
             )
+        }
+
+        val MIGRATION_19_20 = migration(19, 20) {
+            it.execSQL("DROP INDEX IF EXISTS index_profile_detect_profile_id_trigger_time;")
+            it.execSQL("DROP TABLE IF EXISTS profile_detect;")
+            it.execSQL("DROP TABLE IF EXISTS radar_profile;")
         }
 
         private fun migration(

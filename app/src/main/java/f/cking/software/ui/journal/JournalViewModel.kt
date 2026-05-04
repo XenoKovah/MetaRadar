@@ -11,13 +11,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import f.cking.software.R
-import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.JournalRepository
-import f.cking.software.data.repo.RadarProfilesRepository
 import f.cking.software.dateTimeStringFormat
-import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.JournalEntry
-import f.cking.software.domain.model.RadarProfile
 import f.cking.software.ui.ScreenNavigationCommands
 import f.cking.software.utils.navigation.Router
 import kotlinx.coroutines.Dispatchers
@@ -29,8 +25,6 @@ import kotlin.math.min
 
 class JournalViewModel(
     private val journalRepository: JournalRepository,
-    private val profileRepository: RadarProfilesRepository,
-    private val devicesRepository: DevicesRepository,
     private val router: Router,
     private val context: Application,
 ) : ViewModel() {
@@ -54,6 +48,13 @@ class JournalViewModel(
         }
     }
 
+    fun clearJournal() {
+        viewModelScope.launch {
+            journalRepository.clearAll()
+            Toast.makeText(context, context.getString(R.string.journal_cleared), Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun observeJournal() {
         viewModelScope.launch {
             journalRepository.observe()
@@ -71,28 +72,16 @@ class JournalViewModel(
 
     private suspend fun mapJournalHistory(history: List<JournalEntry>): List<JournalEntryUiModel> {
         return withContext(Dispatchers.Default) {
-            val associatedAddresses =
-                history.flatMapTo(mutableSetOf()) { (it.report as? JournalEntry.Report.ProfileReport)?.deviceAddresses ?: emptyList() }
-            val associatedDevices = devicesRepository.getAllByAddresses(associatedAddresses.toList()).associateBy { it.address }
-
-            val profileIds = history.mapNotNull { (it.report as? JournalEntry.Report.ProfileReport)?.profileId }.toSet()
-            val associatedProfiles = profileRepository.getAllByIds(profileIds.toList()).associateBy { it.id }
-
             history.asSequence()
                 .sortedByDescending { it.timestamp }
-                .map { map(it, associatedDevices, associatedProfiles) }
+                .map { map(it) }
                 .toList()
         }
     }
 
-    private fun map(
-        from: JournalEntry,
-        associatedDevices: Map<String, DeviceData>,
-        associatedProfiles: Map<Int?, RadarProfile>,
-    ): JournalEntryUiModel {
+    private fun map(from: JournalEntry): JournalEntryUiModel {
         return when (from.report) {
             is JournalEntry.Report.Error -> mapReportError(from, from.report)
-            is JournalEntry.Report.ProfileReport -> mapReportProfile(from, from.report, associatedDevices, associatedProfiles)
         }
     }
 
@@ -118,39 +107,7 @@ class JournalViewModel(
         )
     }
 
-    private fun mapReportProfile(
-        journalEntry: JournalEntry,
-        report: JournalEntry.Report.ProfileReport,
-        associatedDevices: Map<String, DeviceData>,
-        associatedProfiles: Map<Int?, RadarProfile>,
-    ): JournalEntryUiModel {
-        val profileName = associatedProfiles[report.profileId]?.name ?: context.getString(R.string.unknown_capital_case)
-        return JournalEntryUiModel(
-            dateTime = journalEntry.timestamp.formattedDate(),
-            color = { MaterialTheme.colorScheme.surface },
-            colorForeground = { MaterialTheme.colorScheme.onSurface },
-            title = context.getString(R.string.journal_profile_detected, profileName),
-            subtitle = null,
-            subtitleCollapsed = null,
-            journalEntry = journalEntry,
-            items = mapListItems(report.deviceAddresses, associatedDevices),
-        )
-    }
-
     private fun Long.formattedDate() = dateTimeStringFormat("dd MMM yyyy, HH:mm")
-
-    private fun mapListItems(
-        addresses: List<String>,
-        associatedDevices: Map<String, DeviceData>,
-    ): List<JournalEntryUiModel.ListItemUiModel> {
-        return addresses.map { address ->
-            val device = associatedDevices[address]
-            JournalEntryUiModel.ListItemUiModel(
-                displayName = device?.buildDisplayName() ?: context.getString(R.string.journal_profile_removed, address),
-                payload = device?.address,
-            )
-        }
-    }
 
     data class JournalEntryUiModel(
         val dateTime: String,

@@ -40,4 +40,10 @@ class JournalRepository(database: AppDatabase) {
             journalDao.getById(id)?.toDomain()
         }
     }
+
+    suspend fun clearAll() {
+        withContext(Dispatchers.IO) {
+            journalDao.deleteAll()
+        }
+    }
 }

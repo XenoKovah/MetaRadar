@@ -5,7 +5,11 @@ import f.cking.software.extract16BitUuid
 object GetCharacteristicNameFromUUID {
 
     fun execute(characteristicId: String): String? {
-        return KNOWN_CHARACTERISTIC_ID_TO_NAME[extract16BitUuid(characteristicId)?.uppercase()]
+        // BTIDES writes short SIG UUIDs as 4-char hex ("2A00"); Android exposes them as the
+        // full base form. Accept both so cached and live entries resolve identically.
+        val short = extract16BitUuid(characteristicId)
+            ?: characteristicId.takeIf { it.length == 4 && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
+        return KNOWN_CHARACTERISTIC_ID_TO_NAME[short?.uppercase()]
     }
 
     private val KNOWN_CHARACTERISTIC_ID_TO_NAME = mapOf(

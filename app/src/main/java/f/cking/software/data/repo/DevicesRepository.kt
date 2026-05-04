@@ -101,6 +101,19 @@ class DevicesRepository(
         }
     }
 
+    /**
+     * Wipe every row from `device` and `apple_contacts`. Used by the explicit "Clear" buttons
+     * in the Devices tab and the Settings → Database actions block.
+     */
+    suspend fun deleteAllDevices() {
+        withContext(Dispatchers.IO) {
+            deviceDao.deleteAll()
+            appleContactsDao.deleteAll()
+            lastBatch.value = emptyList()
+            notifyLastBatchListener()
+        }
+    }
+
     suspend fun clearUnAssociatedAirdrops() {
         withContext(Dispatchers.IO) {
             val allDevices = deviceDao.getAll().mapTo(mutableSetOf()) { it.address }

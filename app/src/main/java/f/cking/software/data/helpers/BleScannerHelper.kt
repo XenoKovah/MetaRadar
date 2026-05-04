@@ -19,15 +19,19 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.domain.model.BleScanDevice
 import f.cking.software.toBase64
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.UUID
@@ -38,7 +42,27 @@ class BleScannerHelper(
     private val appContext: Context,
     private val powerModeHelper: PowerModeHelper,
     private val settingsRepository: SettingsRepository,
+    private val btidesRepository: BTIDESRepository,
 ) {
+
+    private val btidesScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun inferBdaddrRand(addressType: Int?, address: String): Int {
+        // Android BluetoothDevice address types: PUBLIC = 0, RANDOM = 1, UNKNOWN = 0xFFFF.
+        // Default to random when unknown, since the BLE scanner predominantly surfaces
+        // random-addressed peripherals.
+        if (addressType != null && addressType in 0..1) return addressType
+        // Heuristic from the top 2 bits of the most-significant address byte: any of the three
+        // BLE random sub-types (static random, RPA, NRPA) leaves at least one of those bits set.
+        val msbHex = address.substringBefore(':', "00")
+        val msb = msbHex.toIntOrNull(16) ?: return 1
+        return if ((msb and 0xC0) != 0) 1 else 0
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun deviceAddressType(device: BluetoothDevice): Int? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) device.addressType else null
+    }
 
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothScanner: BluetoothLeScanner? = null
@@ -88,6 +112,41 @@ class BleScannerHelper(
             )
 
             batch.put(device.address, device)
+            recordToBTIDES(result, addressType, device)
+        }
+
+        private fun recordToBTIDES(result: ScanResult, addressType: Int?, device: BleScanDevice) {
+            val (advType, advTypeStr) = inferAdvType(result)
+            val bdaddrRand = this@BleScannerHelper.inferBdaddrRand(addressType, device.address)
+            val raw = result.scanRecord?.bytes
+            val rssi = device.rssi
+            val timeMs = System.currentTimeMillis()
+            val address = device.address
+            btidesScope.launch {
+                try {
+                    btidesRepository.appendScan(
+                        bdaddr = address,
+                        bdaddrRand = bdaddrRand,
+                        advType = advType,
+                        advTypeStr = advTypeStr,
+                        scanTimeMs = timeMs,
+                        rssi = rssi,
+                        rawScanRecord = raw,
+                    )
+                } catch (e: Throwable) {
+                    Timber.tag(TAG).w(e, "Failed to append BTIDES record for $address")
+                }
+            }
+        }
+
+        private fun inferAdvType(result: ScanResult): Pair<Int, String> {
+            val isLegacy = result.isLegacy
+            val isConnectable = result.isConnectable
+            return when {
+                !isLegacy -> 10 to "AUX_ADV_IND"
+                isConnectable -> 0 to "ADV_IND"
+                else -> 2 to "ADV_NONCONN_IND"
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -104,12 +163,45 @@ class BleScannerHelper(
             val device = requireAdapter().getRemoteDevice(address)
             var gatt: BluetoothGatt? = null
 
+            val bdaddrRand = inferBdaddrRand(deviceAddressType(device), address)
+
+            fun captureGattEnumeration(allServices: List<BluetoothGattService>) {
+                btidesScope.launch {
+                    try {
+                        btidesRepository.appendGATTEnumeration(address, bdaddrRand, allServices)
+                    } catch (e: Throwable) {
+                        Timber.tag(TAG_CONNECT).w(e, "Failed to append BTIDES GATT enumeration for $address")
+                    }
+                }
+            }
+
+            fun captureCharacteristicRead(characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+                btidesScope.launch {
+                    try {
+                        btidesRepository.appendCharacteristicRead(address, bdaddrRand, characteristic, value, status)
+                    } catch (e: Throwable) {
+                        Timber.tag(TAG_CONNECT).w(e, "Failed to append BTIDES characteristic read for $address")
+                    }
+                }
+            }
+
+            fun captureDescriptorRead(descriptor: BluetoothGattDescriptor, value: ByteArray, status: Int) {
+                btidesScope.launch {
+                    try {
+                        btidesRepository.appendDescriptorRead(address, bdaddrRand, descriptor, value, status)
+                    } catch (e: Throwable) {
+                        Timber.tag(TAG_CONNECT).w(e, "Failed to append BTIDES descriptor read for $address")
+                    }
+                }
+            }
+
             val callback = object : BluetoothGattCallback() {
                 override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
                     super.onServicesDiscovered(gatt, status)
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         Timber.tag(TAG_CONNECT).d("Services discovered. ${gatt.services.size} services for device $address")
                         services.addAll(gatt.services.orEmpty())
+                        captureGattEnumeration(services.toList())
                         trySend(DeviceConnectResult.AvailableServices(gatt, services.toList()))
                     } else {
                         Timber.tag(TAG_CONNECT).e("Error while discovering services for device $address. Gatt is null")
@@ -118,6 +210,7 @@ class BleScannerHelper(
 
                 override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
                     super.onCharacteristicRead(gatt, characteristic, value, status)
+                    captureCharacteristicRead(characteristic, value, status)
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         Timber.tag(TAG_CONNECT).d("Characteristic read. ${characteristic.uuid}, value: ${value.decodeToString()}")
                         trySend(DeviceConnectResult.CharacteristicRead(gatt, characteristic, value.toBase64()))
@@ -131,9 +224,11 @@ class BleScannerHelper(
                     super.onDescriptorRead(gatt, descriptor, status, value)
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         Timber.tag(TAG_CONNECT).d("Descriptor read. ${descriptor.uuid}, value: ${value.decodeToString()}")
+                        captureDescriptorRead(descriptor, value, status)
                         trySend(DeviceConnectResult.DescriptorRead(gatt, descriptor, value.toBase64()))
                     } else {
                         Timber.tag(TAG_CONNECT).e("Error while reading descriptor ${descriptor.uuid}. Error code: $status")
+                        trySend(DeviceConnectResult.FailedReadDescriptor(gatt, descriptor))
                     }
                 }
 
@@ -331,6 +426,7 @@ class BleScannerHelper(
 
         data class FailedReadCharacteristic(val gatt: BluetoothGatt, val characteristic: BluetoothGattCharacteristic) : DeviceConnectResult
         data class DescriptorRead(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor, val valueEncoded64: String) : DeviceConnectResult
+        data class FailedReadDescriptor(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor) : DeviceConnectResult
         data object Connecting : DeviceConnectResult
         data class Connected(val gatt: BluetoothGatt) : DeviceConnectResult
         data object Disconnecting : DeviceConnectResult

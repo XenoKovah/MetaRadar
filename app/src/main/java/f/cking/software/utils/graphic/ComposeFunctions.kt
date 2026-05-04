@@ -381,6 +381,18 @@ fun DeviceListItem(
                 Spacer(modifier = Modifier.height(4.dp))
                 ExtendedAddressView(device.extendedAddressInfo())
                 Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(
+                        if (device.isConnectable) R.string.device_connectable else R.string.device_non_connectable
+                    ),
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (device.isConnectable) {
+                        colorResource(id = R.color.green_600)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                Spacer(modifier = Modifier.height(4.dp))
 
                 val updateStr = if (showLastUpdate) {
                     stringResource(

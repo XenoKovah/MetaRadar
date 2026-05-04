@@ -5,7 +5,11 @@ import f.cking.software.extract16BitUuid
 object GetServiceNameFromBluetoothService {
 
     fun execute(serviceId: String): String? {
-        return KNOWN_SERVICE_ID_TO_NAME[extract16BitUuid(serviceId)?.uppercase()]
+        // BTIDES writes short SIG UUIDs as 4-char hex ("1801"); Android exposes them as the
+        // full base form. Accept both so cached and live entries resolve identically.
+        val short = extract16BitUuid(serviceId)
+            ?: serviceId.takeIf { it.length == 4 && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
+        return KNOWN_SERVICE_ID_TO_NAME[short?.uppercase()]
     }
 
     private val KNOWN_SERVICE_ID_TO_NAME = mapOf(

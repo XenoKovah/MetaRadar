@@ -6,10 +6,10 @@ import org.koin.dsl.module
 object InteractorsModule {
 
     val module = module {
-        single { FilterCheckerImpl(get(), get(), get(), get(), get()) }
-        single { DeviceServicesFetchingPlanner(get(), get(), get()) }
+        single { FilterCheckerImpl(get(), get(), get(), get(), get(), get()) }
 
         factory { ClearGarbageInteractor(get(), get(), get(), get()) }
+        factory { ClearAllDevicesInteractor(get()) }
         factory { GetAllDevicesInteractor(get()) }
         factory { IsKnownDeviceInteractor() }
         factory { GetBleRecordFramesFromRawInteractor() }
@@ -22,8 +22,11 @@ object InteractorsModule {
         factory { CreateBackupFileInteractor(get(), get()) }
         factory { SelectBackupFileInteractor(get(), get()) }
         factory { RestoreDatabaseInteractor(get(), get()) }
-        factory { SaveRadarProfile(get(), get()) }
-        factory { DeleteRadarProfile(get(), get()) }
+        factory { CreateBTIDESFileInteractor(get(), get()) }
+        factory { ExportBTIDESInteractor(get()) }
+        factory { ClearBTIDESLogInteractor(get()) }
+        single { VendorIdentifier(get()) }
+        factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get()) }
         factory { CheckDeviceLocationHistoryInteractor(get()) }
         factory { CheckUserLocationHistoryInteractor(get()) }
         factory { AddTagToDeviceInteractor(get(), get()) }
@@ -33,9 +36,7 @@ object InteractorsModule {
         factory { SaveFirstAppLaunchTimeInteractor(get()) }
         factory { CheckNeedToShowEnjoyTheAppInteractor(get(), get()) }
         factory { EnjoyTheAppAskLaterInteractor(get()) }
-        factory { CheckBatchForRadarMatchesInteractor(get(), get(), get(), get(), get()) }
-        factory { SaveOrMergeBatchInteractor(get(), get(), get(), get(), get(), get(), get()) }
-        factory { FetchDeviceServiceInfo(get(), get()) }
+        factory { SaveOrMergeBatchInteractor(get(), get(), get(), get(), get()) }
         factory { GetDatabaseInfoInteractor(get(), get()) }
     }
 }

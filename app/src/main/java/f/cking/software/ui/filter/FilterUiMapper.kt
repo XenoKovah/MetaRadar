@@ -2,8 +2,8 @@ package f.cking.software.ui.filter
 
 import f.cking.software.SHA256
 import f.cking.software.data.helpers.BluetoothSIG
+import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.ManufacturerInfo
-import f.cking.software.domain.model.RadarProfile
 import f.cking.software.timeFromDateTime
 import f.cking.software.toLocalDate
 import f.cking.software.toLocalTime
@@ -13,106 +13,106 @@ import java.time.LocalTime
 object FilterUiMapper {
 
 
-    fun mapToDomain(from: FilterUiState): RadarProfile.Filter {
+    fun mapToDomain(from: FilterUiState): DeviceFilter {
         return when (from) {
-            is FilterUiState.Name -> RadarProfile.Filter.Name(from.name, from.ignoreCase)
-            is FilterUiState.Address -> RadarProfile.Filter.Address(from.address)
-            is FilterUiState.IsFavorite -> RadarProfile.Filter.IsFavorite(from.favorite)
-            is FilterUiState.IsPaired -> RadarProfile.Filter.IsPaired(from.isPaired)
-            is FilterUiState.Manufacturer -> RadarProfile.Filter.Manufacturer(from.manufacturer!!.id)
-            is FilterUiState.LastDetectionInterval -> RadarProfile.Filter.LastDetectionInterval(
+            is FilterUiState.Name -> DeviceFilter.Name(from.name, from.ignoreCase)
+            is FilterUiState.Address -> DeviceFilter.Address(from.address)
+            is FilterUiState.IsFavorite -> DeviceFilter.IsFavorite(from.favorite)
+            is FilterUiState.IsPaired -> DeviceFilter.IsPaired(from.isPaired)
+            is FilterUiState.Manufacturer -> DeviceFilter.Manufacturer(from.manufacturer!!.id)
+            is FilterUiState.LastDetectionInterval -> DeviceFilter.LastDetectionInterval(
                 from = mapTimeToUi(from.fromDate, from.fromTime, Long.MIN_VALUE),
                 to = mapTimeToUi(from.toDate, from.toTime, Long.MAX_VALUE),
             )
-            is FilterUiState.FirstDetectionInterval -> RadarProfile.Filter.FirstDetectionInterval(
+            is FilterUiState.FirstDetectionInterval -> DeviceFilter.FirstDetectionInterval(
                 from = mapTimeToUi(from.fromDate, from.fromTime, Long.MIN_VALUE),
                 to = mapTimeToUi(from.toDate, from.toTime, Long.MAX_VALUE),
             )
-            is FilterUiState.MinLostTime -> RadarProfile.Filter.MinLostTime(from.minLostTime!!)
-            is FilterUiState.AppleAirdropContact -> RadarProfile.Filter.AppleAirdropContact(
+            is FilterUiState.MinLostTime -> DeviceFilter.MinLostTime(from.minLostTime!!)
+            is FilterUiState.AppleAirdropContact -> DeviceFilter.AppleAirdropContact(
                 contactStr = from.contactString.trim(),
                 airdropShaFormat = SHA256.fromStringAirdrop(from.contactString),
                 minLostTime = from.minLostTime!!,
             )
-            is FilterUiState.IsFollowing -> RadarProfile.Filter.IsFollowing(
+            is FilterUiState.IsFollowing -> DeviceFilter.IsFollowing(
                 followingDurationMs = from.followingDurationMs,
                 followingDetectionIntervalMs = from.followingDetectionIntervalMs,
             )
-            is FilterUiState.DeviceLocation -> RadarProfile.Filter.DeviceLocation(
+            is FilterUiState.DeviceLocation -> DeviceFilter.DeviceLocation(
                 location = from.targetLocation!!,
                 radiusMeters = from.radius,
                 fromTimeMs = mapTimeToUi(from.fromDate, from.fromTime, Long.MIN_VALUE),
                 toTimeMs = mapTimeToUi(from.toDate, from.toTime, Long.MAX_VALUE),
             )
-            is FilterUiState.UserLocation -> RadarProfile.Filter.UserLocation(
+            is FilterUiState.UserLocation -> DeviceFilter.UserLocation(
                 location = from.targetLocation!!,
                 radiusMeters = from.radius,
                 noLocationDefaultValue = from.defaultValueIfNoLocation,
             )
-            is FilterUiState.Tag -> RadarProfile.Filter.ByTag(from.tag!!)
-            is FilterUiState.Any -> RadarProfile.Filter.Any(from.filters.map { mapToDomain(it) }.sortedBy { it.getDifficulty() })
-            is FilterUiState.All -> RadarProfile.Filter.All(from.filters.map { mapToDomain(it) }.sortedBy { it.getDifficulty() })
-            is FilterUiState.Not -> RadarProfile.Filter.Not(mapToDomain(from.filter!!))
+            is FilterUiState.Tag -> DeviceFilter.ByTag(from.tag!!)
+            is FilterUiState.Any -> DeviceFilter.Any(from.filters.map { mapToDomain(it) }.sortedBy { it.getDifficulty() })
+            is FilterUiState.All -> DeviceFilter.All(from.filters.map { mapToDomain(it) }.sortedBy { it.getDifficulty() })
+            is FilterUiState.Not -> DeviceFilter.Not(mapToDomain(from.filter!!))
             is FilterUiState.Unknown, is FilterUiState.Interval -> throw IllegalArgumentException("Unsupported type: ${from::class.java}")
         }
     }
 
-    fun mapToUi(from: RadarProfile.Filter): FilterUiState {
+    fun mapToUi(from: DeviceFilter): FilterUiState {
         return when (from) {
-            is RadarProfile.Filter.Name -> FilterUiState.Name().apply {
+            is DeviceFilter.Name -> FilterUiState.Name().apply {
                 this.name = from.name
                 this.ignoreCase = from.ignoreCase
             }
-            is RadarProfile.Filter.Address -> FilterUiState.Address().apply {
+            is DeviceFilter.Address -> FilterUiState.Address().apply {
                 this.address = from.address
             }
-            is RadarProfile.Filter.Manufacturer -> FilterUiState.Manufacturer().apply {
+            is DeviceFilter.Manufacturer -> FilterUiState.Manufacturer().apply {
                 this.manufacturer = BluetoothSIG.bluetoothSIG[from.manufacturerId]?.let {
                     ManufacturerInfo(from.manufacturerId, it, null,)
                 }
             }
-            is RadarProfile.Filter.IsFavorite -> FilterUiState.IsFavorite().apply {
+            is DeviceFilter.IsFavorite -> FilterUiState.IsFavorite().apply {
                 this.favorite = from.favorite
             }
-            is RadarProfile.Filter.IsPaired -> FilterUiState.IsPaired().apply {
+            is DeviceFilter.IsPaired -> FilterUiState.IsPaired().apply {
                 this.isPaired = from.isPaired
             }
-            is RadarProfile.Filter.FirstDetectionInterval -> FilterUiState.FirstDetectionInterval().apply {
+            is DeviceFilter.FirstDetectionInterval -> FilterUiState.FirstDetectionInterval().apply {
                 this.fromDate = from.from.takeIf { it != Long.MIN_VALUE }?.toLocalDate()
                 this.fromTime = from.from.takeIf { it != Long.MIN_VALUE }?.toLocalTime()
                 this.toDate = from.to.takeIf { it != Long.MAX_VALUE }?.toLocalDate()
                 this.toTime = from.to.takeIf { it != Long.MAX_VALUE }?.toLocalTime()
             }
-            is RadarProfile.Filter.LastDetectionInterval -> FilterUiState.LastDetectionInterval().apply {
+            is DeviceFilter.LastDetectionInterval -> FilterUiState.LastDetectionInterval().apply {
                 this.fromDate = from.from.takeIf { it != Long.MIN_VALUE }?.toLocalDate()
                 this.fromTime = from.from.takeIf { it != Long.MIN_VALUE }?.toLocalTime()
                 this.toDate = from.to.takeIf { it != Long.MAX_VALUE }?.toLocalDate()
                 this.toTime = from.to.takeIf { it != Long.MAX_VALUE }?.toLocalTime()
             }
-            is RadarProfile.Filter.MinLostTime -> FilterUiState.MinLostTime().apply {
+            is DeviceFilter.MinLostTime -> FilterUiState.MinLostTime().apply {
                 this.minLostTime = from.minLostTime
             }
-            is RadarProfile.Filter.ByTag -> FilterUiState.Tag().apply {
+            is DeviceFilter.ByTag -> FilterUiState.Tag().apply {
                 this.tag = from.tag
             }
-            is RadarProfile.Filter.All -> FilterUiState.All().apply {
+            is DeviceFilter.All -> FilterUiState.All().apply {
                 this.filters = from.filters.map { mapToUi(it) }
             }
-            is RadarProfile.Filter.Any -> FilterUiState.Any().apply {
+            is DeviceFilter.Any -> FilterUiState.Any().apply {
                 this.filters = from.filters.map { mapToUi(it) }
             }
-            is RadarProfile.Filter.Not -> FilterUiState.Not().apply {
+            is DeviceFilter.Not -> FilterUiState.Not().apply {
                 this.filter = mapToUi(from.filter)
             }
-            is RadarProfile.Filter.AppleAirdropContact -> FilterUiState.AppleAirdropContact().apply {
+            is DeviceFilter.AppleAirdropContact -> FilterUiState.AppleAirdropContact().apply {
                 this.contactString = from.contactStr
                 this.minLostTime = from.minLostTime
             }
-            is RadarProfile.Filter.IsFollowing -> FilterUiState.IsFollowing().apply {
+            is DeviceFilter.IsFollowing -> FilterUiState.IsFollowing().apply {
                 this.followingDurationMs = from.followingDurationMs
                 this.followingDetectionIntervalMs = from.followingDetectionIntervalMs
             }
-            is RadarProfile.Filter.DeviceLocation -> FilterUiState.DeviceLocation().apply {
+            is DeviceFilter.DeviceLocation -> FilterUiState.DeviceLocation().apply {
                 this.targetLocation = from.location
                 this.radius = from.radiusMeters
                 this.fromDate = from.fromTimeMs.takeIf { it != Long.MIN_VALUE }?.toLocalDate()
@@ -120,7 +120,7 @@ object FilterUiMapper {
                 this.toDate = from.toTimeMs.takeIf { it != Long.MAX_VALUE }?.toLocalDate()
                 this.toTime = from.toTimeMs.takeIf { it != Long.MAX_VALUE }?.toLocalTime()
             }
-            is RadarProfile.Filter.UserLocation -> FilterUiState.UserLocation().apply {
+            is DeviceFilter.UserLocation -> FilterUiState.UserLocation().apply {
                 this.targetLocation = from.location
                 this.radius = from.radiusMeters
                 this.defaultValueIfNoLocation = from.noLocationDefaultValue

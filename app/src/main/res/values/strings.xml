@@ -13,13 +13,11 @@
     <string name="select">Select</string>
     <string name="clear">Clear</string>
     <string name="fetch">Fetch</string>
-    <string name="analyse">Analyse</string>
     <string name="decline">Decline</string>
     <string name="ok">OK</string>
     <string name="turn_on">Turn on</string>
     <string name="report">Report</string>
     <string name="accept">Accept</string>
-    <string name="shaders_test" translatable="false">Shaders test</string>
     <string name="preparing_database">Optimizing database, it might take a minute…</string>
 
     <plurals name="day">
@@ -65,9 +63,12 @@
     <string name="lat_template">lat: %s</string>
     <string name="lng_template">lng: %s</string>
     <string name="clear_garbage">Clear garbage</string>
+    <string name="clear_all_devices_title">Clear all devices?</string>
+    <string name="clear_all_devices_subtitle">Delete every device row from the database, including paired Apple-contact rows. Scan history and BTIDES log are not touched. This cannot be undone.</string>
+    <string name="clear_all_devices_done">All devices cleared</string>
+    <string name="settings_clear_database">Clear database</string>
     <string name="restore_data_from_file_title">Restore database from file?</string>
     <string name="restore_data_from_file_subtitle">The current database will be overwritten, data will be lost</string>
-    <string name="button_project_purpose">Project Purpose</string>
     <string name="settings_restore_database">Restore database</string>
     <string name="backup_database_title">Save database to devise storage?</string>
     <string name="backup_database_subtitle">The database contains your location history. Please handle it with care, this is your sensitive data</string>
@@ -76,13 +77,45 @@
     <string name="settings_use_gps_title">Use GPS location only</string>
     <string name="settings_use_gps_subtitle">The Fused Location Provider uses speculative geolocation, which improves performance in areas with poor GPS signal but reduces location accuracy. Disabling the Fused Location increases data accuracy but negatively impacts power efficiency.</string>
     <string name="settings_location_history_was_removed">Location history was removed</string>
-    <string name="backup_has_failed">Backup has failed. See report in the Journal</string>
+    <string name="backup_has_failed">Backup has failed. See report in the Error Logs</string>
     <string name="directory_was_not_selected">Directory wasn\'t selected</string>
     <string name="file_was_not_selected">File wasn\'t selected</string>
-    <string name="cannot_restore_database">Cannot restore database. See report in the Journal</string>
+    <string name="cannot_restore_database">Cannot restore database. See report in the Error Logs</string>
     <string name="database_was_restored">Database was restored from backup</string>
     <string name="backup_has_succeeded">Backup has succeeded</string>
     <string name="garbage_has_cleared">Cleared %s garbage devices</string>
+    <string name="btides_section_title">BTIDES export</string>
+    <string name="btides_section_description">Save advertisement data captured while scanning to a JSON file using the BTIDES schema (https://github.com/darkmentorllc/BTIDES_Schema).</string>
+    <string name="btides_log_size">BTIDES log size: %s</string>
+    <string name="btides_export_to_file">Export BTIDES file…</string>
+    <string name="btides_export_for_adb">Save BTIDES file for ADB pull</string>
+    <string name="btides_export_cancel_title">Cancel BTIDES export?</string>
+    <string name="btides_export_cancel_subtitle">Stop the in-progress export. The partially-written file will be deleted.</string>
+    <string name="btides_export_cancelled">BTIDES export cancelled</string>
+    <string name="btides_clear_log">Clear BTIDES log</string>
+    <string name="btides_clear_log_confirm_title">Delete BTIDES capture log?</string>
+    <string name="btides_clear_log_confirm_subtitle">All advertisements captured so far will be removed.</string>
+    <string name="btides_export_succeeded">BTIDES file written (%1$d devices)</string>
+    <string name="btides_export_for_adb_succeeded">BTIDES file ready at %1$s (%2$d devices)</string>
+    <string name="btides_export_failed">BTIDES export failed. See report in the Error Logs</string>
+    <string name="btides_log_was_cleared">BTIDES capture log was cleared</string>
+    <string name="btides_export_dialog_title">Export BTIDES file?</string>
+    <string name="btides_export_dialog_subtitle">A JSON file conforming to BTIDES_base.json will be written to the location you choose.</string>
+    <string name="bulk_gatt_skip_apple_title">Skip Apple devices</string>
+    <string name="bulk_gatt_skip_apple_subtitle">Skip devices identified by Apple MSD company ID, IEEE OUI, BT SIG member UUID, or CLUES UUID attribution.</string>
+    <string name="bulk_gatt_skip_samsung_title">Skip Samsung devices</string>
+    <string name="bulk_gatt_skip_samsung_subtitle">Same matching rules as Apple, against Samsung allocations.</string>
+    <string name="bulk_gatt_retry_forever_title">Retry forever</string>
+    <string name="bulk_gatt_retry_forever_subtitle">After every pass, immediately start another. Devices that already gave us their full GATT are never retried.</string>
+    <string name="connect_all_errors_none">No errors this pass.</string>
+    <string name="connect_all_description">Connect to every visible connectable device in RSSI order (strongest first) and capture GATT enumeration into the BTIDES log. The vendor filters below are enforced both at advertisement time and mid-enumeration: any device whose service UUIDs match a filtered vendor is dropped from the log.</string>
+    <string name="connect_all_start">Connect to all connectable devices</string>
+    <string name="connect_all_stop">Stop</string>
+    <string name="connect_all_empty">No devices have completed GATT enumeration yet.</string>
+    <string name="connect_all_candidates_count">%1$d potentially connectable devices visible (%2$d vendor-filtered)</string>
+    <string name="menu_connect_all">Connect All</string>
+    <string name="journal_open_button">Open Error Logs</string>
+    <string name="journal_block_description">View background errors recorded by the scanner / GATT / export pipelines.</string>
     <string name="clear_all_location_history_dialog_title">Clear all location history?</string>
     <string name="launch_on_system_startup_title">Launch on system startup</string>
     <string name="report_issue_title">Noticed a problem or have a feature request?</string>
@@ -96,7 +129,6 @@
     <string name="settings_keep_screen_on_while_scanning_description">Enabling this feature keeps the screen temporarily awake while the app scans for BLE devices. On Android, BLE scanning is limited or paused when the screen is off, so turning this on ensures accurate device detection. Disabling this feature saves battery, but scanning may be less accurate when the screen is off.</string>
     <string name="project_github_title">%s is an open-source project. You can find the source on GitHub. Feel free to ask your questions, contribute, and star the repository!</string>
     <string name="open_github">Go to GitHub</string>
-    <string name="secret_cat">A secret cat photo</string>
     <string name="silent_mode_title">Offline mode</string>
     <string name="silent_mode_subtitle">Turn off any network communications in the app. It might be helpful to save traffic.</string>
     <string name="database_actions">Database actions</string>
@@ -106,13 +138,6 @@
     <string name="database_locations_count">Location records: %s</string>
     <string name="app_settings_title">App settings</string>
     <string name="silent_mode_is_off_toast">Offline mode is turned off. You can change it in the settings.</string>
-    <string name="enable_deep_analysis">Deep analysis (Experimental)</string>
-    <string name="enable_deep_analysis_description">If Deep Analysis is enabled, the app will request more information from all found devices. It will provide more data for each scan, but will also increase scan time and power consumption and may disclose your presence.</string>
-    <string name="deep_analysis_warning_title">Enable Deep Analysis? (EXPERIMENTAL)</string>
-    <string name="deep_analysis_warning_text">Deep Analysis does not only scan for BLE devices. It also actively requests data from their accessible GATT services.\n\nSome devices may require authentication or encryption to access certain services. In such cases, this may trigger a pairing request.\n\nThis mode may also make your device more visible to nearby devices.\n\nOnly enable this feature if you understand how it works and accept these side effects.</string>
-    <string name="deep_analysis_agreement_text">I know what I\'m doing</string>
-    <string name="deep_analysis_decline">Cancel</string>
-    <string name="deep_analysis_enable">Enable</string>
 
     <!-- Select manufacturer -->
     <string name="select_manufacturer">Search manufacturer</string>
@@ -157,19 +182,7 @@
     <string name="filter_by_tag">By Tag</string>
     <string name="filter_by_tag_description">Triggers if the device has the selected tag</string>
 
-    <!-- Profiles list -->
-    <string name="create_new">Create new</string>
-    <string name="profile_is_active">Is active</string>
-    <string name="profile_is_not_active">Is NOT active</string>
-    <string name="radar_profile_placeholder">Radar Alerts help you detect specific devices. The app will notify you when a nearby device matches one of your Alert Rules. Tap “Create New” or choose a template to set up your first rule.</string>
-
-    <!-- Profile details -->
-    <string name="radar_profile_title">Radar Alerts</string>
-    <string name="name">Name</string>
-    <string name="description">Description (optional)</string>
-    <string name="is_active">Is active</string>
-    <string name="profile_cooldown">Alert cooldown</string>
-    <string name="profile_cooldown_description">Set a cooldown period after an Alert Rule is triggered to avoid repeated notifications.</string>
+    <!-- Filter UI -->
     <string name="add_filter">Add filter</string>
     <string name="filter_unknown">Unknown filter</string>
     <string name="min_following_duration">Min following duration</string>
@@ -193,12 +206,6 @@
     <string name="is_paired">Is paired</string>
     <string name="filter_user_location_if_no_location">Skip filter if location is not available (otherwise default value is false)</string>
     <string name="change">Change</string>
-    <string name="cannot_save_profile">Unable to save Alert Rule. Make sure your settings are correct.</string>
-    <string name="profile_has_been_removed">Your Alert Rule has been removed.</string>
-    <string name="delete_profile_dialog_title">Are you sure you want to delete the Alert Rule "%s"?</string>
-    <string name="discard_changes_dialog_title">Your changes will be lost. Continue?</string>
-    <string name="stay">Stay</string>
-    <string name="discard_changes">Discard changes</string>
     <string name="filter_location_has_data">Location selected. Radius: %.1f m</string>
     <string name="filter_location_no_data">Select target location</string>
     <string name="select_tag">Select tag</string>
@@ -220,7 +227,8 @@
     <string name="search_query">Search query or regex</string>
     <string name="close_search">Close search</string>
     <string name="clear_search">Clear search</string>
-    <string name="not_apple">Not apple</string>
+    <string name="not_apple">Not Apple</string>
+    <string name="uuid_name_unknown">Unknown</string>
     <string name="favorite">Favorite</string>
     <string name="enjoy_the_app_question">Do you like this app?</string>
     <string name="enjoy_the_app_yes">Yes</string>
@@ -277,16 +285,13 @@
     <string name="sort_type_by_device_type">Device type</string>
     <string name="active_mode_show_all">Show all %s online devices</string>
     <string name="device_is_online">Online</string>
-    <plurals name="services_discovered">
-        <item quantity="zero">No services discovered</item>
-        <item quantity="one">%d service discovered</item>
-        <item quantity="other">%d services discovered</item>
-    </plurals>
+    <string name="services_and_characteristics_discovered">%1$d services / %2$d characteristics discovered</string>
     <plurals name="device_details_raw_data">
-        <item quantity="zero">No raw data fragments</item>
-        <item quantity="one">%d raw data fragment</item>
-        <item quantity="other">%d raw data fragments</item>
+        <item quantity="zero">No advertisement records</item>
+        <item quantity="one">%d advertisement record</item>
+        <item quantity="other">%d advertisement records</item>
     </plurals>
+    <string name="device_details_raw_data_unknown_type">0x%s — Unknown AD type</string>
     <string name="device_details_status_connecting">Connecting</string>
     <string name="device_details_status_connected">Connected</string>
     <string name="device_details_status_disconnecting">Disconnecting</string>
@@ -294,15 +299,18 @@
     <string name="device_details_connect">Connect</string>
     <string name="device_details_disconnect">Disconnect</string>
     <string name="read">Read</string>
-    <string name="device_details_metadata">Metadata</string>
+    <string name="re_read">Re-Read</string>
+    <string name="read_failed">Read failed</string>
+    <string name="clues_purpose_label">Purpose</string>
+    <string name="device_connectable">Connectable</string>
+    <string name="device_non_connectable">Unconnectable</string>
     <string name="device_map_expand_title">Expand map</string>
     <string name="device_map_disclaimer_title">Map disclaimer</string>
     <string name="device_map_disclaimer_content">The map does not display the device’s actual location; it only records your smartphone’s coordinates at the moment of scanning. The location marker reflects where the device was detected, not where it truly is. The map is not designed to locate devices, but to show where they were previously observed and how their movement relates to your own.</string>
 
     <!-- Main Screen -->
     <string name="menu_device_list">Device list</string>
-    <string name="menu_radar_profiles">Radar Alerts</string>
-    <string name="menu_journal">Journal</string>
+    <string name="menu_journal">Error Logs</string>
     <string name="menu_settings">Settings</string>
     <string name="stop">Stop</string>
     <string name="scan">Scan</string>
@@ -316,18 +324,7 @@
     <string name="there_are_no_devices_around">There are no known devices around</string>
     <string name="app_service_title">@string/app_name</string>
     <string name="app_service_title_power_saving">%s · Power saving</string>
-    <string name="notification_profile_is_near_you">Device matching \"%s\" detected nearby!</string>
-
-    <plurals name="notification_profiles_are_near_you">
-        <item quantity="one">%d device matches your Alert Rule nearby!</item>
-        <item quantity="few">%d devices match your Alert Rules nearby!</item>
-        <item quantity="many">%d devices match your Alert Rules nearby!</item>
-        <item quantity="other">%d devices match your Alert Rules nearby!</item>
-    </plurals>
-
-    <string name="devices_matched_postfix">\"%s\" devices matched!</string>
     <string name="scanner_notification_channel_name">Background scan service notification</string>
-    <string name="device_found_notification_channel_name">Radar notifications</string>
     <string name="location_is_turned_off_title">Location is turned off</string>
     <string name="location_is_turned_off_subtitle">Bluetooth radar can\'t scan when the location is turned off due to android\'s restrictions</string>
     <string name="errors_notifications">Errors notifications</string>
@@ -341,10 +338,13 @@
 
     <!-- Journal -->
     <string name="journal_device_was_removed">Such device was removed from the database</string>
-    <string name="journal_profile_detected">Alert Rule detected: \"%s\"</string>
-    <string name="journal_profile_removed">%s (removed)</string>
-    <string name="unknown_capital_case">UNKNOWN</string>
-    <string name="journal_placeholder">This is your event journal. All triggered Alerts and app events will be recorded here, so you never miss anything.</string>
+    <string name="journal_placeholder">No error log entries. The Error Logs records background errors thrown by the scanner / GATT / export pipelines so you can see what went wrong without attaching a debugger. Empty is good — it means nothing has failed.</string>
+    <string name="journal_header_subtitle">Background errors thrown by the scanner / GATT / export pipelines.</string>
+    <string name="journal_clear_button">Clear</string>
+    <string name="journal_clear_dialog_title">Clear Error Logs?</string>
+    <string name="journal_clear_dialog_body">This permanently deletes all recorded error log entries.</string>
+    <string name="journal_clear_confirm">Clear</string>
+    <string name="journal_cleared">Error Logs cleared</string>
 
     <!-- Permissions -->
     <string name="permission_intro_bg_location_text">There are two reasons for background location permission:\n- Part of the functionality is related to the analysis of data regarding the current location of the user.\n- To work correctly with Bluetooth in the background in android, location permission is also required.</string>
@@ -356,20 +356,7 @@
     <string name="permission_data_coolect_info">The application does not collect or transmit data. The project is fully open source and available on github</string>
     <string name="grant_permissions_manually">Grant the necessary permissions manually</string>
     <string name="cannot_open_the_url">Cannot open the url</string>
-
-    <!-- Shader test -->
-    <string name="shader_test_title" translatable="false">Shaders test</string>
-    <string name="shader_test_panel_size" translatable="false">Glass scale: %d\%%</string>
-    <string name="shader_test_glass_aberration" translatable="false">Aberration index: %.2f</string>
-    <string name="shader_test_glass_refraction" translatable="false">Refraction index: %.2f</string>
-    <string name="shader_test_blur_radius" translatable="false">Blur radius: %.2f</string>
-    <string name="shader_test_glass_type" translatable="false">Glass type</string>
-    <string name="shader_test_glass_type_sin" translatable="false">Curved</string>
-    <string name="shader_test_glass_type_mod" translatable="false">Fluted</string>
-    <string name="shader_test_glass_type_flat" translatable="false">Flat</string>
-    <string name="shader_test_curve_amplitude" translatable="false">Curve amplitude: %.2f</string>
-    <string name="shader_test_curve_length" translatable="false">Curve length: %.2f</string>
-    <string name="shader_test_tilt" translatable="false">x: %.2f\ny: %.2f</string>
+    <string name="url_copied_no_browser">No browser installed — URL copied to clipboard: %1$s</string>
 
     <!-- Background location request dialog -->
     <string name="background_location_request_title">Why all-time location is needed</string>

@@ -31,7 +31,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import f.cking.software.R
-import f.cking.software.utils.graphic.GlassBottomSpace
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import f.cking.software.utils.navigation.BackCommand
 import f.cking.software.utils.navigation.Router
@@ -48,33 +47,30 @@ object AboutScreen {
                 AppBar(scrollBehavior) { router.navigate(BackCommand) }
             },
             content = { paddings ->
-                GlassBottomSpace(
-                    modifier = Modifier.fillMaxSize(),
-                    globalContent = { bottomPadding ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .background(MaterialTheme.colorScheme.surface)
-                                .padding(top = paddings.calculateTopPadding())
-                        ) {
-                            Content()
-                            Spacer(modifier = Modifier.height(bottomPadding.calculateBottomPadding()))
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(top = paddings.calculateTopPadding())
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Content()
+                    }
+                    Button(
+                        modifier = Modifier
+                            .padding(8.dp)
+                            .fillMaxWidth(),
+                        onClick = { router.navigate(BackCommand) },
+                        content = {
+                            Text(stringResource(R.string.understood), color = MaterialTheme.colorScheme.onPrimary)
                         }
-                    },
-                    bottomContent = {
-                        Button(
-                            modifier = Modifier
-                                .padding(8.dp)
-                                .fillMaxWidth(),
-                            onClick = { router.navigate(BackCommand) },
-                            content = {
-                                Text(stringResource(R.string.understood), color = MaterialTheme.colorScheme.onPrimary)
-                            }
-                        )
-                        SystemNavbarSpacer()
-                    },
-                )
+                    )
+                    SystemNavbarSpacer()
+                }
             },
         )
     }

@@ -18,8 +18,12 @@ import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.LocationRepository
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.domain.interactor.BackupDatabaseInteractor
+import f.cking.software.domain.interactor.ClearAllDevicesInteractor
+import f.cking.software.domain.interactor.ClearBTIDESLogInteractor
 import f.cking.software.domain.interactor.ClearGarbageInteractor
+import f.cking.software.domain.interactor.CreateBTIDESFileInteractor
 import f.cking.software.domain.interactor.CreateBackupFileInteractor
+import f.cking.software.domain.interactor.ExportBTIDESInteractor
 import f.cking.software.domain.interactor.GetDatabaseInfoInteractor
 import f.cking.software.domain.interactor.RestoreDatabaseInteractor
 import f.cking.software.domain.interactor.SaveReportInteractor
@@ -27,6 +31,8 @@ import f.cking.software.domain.interactor.SelectBackupFileInteractor
 import f.cking.software.domain.model.JournalEntry
 import f.cking.software.ui.ScreenNavigationCommands
 import f.cking.software.utils.navigation.Router
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -46,23 +52,36 @@ class SettingsViewModel(
     private val permissionHelper: PermissionHelper,
     private val router: Router,
     private val getDatabaseInfoInteractor: GetDatabaseInfoInteractor,
+    private val createBTIDESFileInteractor: CreateBTIDESFileInteractor,
+    private val exportBTIDESInteractor: ExportBTIDESInteractor,
+    private val clearBTIDESLogInteractor: ClearBTIDESLogInteractor,
+    private val btidesRepository: f.cking.software.data.btides.BTIDESRepository,
+    private val clearAllDevicesInteractor: ClearAllDevicesInteractor,
 ) : ViewModel() {
 
     var garbageRemovingInProgress: Boolean by mutableStateOf(false)
     var locationRemovingInProgress: Boolean by mutableStateOf(false)
     var backupDbInProgress: Boolean by mutableStateOf(false)
+    var clearDatabaseInProgress: Boolean by mutableStateOf(false)
+    var btidesInProgress: Boolean by mutableStateOf(false)
+    /** 0f..1f progress fraction of the in-flight BTIDES export, or 0f when idle. */
+    var btidesProgress: Float by mutableStateOf(0f)
+    /** True while a cancel-confirmation dialog should be shown over the export button. */
+    var btidesCancelDialogVisible: Boolean by mutableStateOf(false)
+    private var btidesExportJob: Job? = null
+    var btidesLogSizeBytes: Long by mutableStateOf(0L)
     var useGpsLocationOnly: Boolean by mutableStateOf(settingsRepository.getUseGpsLocationOnly())
     var locationData: LocationProvider.LocationHandle? by mutableStateOf(null)
     var runOnStartup: Boolean by mutableStateOf(settingsRepository.getRunOnStartup())
     var wakeUpWhileScanning: Boolean by mutableStateOf(settingsRepository.getWakeUpScreenWhileScanning())
     var silentModeEnabled: Boolean by mutableStateOf(settingsRepository.getSilentMode())
-    var deepAnalysisEnabled: Boolean by mutableStateOf(settingsRepository.getEnableDeepAnalysis())
 
     val databaseInfo by getDatabaseInfoInteractor.execute().collectAsState(viewModelScope, null)
 
     init {
         observeLocationData()
         observeSilentMode()
+        refreshBTIDESLogSize()
     }
 
     fun onRemoveGarbageClick() {
@@ -87,6 +106,19 @@ class SettingsViewModel(
         }
     }
 
+    fun onClearDatabaseClick() {
+        viewModelScope.launch {
+            clearDatabaseInProgress = true
+            try {
+                clearAllDevicesInteractor.execute()
+                toast(context.getString(R.string.clear_all_devices_done))
+            } catch (e: Throwable) {
+                reportError(e)
+            }
+            clearDatabaseInProgress = false
+        }
+    }
+
     fun onUseGpsLocationOnlyClick() {
         viewModelScope.launch {
             val currentValue = settingsRepository.getUseGpsLocationOnly()
@@ -103,10 +135,113 @@ class SettingsViewModel(
         }
     }
 
-    fun onEnableDeepAnalysisClick() {
-        val newValue = !settingsRepository.getEnableDeepAnalysis()
-        settingsRepository.setEnableDeepAnalysis(newValue)
-        deepAnalysisEnabled = newValue
+    fun onExportBTIDESClick() {
+        viewModelScope.launch {
+            createBTIDESFileInteractor.execute()
+                .catch {
+                    toast(context.getString(R.string.btides_export_failed))
+                    reportError(it)
+                }
+                .collect { uri ->
+                    if (uri != null) {
+                        exportBTIDESToUri(uri)
+                    } else {
+                        toast(context.getString(R.string.file_was_not_selected))
+                    }
+                }
+        }
+    }
+
+    /**
+     * Tap handler for the ADB export button. While idle, kicks off an export. While an export
+     * is in flight, surfaces a cancel-confirmation dialog rather than starting a second one.
+     */
+    fun onExportBTIDESForAdbClick() {
+        if (btidesInProgress) {
+            btidesCancelDialogVisible = true
+            return
+        }
+        btidesExportJob = viewModelScope.launch {
+            btidesInProgress = true
+            btidesProgress = 0f
+            try {
+                val result = exportBTIDESInteractor.execute { processed, total ->
+                    btidesProgress = if (total > 0L) (processed.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
+                }
+                toast(
+                    context.getString(
+                        R.string.btides_export_for_adb_succeeded,
+                        result.file.absolutePath,
+                        result.deviceCount,
+                    )
+                )
+                refreshBTIDESLogSize()
+            } catch (e: CancellationException) {
+                toast(context.getString(R.string.btides_export_cancelled))
+                throw e
+            } catch (e: Throwable) {
+                toast(context.getString(R.string.btides_export_failed))
+                reportError(e)
+            } finally {
+                btidesInProgress = false
+                btidesProgress = 0f
+                btidesExportJob = null
+            }
+        }
+    }
+
+    fun onConfirmCancelBTIDESExport() {
+        btidesCancelDialogVisible = false
+        btidesExportJob?.cancel()
+    }
+
+    fun onDismissCancelBTIDESExport() {
+        btidesCancelDialogVisible = false
+    }
+
+    fun onClearBTIDESLogClick() {
+        viewModelScope.launch {
+            btidesInProgress = true
+            try {
+                clearBTIDESLogInteractor.execute()
+                toast(context.getString(R.string.btides_log_was_cleared))
+                refreshBTIDESLogSize()
+            } catch (e: Throwable) {
+                reportError(e)
+            }
+            btidesInProgress = false
+        }
+    }
+
+    /** Public so the Settings screen can re-poll the size each time it re-enters composition. */
+    fun refreshBTIDESLogSize() {
+        viewModelScope.launch {
+            btidesLogSizeBytes = btidesRepository.logFileSizeBytes()
+        }
+    }
+
+    private fun exportBTIDESToUri(uri: Uri) {
+        btidesExportJob = viewModelScope.launch {
+            btidesInProgress = true
+            btidesProgress = 0f
+            try {
+                val deviceCount = exportBTIDESInteractor.execute(uri) { processed, total ->
+                    btidesProgress = if (total > 0L) (processed.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
+                }
+                toast(context.getString(R.string.btides_export_succeeded, deviceCount))
+                refreshBTIDESLogSize()
+            } catch (e: CancellationException) {
+                toast(context.getString(R.string.btides_export_cancelled))
+                throw e
+            } catch (e: Throwable) {
+                toast(context.getString(R.string.btides_export_failed))
+                reportError(e)
+            } finally {
+                btidesInProgress = false
+                btidesProgress = 0f
+                btidesExportJob = null
+            }
+        }
     }
 
     fun onBackupDBClick() {
@@ -166,16 +301,12 @@ class SettingsViewModel(
         intentHelper.openUrl(BuildConfig.REPORT_ISSUE_URL)
     }
 
-    fun openShadersTest() {
-        router.navigate(ScreenNavigationCommands.OpenShaderTestScreen)
-    }
-
     fun onGithubClick() {
         intentHelper.openUrl(BuildConfig.GITHUB_URL)
     }
 
-    fun onProjectPurposeClick() {
-        router.navigate(ScreenNavigationCommands.OpenAboutScreen)
+    fun onOpenJournalClick() {
+        router.navigate(ScreenNavigationCommands.OpenJournalScreen)
     }
 
     private fun observeLocationData() {
@@ -227,6 +358,11 @@ class SettingsViewModel(
     }
 
     private fun reportError(error: Throwable) {
+        // Don't pollute the journal with user-initiated cancellations — they're not errors.
+        if (error is CancellationException) {
+            Timber.d(error, "Operation cancelled")
+            return
+        }
         Timber.e(error)
         viewModelScope.launch {
             val report = JournalEntry.Report.Error(

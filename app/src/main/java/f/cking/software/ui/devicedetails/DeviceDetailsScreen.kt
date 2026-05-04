@@ -42,6 +42,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -81,10 +83,10 @@ import f.cking.software.bottomRight
 import f.cking.software.dateTimeStringFormat
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.LocationModel
-import f.cking.software.domain.model.isNullOrEmpty
 import f.cking.software.domain.model.toGeoPoint
 import f.cking.software.domain.model.toLocation
 import f.cking.software.dpToPx
+import f.cking.software.extract16BitUuid
 import f.cking.software.frameRate
 import f.cking.software.mapParallel
 import f.cking.software.pxToDp
@@ -98,7 +100,6 @@ import f.cking.software.utils.ScreenSizeLocal
 import f.cking.software.utils.graphic.DevicePairedIcon
 import f.cking.software.utils.graphic.DeviceTypeIcon
 import f.cking.software.utils.graphic.ExtendedAddressView
-import f.cking.software.utils.graphic.GlassSystemNavbar
 import f.cking.software.utils.graphic.HeatMapBitmapFactory
 import f.cking.software.utils.graphic.HeatMapBitmapFactory.Tile
 import f.cking.software.utils.graphic.ListItem
@@ -155,15 +156,13 @@ object DeviceDetailsScreen {
                 AppBar(viewModel = viewModel, scrollBehavior)
             },
             content = { padding ->
-                GlassSystemNavbar(modifier = Modifier.fillMaxSize()) {
-                    Content(
-                        modifier = Modifier
-                            .background(MaterialTheme.colorScheme.surface)
-                            .fillMaxSize()
-                            .padding(top = padding.calculateTopPadding()),
-                        viewModel = viewModel,
-                    )
-                }
+                Content(
+                    modifier = Modifier
+                        .background(MaterialTheme.colorScheme.surface)
+                        .fillMaxSize()
+                        .padding(top = padding.calculateTopPadding()),
+                    viewModel = viewModel,
+                )
             }
         )
     }
@@ -289,28 +288,45 @@ object DeviceDetailsScreen {
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(text = stringResource(viewModel.connectionStatus.statusRes))
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    if (isConnectable) {
-                        when (val status = viewModel.connectionStatus) {
-                            is DeviceDetailsViewModel.ConnectionStatus.DISCONNECTED -> {
-                                Button(onClick = { viewModel.establishConnection() }) {
-                                    Text(text = stringResource(R.string.device_details_connect), color = MaterialTheme.colorScheme.onPrimary)
-                                }
-                            }
-
-                            is DeviceDetailsViewModel.ConnectionStatus.CONNECTED -> {
-                                Button(onClick = { viewModel.disconnect(status.gatt) }) {
-                                    Text(text = stringResource(R.string.device_details_disconnect), color = MaterialTheme.colorScheme.onPrimary)
-                                }
-                            }
-
-                            is DeviceDetailsViewModel.ConnectionStatus.CONNECTING, is DeviceDetailsViewModel.ConnectionStatus.DISCONNECTING -> {
-                                CircularProgressIndicator()
-                            }
-                        }
-                    }
                     Spacer(modifier = Modifier.weight(1f))
                     SignalData(rssi = onlineStatus.signalStrength, distance = onlineStatus.distance)
+                }
+            }
+        }
+        if (isConnectable) {
+            Spacer(modifier = Modifier.height(8.dp))
+            ConnectControl(viewModel)
+        }
+    }
+
+    @Composable
+    private fun ConnectControl(viewModel: DeviceDetailsViewModel) {
+        RoundedBox(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(viewModel.connectionStatus.statusRes),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                when (val status = viewModel.connectionStatus) {
+                    is DeviceDetailsViewModel.ConnectionStatus.DISCONNECTED -> {
+                        Button(onClick = { viewModel.establishConnection() }) {
+                            Text(text = stringResource(R.string.device_details_connect), color = MaterialTheme.colorScheme.onPrimary)
+                        }
+                    }
+
+                    is DeviceDetailsViewModel.ConnectionStatus.CONNECTED -> {
+                        Button(onClick = { viewModel.disconnect(status.gatt) }) {
+                            Text(text = stringResource(R.string.device_details_disconnect), color = MaterialTheme.colorScheme.onPrimary)
+                        }
+                    }
+
+                    is DeviceDetailsViewModel.ConnectionStatus.CONNECTING, is DeviceDetailsViewModel.ConnectionStatus.DISCONNECTING -> {
+                        CircularProgressIndicator()
+                    }
                 }
             }
         }
@@ -359,9 +375,6 @@ object DeviceDetailsScreen {
                     Text(text = deviceData.resolvedManufacturerName ?: stringResource(R.string.not_applicable))
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    DeviceMetadataView(deviceData, viewModel)
-                    Spacer(modifier = Modifier.height(8.dp))
-
                     Services(viewModel.services, viewModel)
                     Spacer(modifier = Modifier.height(8.dp))
 
@@ -391,127 +404,193 @@ object DeviceDetailsScreen {
     }
 
     @Composable
-    private fun DeviceMetadataView(device: DeviceData, viewModel: DeviceDetailsViewModel) {
-        val metadata = device.metadata
-        ExpandableLine(
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = stringResource(R.string.device_details_metadata),
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    if (viewModel.matadataIsFetching) {
-                        CircularProgressIndicator()
-                    } else if (device.isConnectable) {
-                        TagChip(stringResource(R.string.analyse)) { viewModel.fetchDeviceServiceInfo(device) }
-                    }
-                }
-            },
-            isExpandable = !metadata.isNullOrEmpty(),
-            content = {
-                Column {
-                    metadata?.deviceName?.let { Text(text = it) }
-                    metadata?.manufacturerName?.let { Text(text = it) }
-                    metadata?.modelNumber?.let { Text(text = it) }
-                    metadata?.serialNumber?.let { Text(text = it) }
-                    metadata?.batteryLevel?.let { Text(text = "$it %") }
-                }
-            }
-        )
-    }
-
-    @Composable
     private fun Services(servicesUuids: Set<DeviceDetailsViewModel.ServiceData>, viewModel: DeviceDetailsViewModel) {
-        ExpandableLine(pluralStringResource(R.plurals.services_discovered, servicesUuids.size, servicesUuids.size)) {
+        val characteristicCount = servicesUuids.sumOf { it.characteristics.size }
+        val title = stringResource(
+            R.string.services_and_characteristics_discovered,
+            servicesUuids.size,
+            characteristicCount,
+        )
+        ExpandableLine(title) {
             servicesUuids.forEach { service ->
                 ServiceDetails(service, viewModel)
             }
         }
     }
 
+    private fun displayUuid(uuid: String): String {
+        // BTIDES stores SIG short UUIDs as 4-char hex ("1801"); live BluetoothGattService objects
+        // expose them in expanded base form. Render both as "0xXXXX" so the cached and live
+        // entries look consistent.
+        val short = extract16BitUuid(uuid)
+            ?: uuid.takeIf { it.length == 4 && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
+        return if (short != null) "0x${short.uppercase()}" else uuid
+    }
+
     @Composable
     private fun ServiceDetails(service: DeviceDetailsViewModel.ServiceData, viewModel: DeviceDetailsViewModel) {
-        val serviceUuid = service.uuid
+        val serviceUuid = displayUuid(service.uuid)
         val name = service.name
+        val clues = service.clues
+        val hasPurpose = clues?.purpose != null
         ExpandableLine(
-            title = {
-                Column {
-                    Text(
-                        text = serviceUuid,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    if (name != null) {
-                        Text(
-                            text = name,
-                            fontWeight = FontWeight.Light,
-                        )
-                    }
-                }
-            },
-            isExpandable = service.characteristics.isNotEmpty()
+            title = { UuidTitle(uuid = serviceUuid, name = name, clues = clues) },
+            isExpandable = service.characteristics.isNotEmpty() || hasPurpose,
+            initiallyExpanded = service.characteristics.isNotEmpty(),
         ) {
-            Column(
-                Modifier
-                    .border(width = 1.dp, color = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(8.dp))
-                    .padding(8.dp)
-            ) {
-                service.characteristics.forEach { characteristic ->
-                    CharacteristicDetails(characteristic, viewModel)
+            Column {
+                if (hasPurpose) {
+                    CluesPurpose(clues!!.purpose!!)
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (service.characteristics.isNotEmpty()) {
+                    Column(
+                        Modifier
+                            .border(width = 1.dp, color = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(8.dp))
+                            .padding(8.dp)
+                    ) {
+                        service.characteristics.forEach { characteristic ->
+                            CharacteristicDetails(service.uuid, characteristic, viewModel)
+                        }
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun CharacteristicDetails(characteristic: DeviceDetailsViewModel.CharacteristicData, viewModel: DeviceDetailsViewModel) {
-        val characteristicUuid = characteristic.uuid
-        val isExpandable = characteristic.gatt.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0
+    private fun CharacteristicDetails(parentServiceUuid: String, characteristic: DeviceDetailsViewModel.CharacteristicData, viewModel: DeviceDetailsViewModel) {
+        val characteristicUuid = displayUuid(characteristic.uuid)
+        val isReadable = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0
+        // The Read/Re-read button gates on the device-level connection state, not on whether
+        // *this specific entry* still has a live BluetoothGattCharacteristic. Cached entries
+        // can be re-read against the live gatt by looking the char up by UUID — the connection
+        // is the source of truth for "can we issue a read right now?".
+        val isConnected = viewModel.connectionStatus is DeviceDetailsViewModel.ConnectionStatus.CONNECTED
+        val clues = characteristic.clues
+        val hasPurpose = clues?.purpose != null
         val name = characteristic.name
+        val value = characteristic.value
+        val valueHex = characteristic.valueHex
+        val hasCachedValue = value != null && valueHex != null
 
         ExpandableLine(
-            title = {
-                Column {
-                    Text(
-                        text = characteristicUuid,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    if (name != null) {
-                        Text(
-                            text = name,
-                            fontWeight = FontWeight.Light,
-                        )
+            title = { UuidTitle(uuid = characteristicUuid, name = name, clues = clues) },
+            isExpandable = isReadable || hasPurpose || hasCachedValue,
+        ) {
+            Column {
+                if (hasPurpose) {
+                    CluesPurpose(clues!!.purpose!!)
+                    if (isReadable || hasCachedValue) Spacer(Modifier.height(8.dp))
+                }
+                if (isReadable || hasCachedValue) {
+                    if (hasCachedValue) {
+                        Text(value!!)
+                        Text(valueHex!!)
+                        if (isConnected && isReadable) Spacer(Modifier.height(4.dp))
+                    }
+                    if (isConnected && isReadable) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val onClick: () -> Unit = {
+                                if (characteristic.gatt != null) {
+                                    viewModel.readCharacteristic(characteristic.gatt)
+                                } else {
+                                    viewModel.readCharacteristicByUuid(parentServiceUuid, characteristic.uuid)
+                                }
+                            }
+                            if (hasCachedValue) {
+                                ReReadChip(onClick)
+                            } else {
+                                TagChip(stringResource(R.string.read), onClick = onClick)
+                            }
+                            if (viewModel.recentReadFailures.contains(characteristic.uuid)) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = stringResource(R.string.read_failed),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
                     }
                 }
-            },
-            isExpandable = isExpandable
-        ) {
-            val value = characteristic.value
-            val valueHex = characteristic.valueHex
-            if (value != null && valueHex != null) {
-                Text(value)
-                Text(valueHex)
-            } else {
-                TagChip(stringResource(R.string.read)) { viewModel.readCharacteristic(characteristic.gatt) }
             }
         }
     }
 
     @Composable
-    private fun RawData(rawData: List<Pair<String, String>>) {
+    private fun UuidTitle(uuid: String, name: String?, clues: DeviceDetailsViewModel.CluesInfo?) {
+        // Resolved name precedence:
+        //   1. Bluetooth-SIG Assigned Numbers — set on `name` for 16-bit UUIDs that match.
+        //   2. CLUES community attribution — used for 128-bit (and otherwise unknown 16-bit) UUIDs.
+        //   3. "Unknown" — neither source had a hit.
+        // The UUID and the resolved name share one bold line ("0x180F - Battery Service"). CLUES
+        // company stays as a secondary line when present.
+        val resolvedName = name ?: clues?.name ?: stringResource(R.string.uuid_name_unknown)
+        Column {
+            Text(text = "$uuid - $resolvedName", fontWeight = FontWeight.Bold)
+            clues?.company?.let { Text(text = it, fontWeight = FontWeight.Light) }
+        }
+    }
+
+    @Composable
+    private fun ReReadChip(onClick: () -> Unit) {
+        AssistChip(
+            onClick = onClick,
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = colorResource(R.color.green_600),
+                labelColor = androidx.compose.ui.graphics.Color.White,
+            ),
+            border = null,
+            label = { Text(text = stringResource(R.string.re_read)) },
+        )
+    }
+
+    @Composable
+    private fun CluesPurpose(purpose: String) {
+        Column(modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp)) {
+            Text(text = stringResource(R.string.clues_purpose_label), fontWeight = FontWeight.SemiBold)
+            Text(text = purpose)
+        }
+    }
+
+    @Composable
+    private fun RawData(rawData: List<DeviceDetailsViewModel.AdRecord>) {
         ExpandableLine(pluralStringResource(R.plurals.device_details_raw_data, rawData.size, rawData.size)) {
-            rawData.forEach { (key, value) ->
-                Row {
-                    Text(modifier = Modifier.padding(8.dp), text = "0x$key")
-                    Spacer(Modifier.width(8.dp))
-                    Text(modifier = Modifier.padding(8.dp), text = "0x$value")
+            rawData.forEach { record ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    val typeLabel = record.typeName
+                        ?.let { "0x${record.typeHex} — $it" }
+                        ?: stringResource(R.string.device_details_raw_data_unknown_type, record.typeHex)
+                    Text(
+                        text = typeLabel,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(text = "0x${record.dataHex}")
+                    record.fields.forEach { field ->
+                        Row(modifier = Modifier.padding(start = 8.dp, top = 2.dp)) {
+                            Text(
+                                text = "${field.label}: ",
+                                fontWeight = FontWeight.Light,
+                            )
+                            Text(text = field.value)
+                        }
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun ExpandableLine(title: String, isExpandable: Boolean = true, content: @Composable () -> Unit) {
+    private fun ExpandableLine(
+        title: String,
+        isExpandable: Boolean = true,
+        initiallyExpanded: Boolean = false,
+        content: @Composable () -> Unit,
+    ) {
         ExpandableLine(
             title = {
                 Text(
@@ -520,17 +599,24 @@ object DeviceDetailsScreen {
                 )
             },
             isExpandable = isExpandable,
+            initiallyExpanded = initiallyExpanded,
             content = content
         )
     }
 
     @Composable
-    private fun ExpandableLine(title: @Composable () -> Unit, isExpandable: Boolean = true, content: @Composable () -> Unit) {
+    private fun ExpandableLine(
+        title: @Composable () -> Unit,
+        isExpandable: Boolean = true,
+        initiallyExpanded: Boolean = false,
+        content: @Composable () -> Unit,
+    ) {
         Column(
             modifier = Modifier.fillMaxWidth()
         ) {
-            var expanded by remember { mutableStateOf(false) }
-            val rotation by animateFloatAsState(180f * if (expanded) 1 else 0)
+            var expanded by remember { mutableStateOf(initiallyExpanded && isExpandable) }
+            // Icon is a right-pointing triangle; rotate 90° to point down when expanded.
+            val rotation by animateFloatAsState(90f * if (expanded) 1 else 0)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

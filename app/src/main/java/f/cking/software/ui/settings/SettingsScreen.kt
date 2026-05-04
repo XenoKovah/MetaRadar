@@ -1,29 +1,32 @@
 package f.cking.software.ui.settings
 
 import android.text.format.Formatter
-import androidx.compose.foundation.Image
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -33,12 +36,10 @@ import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import f.cking.software.BuildConfig
 import f.cking.software.R
 import f.cking.software.dateTimeStringFormat
-import f.cking.software.utils.graphic.BottomNavigationSpacer
 import f.cking.software.utils.graphic.FABSpacer
 import f.cking.software.utils.graphic.RoundedBox
 import f.cking.software.utils.graphic.Switcher
 import f.cking.software.utils.graphic.ThemedDialog
-import f.cking.software.utils.graphic.agreementDialog
 import org.koin.androidx.compose.koinViewModel
 
 object SettingsScreen {
@@ -46,6 +47,11 @@ object SettingsScreen {
     @Composable
     fun Screen() {
         val viewModel: SettingsViewModel = koinViewModel()
+        // Re-poll the BTIDES log size every time the Settings tab enters composition. The
+        // ViewModel survives tab switches, so the cached size goes stale once the user runs a
+        // scan / Connect All on another tab. Tab navigation tears down + rebuilds this
+        // composable, so a `LaunchedEffect(Unit)` re-fires on each visit.
+        LaunchedEffect(Unit) { viewModel.refreshBTIDESLogSize() }
         Column(
             modifier = Modifier
                 .background(MaterialTheme.colorScheme.surface)
@@ -59,14 +65,13 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(8.dp))
             DatabaseBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
+            BTIDESBlock(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
             LocationBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
-            if (BuildConfig.DEBUG) {
-                ShaderTestButton(viewModel = viewModel)
-                Spacer(modifier = Modifier.height(8.dp))
-            }
+            JournalBlock(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
             AppInfo()
-            SecretCatPhoto()
             FABSpacer()
         }
     }
@@ -123,6 +128,236 @@ object SettingsScreen {
             ClearGarbageButton(viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             ClearLocationsButton(viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
+            ClearDatabaseButton(viewModel)
+        }
+    }
+
+    @Composable
+    private fun ClearDatabaseButton(viewModel: SettingsViewModel) {
+        // Destructive: wipes every device + apple-contact row. Behind a confirm dialog with
+        // a red "Confirm" so it doesn't blend into the surrounding non-destructive actions.
+        val dialogState = rememberMaterialDialogState()
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.confirm),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.error),
+                ) {
+                    dialogState.hide()
+                    viewModel.onClearDatabaseClick()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.clear_all_devices_title),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(text = stringResource(R.string.clear_all_devices_subtitle))
+            }
+        }
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { dialogState.show() },
+            enabled = !viewModel.clearDatabaseInProgress,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Text(text = stringResource(R.string.settings_clear_database))
+        }
+    }
+
+    @Composable
+    private fun BTIDESBlock(viewModel: SettingsViewModel) {
+        RoundedBox {
+            Text(text = stringResource(R.string.btides_section_title), fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = stringResource(R.string.btides_section_description), fontWeight = FontWeight.Light)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(
+                    R.string.btides_log_size,
+                    Formatter.formatFileSize(LocalContext.current, viewModel.btidesLogSizeBytes)
+                ),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            ExportBTIDESForADBButton(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
+            ExportBTIDESButton(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
+            ClearBTIDESLogButton(viewModel = viewModel)
+        }
+    }
+
+    @Composable
+    private fun JournalBlock(viewModel: SettingsViewModel) {
+        RoundedBox {
+            Text(text = stringResource(R.string.menu_journal), fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = stringResource(R.string.journal_block_description), fontWeight = FontWeight.Light)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onOpenJournalClick() }) {
+                Text(text = stringResource(R.string.journal_open_button), color = MaterialTheme.colorScheme.onPrimary)
+            }
+        }
+    }
+
+    @Composable
+    private fun ExportBTIDESForADBButton(viewModel: SettingsViewModel) {
+        // Inline progress bar: while the export is in flight the button surface fills left-to-right
+        // proportional to bytes-of-source-JSONL processed. Tapping while in flight surfaces a
+        // cancel-confirmation dialog instead of starting a second export.
+        val inProgress = viewModel.btidesInProgress
+        val baseHeight = 40.dp
+
+        if (viewModel.btidesCancelDialogVisible) {
+            CancelBTIDESExportDialog(
+                onConfirm = { viewModel.onConfirmCancelBTIDESExport() },
+                onDismiss = { viewModel.onDismissCancelBTIDESExport() },
+            )
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(baseHeight),
+        ) {
+            val width = maxWidth
+            Button(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(percent = 50)),
+                onClick = { viewModel.onExportBTIDESForAdbClick() },
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = MaterialTheme.colorScheme.primary,
+                    disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {}
+            if (inProgress) {
+                // Smooth out the visual jumps between progress callbacks (which arrive per-line
+                // and can come in bursts) so the bar slides rather than ticks.
+                val animatedFraction by animateFloatAsState(
+                    targetValue = viewModel.btidesProgress.coerceIn(0f, 1f),
+                    animationSpec = tween(durationMillis = 200),
+                    label = "btidesExportFraction",
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(percent = 50))
+                        .fillMaxWidth(animatedFraction)
+                        .background(Color(0x554DB6AC)),
+                )
+            }
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                Text(text = stringResource(R.string.btides_export_for_adb), color = MaterialTheme.colorScheme.onPrimary)
+            }
+            @Suppress("UNUSED_EXPRESSION") width
+        }
+    }
+
+    @Composable
+    private fun CancelBTIDESExportDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+        val dialogState = rememberMaterialDialogState(initialValue = true)
+        // Tying onCloseRequest into the VM happens via the dialog buttons below; observe state
+        // changes so a tap-outside (which hides the dialog) also clears VM state.
+        LaunchedEffect(dialogState.showing) {
+            if (!dialogState.showing) onDismiss()
+        }
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.confirm),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) {
+                    dialogState.hide()
+                    onConfirm()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(text = stringResource(R.string.btides_export_cancel_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = stringResource(R.string.btides_export_cancel_subtitle))
+            }
+        }
+    }
+
+    @Composable
+    private fun ExportBTIDESButton(viewModel: SettingsViewModel) {
+        val dialogState = rememberMaterialDialogState()
+
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
+                ) { dialogState.hide() }
+                positiveButton(text = stringResource(R.string.confirm), textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)) {
+                    dialogState.hide()
+                    viewModel.onExportBTIDESClick()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(text = stringResource(R.string.btides_export_dialog_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = stringResource(R.string.btides_export_dialog_subtitle))
+            }
+        }
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { dialogState.show() },
+            enabled = !viewModel.btidesInProgress,
+        ) {
+            Text(text = stringResource(R.string.btides_export_to_file), color = MaterialTheme.colorScheme.onPrimary)
+        }
+    }
+
+    @Composable
+    private fun ClearBTIDESLogButton(viewModel: SettingsViewModel) {
+        val dialogState = rememberMaterialDialogState()
+
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
+                ) { dialogState.hide() }
+                positiveButton(text = stringResource(R.string.confirm), textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)) {
+                    dialogState.hide()
+                    viewModel.onClearBTIDESLogClick()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(text = stringResource(R.string.btides_clear_log_confirm_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = stringResource(R.string.btides_clear_log_confirm_subtitle))
+            }
+        }
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { dialogState.show() },
+            enabled = !viewModel.btidesInProgress,
+        ) {
+            Text(text = stringResource(R.string.btides_clear_log), color = MaterialTheme.colorScheme.onPrimary)
         }
     }
 
@@ -202,35 +437,6 @@ object SettingsScreen {
     }
 
     @Composable
-    private fun SecretCatPhoto() {
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            BottomNavigationSpacer()
-            repeat(50) {
-                Image(
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .alpha(0.1f)
-                        .width(30.dp),
-                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
-                    painter = painterResource(id = R.drawable.cat_footprint),
-                    contentDescription = null
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            Column {
-                Image(
-                    painter = painterResource(id = R.drawable.appa),
-                    contentDescription = stringResource(id = R.string.secret_cat),
-                    contentScale = ContentScale.FillWidth
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = stringResource(id = R.string.secret_cat), fontWeight = FontWeight.Light)
-            }
-        }
-    }
-
-    @Composable
     private fun ClearLocationsButton(viewModel: SettingsViewModel) {
 
         val dialogState = rememberMaterialDialogState()
@@ -290,38 +496,6 @@ object SettingsScreen {
                 onClick = { viewModel.setRunOnStartup() }
             )
 
-            val deepAnalysisDialog = agreementDialog(
-                title = stringResource(R.string.deep_analysis_warning_title),
-                content = stringResource(R.string.deep_analysis_warning_text),
-                agreement = stringResource(R.string.deep_analysis_agreement_text),
-                buttons = { state ->
-                    {
-                        negativeButton(
-                            stringResource(R.string.deep_analysis_decline),
-                            textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
-                        ) { state.hide() }
-                        positiveButton(
-                            stringResource(R.string.deep_analysis_enable),
-                            textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
-                        ) {
-                            state.hide()
-                            viewModel.onEnableDeepAnalysisClick()
-                        }
-                    }
-                }
-            )
-            Switcher(
-                value = viewModel.deepAnalysisEnabled,
-                title = stringResource(R.string.enable_deep_analysis),
-                subtitle = stringResource(R.string.enable_deep_analysis_description),
-                onClick = {
-                    if (viewModel.deepAnalysisEnabled) {
-                        viewModel.onEnableDeepAnalysisClick()
-                    } else {
-                        deepAnalysisDialog.show()
-                    }
-                }
-            )
             Switcher(
                 value = viewModel.wakeUpWhileScanning,
                 title = stringResource(R.string.settings_keep_screen_on_while_scanning_title),
@@ -336,10 +510,6 @@ object SettingsScreen {
     @Composable
     private fun ProjectInformationBlock(viewModel: SettingsViewModel) {
         RoundedBox {
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onProjectPurposeClick() }) {
-                Text(text = stringResource(R.string.button_project_purpose), color = MaterialTheme.colorScheme.onPrimary)
-            }
-            Spacer(modifier = Modifier.height(16.dp))
             Text(text = stringResource(R.string.project_github_title, stringResource(id = R.string.app_name)), fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(4.dp))
             Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onGithubClick() }) {
@@ -367,12 +537,4 @@ object SettingsScreen {
         }
     }
 
-    @Composable
-    private fun ShaderTestButton(viewModel: SettingsViewModel) {
-        RoundedBox {
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.openShadersTest() }) {
-                Text(text = stringResource(R.string.shaders_test), color = MaterialTheme.colorScheme.onPrimary)
-            }
-        }
-    }
 }

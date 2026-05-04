@@ -16,17 +16,16 @@ These broadcasts, while essential for device functionality, can also be used to 
 
 Fortunately, many modern devices implement privacy features in BLE to prevent tracking, such as randomized addresses and limited advertising. BLE Radar helps you distinguish between devices that protect your privacy and those that might be trackable. By analyzing BLE traffic in your surroundings, the app gives you insight into which devices are safe to use.
 
-Beyond analysis, BLE Radar can help protect you in real-time. The app can alert you when a suspicious device is nearby or if a device is moving with you over time, giving you an early warning against potential stalking or unwanted tracking. You can configure alerts based on device identifiers, types, or behaviors to fit your security needs.
-
 By making this app, the goal is to empower you with knowledge and control over the BLE devices in your environment. Understanding which devices are broadcasting trackable information and which are privacy-conscious allows you to make informed decisions about what you use, wear, and interact with daily.
 
 In general, the app is capable:
-* Scan, analyze and track Bluetooth devices around;
-* Create flexible filters for the radar;
-* Deep analysis of the scanned BLE devices, getting data from the available GATT services;
-* Gatt services Explorer;
-* Define the device type by metadata;
-* Define approximate distance to the device.
+* Scan and analyze Bluetooth devices around you;
+* Filter and search the scanned device list;
+* Connect to a device and enumerate its GATT services and characteristics, automatically reading every readable characteristic;
+* Parse advertisement records into the AD types defined by the Bluetooth Core Specification Supplement;
+* Capture every scan, GATT enumeration, and characteristic/descriptor read into a BTIDES-format JSON log that can be exported via ADB;
+* Define the device type from advertised metadata;
+* Estimate approximate distance to the device.
 
 This application does not share your personal data or geolocation, all work is offline.
 

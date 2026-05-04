@@ -1,20 +1,19 @@
 package f.cking.software.ui
 
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.LocationModel
 import f.cking.software.domain.model.ManufacturerInfo
-import f.cking.software.domain.model.RadarProfile
 import f.cking.software.ui.about.AboutScreen
 import f.cking.software.ui.backgroundlocationrequest.BackgroundLocationRequestScreen
 import f.cking.software.ui.devicedetails.DeviceDetailsScreen
 import f.cking.software.ui.filter.FilterUiState
 import f.cking.software.ui.filter.SelectFilterScreen
+import f.cking.software.ui.journal.JournalScreen
 import f.cking.software.ui.main.MainScreen
-import f.cking.software.ui.profiledetails.ProfileDetailsScreen
 import f.cking.software.ui.selectdevice.SelectDeviceScreen
 import f.cking.software.ui.selectlocation.SelectLocationScreen
 import f.cking.software.ui.selectmanufacturer.SelectManufacturerScreen
-import f.cking.software.ui.shadertest.ShaderTestScreen
 import f.cking.software.utils.navigation.AddToStackCommand
 import f.cking.software.utils.navigation.BackCommand
 
@@ -22,13 +21,9 @@ object ScreenNavigationCommands {
 
     object OpenMainScreen : AddToStackCommand(screenFunction = { key, _ -> MainScreen.Screen() })
 
-    class OpenProfileScreen(private val profileId: Int?, private val template: FilterUiState?) : AddToStackCommand(screenFunction = { key, _ ->
-        ProfileDetailsScreen.Screen(profileId = profileId, template, key)
-    })
-
     class OpenCreateFilterScreen(
         initialFilterState: FilterUiState,
-        onConfirm: (filterState: RadarProfile.Filter) -> Unit
+        onConfirm: (filterState: DeviceFilter) -> Unit
     ) : AddToStackCommand(screenFunction = { key, router ->
         SelectFilterScreen.Screen(initialFilterState, router, onConfirm)
     })
@@ -49,16 +44,16 @@ object ScreenNavigationCommands {
         DeviceDetailsScreen.Screen(address = address)
     })
 
-    object OpenShaderTestScreen : AddToStackCommand(screenFunction = { key, router ->
-        ShaderTestScreen.Screen(router)
-    })
-
     object OpenBackgroundLocationScreen : AddToStackCommand(screenFunction = { key, router ->
         BackgroundLocationRequestScreen.Screen()
     })
 
     object OpenAboutScreen : AddToStackCommand(screenFunction = { key, router ->
         AboutScreen.Screen(router)
+    })
+
+    object OpenJournalScreen : AddToStackCommand(screenFunction = { key, router ->
+        JournalScreen.Screen(router)
     })
 
     class OpenSelectLocationScreen(

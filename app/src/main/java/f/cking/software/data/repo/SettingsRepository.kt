@@ -13,7 +13,6 @@ class SettingsRepository(
 
     private val silentModeState = MutableStateFlow(getSilentMode())
     private val hideBackgroundLocationWarning = MutableStateFlow(getHideBackgroundLocationWarning())
-    private val enableDeepAnalysisState = MutableStateFlow(false)
 
     fun setGarbagingTime(time: Long) {
         sharedPreferences.edit().putLong(KEY_GARBAGING_TIME, time).apply()
@@ -105,16 +104,6 @@ class SettingsRepository(
         sharedPreferences.edit { putInt(KEY_CURRENT_BATCH_SORTING_STRATEGY_ID, value) }
     }
 
-    fun setEnableDeepAnalysis(value: Boolean) {
-        enableDeepAnalysisState.value = value
-        //sharedPreferences.edit { putBoolean(KEY_ENABLE_DEEP_ANALYSIS, value) }
-    }
-
-    fun getEnableDeepAnalysis(): Boolean {
-        return enableDeepAnalysisState.value
-        //return sharedPreferences.getBoolean(KEY_ENABLE_DEEP_ANALYSIS, false)
-    }
-
     fun setDisclaimerWasAccepted(value: Boolean) {
         sharedPreferences.edit { putBoolean(KEY_DISCLAIMER_WAS_ACCEPTED, value) }
     }
@@ -139,6 +128,21 @@ class SettingsRepository(
         sharedPreferences.edit { putBoolean(KEY_WAKE_UP_SCREEN_WHILE_SCANNING, value) }
     }
 
+    fun getBulkSkipApple(): Boolean = sharedPreferences.getBoolean(KEY_BULK_SKIP_APPLE, true)
+    fun setBulkSkipApple(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_BULK_SKIP_APPLE, value) }
+    }
+
+    fun getBulkSkipSamsung(): Boolean = sharedPreferences.getBoolean(KEY_BULK_SKIP_SAMSUNG, true)
+    fun setBulkSkipSamsung(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_BULK_SKIP_SAMSUNG, value) }
+    }
+
+    fun getBulkRetryForever(): Boolean = sharedPreferences.getBoolean(KEY_BULK_RETRY_FOREVER, true)
+    fun setBulkRetryForever(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_BULK_RETRY_FOREVER, value) }
+    }
+
     companion object {
         private const val KEY_GARBAGING_TIME = "key_garbaging_time"
         private const val KEY_USE_GPS_ONLY = "key_use_gps_location_only"
@@ -150,10 +154,12 @@ class SettingsRepository(
         private const val KEY_SILENT_NETWORK_MODE = "silent_network_mode"
         private const val KEY_CURRENT_BATCH_SORTING_STRATEGY_ID = "key_current_batch_sorting_strategy_id"
         private const val KEY_HIDE_BACKGROUND_LOCATION_WARNING = "key_hide_background_location_warning"
-        private const val KEY_ENABLE_DEEP_ANALYSIS = "key_enable_deep_analysis_v2"
         private const val KEY_DISCLAIMER_WAS_ACCEPTED = "key_disclaimer_was_accepted"
         private const val KEY_WHAT_IS_THIS_APP_FOR_WAS_SHOWN = "what_is_this_app_for_was_shown"
         private const val KEY_WAKE_UP_SCREEN_WHILE_SCANNING = "key_wake_up_screen_while_scanning"
+        private const val KEY_BULK_SKIP_APPLE = "key_bulk_skip_apple"
+        private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
+        private const val KEY_BULK_RETRY_FOREVER = "key_bulk_retry_forever"
 
         const val NO_APP_LAUNCH_TIME = -1L
         const val NO_ENJOY_THE_APP_STARTING_POINT = -1L

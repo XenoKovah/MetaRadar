@@ -17,12 +17,13 @@ import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.domain.interactor.CheckNeedToShowEnjoyTheAppInteractor
+import f.cking.software.domain.interactor.ClearAllDevicesInteractor
 import f.cking.software.domain.interactor.EnjoyTheAppAskLaterInteractor
 import f.cking.software.domain.interactor.filterchecker.FilterCheckerImpl
 import f.cking.software.domain.model.DeviceClass
 import f.cking.software.domain.model.DeviceData
+import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.ManufacturerInfo
-import f.cking.software.domain.model.RadarProfile
 import f.cking.software.mapParallel
 import f.cking.software.service.BgScanService
 import f.cking.software.splitToBatches
@@ -51,6 +52,7 @@ class DeviceListViewModel(
     private val enjoyTheAppAskLaterInteractor: EnjoyTheAppAskLaterInteractor,
     private val settingsRepository: SettingsRepository,
     private val intentHelper: IntentHelper,
+    private val clearAllDevicesInteractor: ClearAllDevicesInteractor,
 ) : ViewModel() {
 
     var currentBatchSortingStrategy by mutableStateOf(getDefaultSortStrategy())
@@ -102,6 +104,12 @@ class DeviceListViewModel(
         }
     }
 
+    fun onClearAllDevicesConfirmed() {
+        viewModelScope.launch {
+            clearAllDevicesInteractor.execute()
+        }
+    }
+
     fun onSearchInput(str: String) {
         viewModelScope.launch { searchQuery.emit(str) }
     }
@@ -113,7 +121,7 @@ class DeviceListViewModel(
     fun onTagSelected(tag: String) {
         val tagFilter = FilterHolder(
             displayName = tag,
-            filter = RadarProfile.Filter.ByTag(tag),
+            filter = DeviceFilter.ByTag(tag),
         )
         onFilterClick(tagFilter)
     }
@@ -235,7 +243,7 @@ class DeviceListViewModel(
         val filter = when {
             appliedFilters.isEmpty() -> null
             appliedFilters.size == 1 -> appliedFilters.first().filter
-            else -> RadarProfile.Filter.All(appliedFilters.map { it.filter })
+            else -> DeviceFilter.All(appliedFilters.map { it.filter })
         }
         val query = searchQuery
 
@@ -305,9 +313,6 @@ class DeviceListViewModel(
     private fun filterQuery(device: DeviceData, query: String?): Boolean {
         return query?.takeIf { it.isNotBlank() }?.let { searchStr ->
             (device.resolvedName?.contains(searchStr, true) == true)
-                    || (device.metadata?.deviceName?.contains(searchStr, true) == true)
-                    || (device.metadata?.manufacturerName?.contains(searchStr, true) == true)
-                    || (device.metadata?.modelNumber?.contains(searchStr, true) == true)
                     || (device.customName?.contains(searchStr, true) == true)
                     || (device.manufacturerInfo?.name?.contains(searchStr, true) == true)
                     || device.address.contains(searchStr, true)
@@ -316,7 +321,7 @@ class DeviceListViewModel(
         } != false
     }
 
-    private suspend fun checkFilter(device: DeviceData, filter: RadarProfile.Filter?): Boolean {
+    private suspend fun checkFilter(device: DeviceData, filter: DeviceFilter?): Boolean {
         return if (filter != null) {
             filterCheckerImpl.check(device, filter)
         } else {
@@ -331,7 +336,7 @@ class DeviceListViewModel(
 
     data class FilterHolder(
         val displayName: String,
-        val filter: RadarProfile.Filter,
+        val filter: DeviceFilter,
     )
 
     sealed interface EnjoyTheAppState {
@@ -359,14 +364,14 @@ class DeviceListViewModel(
 
         fun notApple(context: Context) = FilterHolder(
             displayName = context.getString(R.string.not_apple),
-            filter = RadarProfile.Filter.Not(
-                filter = RadarProfile.Filter.Manufacturer(ManufacturerInfo.APPLE_ID)
+            filter = DeviceFilter.Not(
+                filter = DeviceFilter.Manufacturer(ManufacturerInfo.APPLE_ID)
             )
         )
 
         fun isFavorite(context: Context) = FilterHolder(
             displayName = context.getString(R.string.favorite),
-            filter = RadarProfile.Filter.IsFavorite(favorite = true)
+            filter = DeviceFilter.IsFavorite(favorite = true)
         )
     }
 

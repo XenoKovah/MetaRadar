@@ -24,7 +24,6 @@ data class DeviceData(
     val isPaired: Boolean,
     val servicesUuids: List<String>,
     val rowDataEncoded: String?,
-    val metadata: DeviceMetadata?,
     val isConnectable: Boolean,
 ) {
 
@@ -32,13 +31,9 @@ data class DeviceData(
         BuildDeviceClassFromSystemInfo.execute(this)
     }
 
-    val resolvedName: String? by lazy {
-        metadata?.buildDisplayName()?.takeIf { it.isNotBlank() } ?: name
-    }
+    val resolvedName: String? by lazy { name }
 
-    val resolvedManufacturerName by lazy {
-        metadata?.manufacturerName?.takeIf { it.isNotBlank() } ?: manufacturerInfo?.name
-    }
+    val resolvedManufacturerName by lazy { manufacturerInfo?.name }
 
     fun knownLifetime(): Long {
         return lastDetectTimeMs - firstDetectTimeMs
@@ -47,7 +42,6 @@ data class DeviceData(
     fun buildDisplayName(): String {
         return customName?.takeIf { it.isNotBlank() }
             ?: name
-            ?: metadata?.buildDisplayName()?.takeIf { it.isNotBlank() }
             ?: address
     }
 

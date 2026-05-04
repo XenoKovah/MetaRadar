@@ -32,4 +32,7 @@ interface AppleContactDao {
 
     @Query("DELETE FROM apple_contacts WHERE associated_address IN (:addresses)")
     fun deleteAllByAddresses(addresses: List<String>)
+
+    @Query("DELETE FROM apple_contacts")
+    fun deleteAll()
 }

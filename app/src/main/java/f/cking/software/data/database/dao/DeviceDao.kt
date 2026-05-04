@@ -39,4 +39,7 @@ interface DeviceDao {
 
     @Query("DELETE FROM device WHERE address IN (:addresses)")
     fun deleteAllByAddress(addresses: List<String>)
+
+    @Query("DELETE FROM device")
+    fun deleteAll()
 }

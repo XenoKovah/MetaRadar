@@ -28,7 +28,6 @@ import androidx.compose.ui.unit.sp
 import f.cking.software.R
 import f.cking.software.domain.model.ManufacturerInfo
 import f.cking.software.toHexString
-import f.cking.software.utils.graphic.GlassSystemNavbar
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import org.koin.androidx.compose.koinViewModel
 
@@ -48,9 +47,7 @@ object SelectManufacturerScreen {
                 .fillMaxSize(),
             topBar = { AppBar(viewModel, scrollBehavior) },
             content = { paddings ->
-                GlassSystemNavbar(Modifier.fillMaxSize()) {
-                    Content(Modifier.padding(top = paddings.calculateTopPadding()), viewModel, onSelected)
-                }
+                Content(Modifier.padding(top = paddings.calculateTopPadding()), viewModel, onSelected)
             }
         )
     }

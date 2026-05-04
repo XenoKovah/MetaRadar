@@ -11,7 +11,6 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import f.cking.software.R
 import f.cking.software.data.helpers.IntentHelper.ScreenNavigation
-import f.cking.software.domain.interactor.CheckBatchForRadarMatchesInteractor
 import f.cking.software.ui.MainActivity
 import kotlin.random.Random
 
@@ -68,38 +67,6 @@ class NotificationsHelper(
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setSilent(true)
             .build()
-    }
-
-    fun notifyRadarProfile(profiles: List<CheckBatchForRadarMatchesInteractor.ProfileResult>) {
-        val title = if (profiles.count() == 1) {
-            val profile = profiles.first()
-            context.getString(R.string.notification_profile_is_near_you, profile.profile.name)
-        } else {
-            context.resources.getQuantityString(R.plurals.notification_profiles_are_near_you, profiles.count(), profiles.count())
-        }
-
-        val devicesList = profiles.flatMap { it.matched }
-            .joinToString(separator = ", ") { it.buildDisplayName() }
-
-        val content = context.getString(R.string.devices_matched_postfix, devicesList)
-
-        val openAppPendingIntent = getOpenAppIntent()
-
-        createDeviceFoundChannel()
-
-        val notification = NotificationCompat.Builder(context, RADAR_PROFILE_CHANNEL)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setSmallIcon(R.drawable.ic_ble)
-            .setContentIntent(openAppPendingIntent)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setGroup(RADAR_PROFILE_GROUP)
-            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_ALL)
-            .build()
-
-        notificationManager.notify(Random.nextInt(), notification)
     }
 
     fun notifyLocationIsTurnedOff() {
@@ -192,15 +159,6 @@ class NotificationsHelper(
         notificationManager.createNotificationChannel(channel)
     }
 
-    private fun createDeviceFoundChannel() {
-        val channel = NotificationChannel(
-            RADAR_PROFILE_CHANNEL,
-            context.getString(R.string.device_found_notification_channel_name),
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply { enableVibration(true) }
-        notificationManager.createNotificationChannel(channel)
-    }
-
     private fun createErrorsNotificationChannel() {
         val channel = NotificationChannel(
             ERRORS_CHANNEL,
@@ -232,8 +190,6 @@ class NotificationsHelper(
 
     companion object {
         private const val SERVICE_NOTIFICATION_CHANNEL = "service_notification_channel"
-        private const val RADAR_PROFILE_CHANNEL = "radar_profile_channel"
-        private const val RADAR_PROFILE_GROUP = "radar_profile_group"
         private const val ERRORS_CHANNEL = "radar_errors_channel"
 
         const val FOREGROUND_NOTIFICATION_ID = 42

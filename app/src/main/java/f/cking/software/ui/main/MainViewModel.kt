@@ -17,14 +17,15 @@ import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.SettingsRepository
 import f.cking.software.service.BgScanService
 import f.cking.software.ui.ScreenNavigationCommands
+import f.cking.software.ui.connectall.ConnectAllScreen
 import f.cking.software.ui.devicelist.DeviceListScreen
-import f.cking.software.ui.journal.JournalScreen
-import f.cking.software.ui.profileslist.ProfilesListScreen
 import f.cking.software.ui.settings.SettingsScreen
 import f.cking.software.utils.navigation.Router
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 class MainViewModel(
     private val permissionHelper: PermissionHelper,
@@ -40,28 +41,31 @@ class MainViewModel(
     var bgServiceIsActive: Boolean by mutableStateOf(BgScanService.isActive)
     var showLocationDisabledDialog: MaterialDialogState = MaterialDialogState()
     var showBluetoothDisabledDialog: MaterialDialogState = MaterialDialogState()
+    /**
+     * True when LocationProvider has emitted a fix in the last [GPS_FRESH_WINDOW_MS]. Drives the
+     * 🛰️/🚫 GPS chip in the top app bar so the user can tell at a glance whether geo-tags are
+     * being attached to scan records.
+     */
+    var gpsHasRecentFix: Boolean by mutableStateOf(false)
 
     var tabs by mutableStateOf(
         listOf(
             Tab(
+                key = TabKey.DEVICES,
                 iconRes = R.drawable.ic_home_outline,
                 selectedIconRes = R.drawable.ic_home,
                 text = context.getString(R.string.menu_device_list),
                 selected = true,
             ) { DeviceListScreen.Screen() },
             Tab(
+                key = TabKey.CONNECT_ALL,
                 iconRes = R.drawable.ic_alert_outline,
                 selectedIconRes = R.drawable.ic_alert,
-                text = context.getString(R.string.menu_radar_profiles),
+                text = context.getString(R.string.menu_connect_all),
                 selected = false,
-            ) { ProfilesListScreen.Screen() },
+            ) { ConnectAllScreen.Screen() },
             Tab(
-                iconRes = R.drawable.ic_journal_outline,
-                selectedIconRes = R.drawable.ic_journal,
-                text = context.getString(R.string.menu_journal),
-                selected = false,
-            ) { JournalScreen.Screen() },
-            Tab(
+                key = TabKey.SETTINGS,
                 iconRes = R.drawable.ic_settings_outline,
                 selectedIconRes = R.drawable.ic_settings,
                 text = context.getString(R.string.menu_settings),
@@ -70,9 +74,47 @@ class MainViewModel(
         )
     )
 
+    val selectedTabKey: TabKey
+        get() = tabs.firstOrNull { it.selected }?.key ?: TabKey.DEVICES
+
     init {
         observeScanInProgress()
         observeServiceIsLaunched()
+        observeGpsFreshness()
+    }
+
+    private var lastLocationHandle: LocationProvider.LocationHandle? = null
+
+    private fun observeGpsFreshness() {
+        // Two cooperating jobs feed [gpsHasRecentFix]:
+        // 1) The location observer caches every new fix and recomputes immediately so a fresh
+        //    fix flips the chip to 🛰️ within one frame.
+        // 2) The poll loop recomputes every [GPS_FRESHNESS_POLL_MS] so the chip flips back to
+        //    🚫 once the cached fix passes [GPS_FRESH_WINDOW_MS] without depending on the
+        //    upstream flow re-emitting.
+        viewModelScope.launch {
+            locationProvider.observeLocation().collect { handle ->
+                lastLocationHandle = handle
+                recomputeGpsFreshness()
+            }
+        }
+        viewModelScope.launch {
+            while (true) {
+                delay(GPS_FRESHNESS_POLL_MS)
+                recomputeGpsFreshness()
+            }
+        }
+    }
+
+    private fun recomputeGpsFreshness() {
+        val handle = lastLocationHandle
+        val fresh = handle != null && (System.currentTimeMillis() - handle.emitTime) < GPS_FRESH_WINDOW_MS
+        if (fresh != gpsHasRecentFix) {
+            Timber.tag("GpsChip").d("gpsHasRecentFix %s -> %s (handle=%s, age=%s)",
+                gpsHasRecentFix, fresh, handle != null,
+                handle?.let { System.currentTimeMillis() - it.emitTime })
+            gpsHasRecentFix = fresh
+        }
     }
 
     fun onScanButtonClick() {
@@ -154,11 +196,22 @@ class MainViewModel(
         }
     }
 
+    enum class TabKey { DEVICES, CONNECT_ALL, SETTINGS }
+
     data class Tab(
+        val key: TabKey,
         @DrawableRes val iconRes: Int,
         @DrawableRes val selectedIconRes: Int,
         val text: String,
         val selected: Boolean,
         val screen: @Composable () -> Unit,
     )
+
+    companion object {
+        // Two minutes mirrors LocationProvider.ALLOWED_LOCATION_LIVETIME_MS — same window the
+        // location pipeline considers a fix "fresh enough" to attach to scan records.
+        private const val GPS_FRESH_WINDOW_MS = 2L * 60L * 1000L
+        // Re-poll cadence so the chip flips from 🛰️ to 🚫 within ~30s of the fix going stale.
+        private const val GPS_FRESHNESS_POLL_MS = 30L * 1000L
+    }
 }

@@ -38,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -59,6 +60,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -488,6 +490,11 @@ object DeviceListScreen {
                     item { Spacer(modifier = Modifier.width(16.dp)) }
 
                     item {
+                        ClearAllChip(viewModel)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    item {
                         SearchChip(viewModel)
                         Spacer(modifier = Modifier.width(8.dp))
                     }
@@ -571,6 +578,56 @@ object DeviceListScreen {
             label = {
                 Text(text = searchQuery?.takeIf { it.isNotBlank() } ?: stringResource(R.string.search))
             }
+        )
+    }
+
+    @Composable
+    private fun ClearAllChip(viewModel: DeviceListViewModel) {
+        // Red destructive chip — wipes every device row from the database. Behind a confirm
+        // dialog because it can't be undone.
+        val dialogState = rememberMaterialDialogState()
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.confirm),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.error),
+                ) {
+                    dialogState.hide()
+                    viewModel.onClearAllDevicesConfirmed()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.clear_all_devices_title),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(text = stringResource(R.string.clear_all_devices_subtitle))
+            }
+        }
+        SuggestionChip(
+            onClick = { dialogState.show() },
+            colors = SuggestionChipDefaults.suggestionChipColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                labelColor = MaterialTheme.colorScheme.onErrorContainer,
+                iconContentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+            border = null,
+            icon = {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = stringResource(R.string.clear),
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            },
+            label = { Text(text = stringResource(R.string.clear)) },
         )
     }
 

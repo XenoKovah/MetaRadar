@@ -3,9 +3,9 @@ package f.cking.software.domain.interactor.filterchecker
 import android.util.LruCache
 import f.cking.software.data.helpers.PowerModeHelper
 import f.cking.software.domain.model.DeviceData
-import f.cking.software.domain.model.RadarProfile
+import f.cking.software.domain.model.DeviceFilter
 
-abstract class FilterChecker<T : RadarProfile.Filter>(
+abstract class FilterChecker<T : DeviceFilter>(
     private val powerModeHelper: PowerModeHelper,
 ) {
 

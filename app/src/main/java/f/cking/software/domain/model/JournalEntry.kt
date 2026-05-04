@@ -13,14 +13,6 @@ data class JournalEntry(
     sealed class Report : java.io.Serializable {
 
         @Serializable
-        @SerialName("profile_report")
-        data class ProfileReport(
-            val profileId: Int,
-            val deviceAddresses: List<String>,
-            val locationModel: LocationModel?,
-        ) : Report()
-
-        @Serializable
         @SerialName("error_report")
         data class Error(
             val title: String,

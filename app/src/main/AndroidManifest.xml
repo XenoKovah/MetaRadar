@@ -29,6 +29,20 @@
     <uses-feature android:name="android.hardware.location.gps" />
     <uses-feature android:name="android.hardware.location.network" />
 
+    <!-- Required on Android 11+ so the system can resolve external browsers / mail apps for
+         Intent.ACTION_VIEW with http(s) — without this the "Go to GitHub" / "Report" buttons
+         hit ActivityNotFoundException and we just show a "Cannot open the url" toast. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name=".TheApp"
         android:allowBackup="true"

@@ -1,6 +1,8 @@
 package f.cking.software
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.location.Location
@@ -120,12 +122,31 @@ object SHA256 {
     }
 }
 
+/**
+ * Opens [url] in whatever browser the user has installed. On devices with no app registered for
+ * `https` (some stripped-down OEM builds, kiosk devices, emulators) ACTION_VIEW resolves to
+ * nothing and the framework throws ActivityNotFoundException — in that case we fall back to
+ * copying the URL to the clipboard and showing a longer toast so the user can at least paste it
+ * elsewhere instead of staring at a button that silently does nothing.
+ */
 fun Context.openUrl(url: String) {
     val webpage: Uri = url.toUri()
-    val intent = Intent(Intent.ACTION_VIEW, webpage)
+    val intent = Intent(Intent.ACTION_VIEW, webpage).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
     try {
         startActivity(intent)
     } catch (e: ActivityNotFoundException) {
+        copyToClipboardFallback(url)
+    }
+}
+
+private fun Context.copyToClipboardFallback(url: String) {
+    val clipboard = ContextCompat.getSystemService(this, ClipboardManager::class.java)
+    if (clipboard != null) {
+        clipboard.setPrimaryClip(ClipData.newPlainText("URL", url))
+        Toast.makeText(this, getString(R.string.url_copied_no_browser, url), Toast.LENGTH_LONG).show()
+    } else {
         Toast.makeText(this, getString(R.string.cannot_open_the_url), Toast.LENGTH_SHORT).show()
     }
 }

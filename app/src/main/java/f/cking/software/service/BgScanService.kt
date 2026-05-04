@@ -14,7 +14,6 @@ import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.NotificationsHelper
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.helpers.PowerModeHelper
-import f.cking.software.domain.interactor.CheckBatchForRadarMatchesInteractor
 import f.cking.software.domain.interactor.SaveOrMergeBatchInteractor
 import f.cking.software.domain.interactor.SaveReportInteractor
 import f.cking.software.domain.model.BleScanDevice
@@ -44,7 +43,6 @@ class BgScanService : Service() {
     private val powerModeHelper: PowerModeHelper by inject()
 
     private val saveOrMergeBatchInteractor: SaveOrMergeBatchInteractor by inject()
-    private val checkBatchForRadarMatchesInteractor: CheckBatchForRadarMatchesInteractor by inject()
     private val saveReportInteractor: SaveReportInteractor by inject()
 
     private val handler = Handler(Looper.getMainLooper())
@@ -222,12 +220,7 @@ class BgScanService : Service() {
                 saveOrMergeBatchInteractor.execute(batch)
             }
 
-            val matchedProfiles = checkBatchForRadarMatchesInteractor.execute(savingResult.savedBatch)
-
-            Timber.d("Background scan result: known_devices_count=${savingResult.knownDevicesCount}, matched_profiles=${matchedProfiles.count()}")
-            withContext(Dispatchers.Main) {
-                handleProfileCheckingResult(matchedProfiles)
-            }
+            Timber.d("Background scan result: known_devices_count=${savingResult.knownDevicesCount}")
 
             failureScanCounter.set(0)
 
@@ -239,12 +232,6 @@ class BgScanService : Service() {
         } catch (exception: Throwable) {
             handleError(exception)
             NotificationsHelper.ServiceNotificationContent.NoDataYet
-        }
-    }
-
-    private fun handleProfileCheckingResult(profiles: List<CheckBatchForRadarMatchesInteractor.ProfileResult>) {
-        if (profiles.isNotEmpty()) {
-            notificationsHelper.notifyRadarProfile(profiles)
         }
     }
 

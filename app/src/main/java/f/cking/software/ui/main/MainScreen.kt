@@ -1,7 +1,6 @@
 package f.cking.software.ui.main
 
 import android.annotation.SuppressLint
-import android.view.MotionEvent
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -36,17 +35,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
@@ -55,17 +48,15 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalHapticFeedback
 import com.vanpra.composematerialdialogs.MaterialDialogState
 import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import f.cking.software.R
 import f.cking.software.ui.GlobalUiState
-import f.cking.software.utils.graphic.DropEffectState
-import f.cking.software.utils.graphic.GlassBottomNavBar
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import f.cking.software.utils.graphic.ThemedDialog
 import f.cking.software.utils.graphic.infoDialog
-import f.cking.software.utils.graphic.rememberDropEffectState
-import f.cking.software.utils.graphic.withDropEffect
 import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,30 +66,32 @@ object MainScreen {
     @Composable
     fun Screen() {
         val viewModel: MainViewModel = koinViewModel()
-        val dropEffectState = rememberDropEffectState()
         Scaffold(
             modifier = Modifier
-                .fillMaxSize()
-                .withDropEffect(dropEffectState),
+                .fillMaxSize(),
             topBar = {
                 TopBar(viewModel)
             },
             content = { innerPaddings ->
-                GlassBottomNavBar(
-                    modifier = Modifier.fillMaxSize(),
-                    content = {
-                        Box(Modifier.padding(top = innerPaddings.calculateTopPadding())) {
-                            viewModel.tabs.firstOrNull { it.selected }?.screen?.invoke()
-                        }
-                    },
-                )
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(
+                            top = innerPaddings.calculateTopPadding(),
+                            bottom = innerPaddings.calculateBottomPadding(),
+                        )
+                ) {
+                    viewModel.tabs.firstOrNull { it.selected }?.screen?.invoke()
+                }
             },
             floatingActionButtonPosition = FabPosition.Center,
             bottomBar = {
                 BottomNavigationBar(Modifier, viewModel)
             },
             floatingActionButton = {
-                ScanFab(viewModel, dropEffectState)
+                if (viewModel.selectedTabKey == MainViewModel.TabKey.DEVICES) {
+                    ScanFab(viewModel)
+                }
             },
         )
         LocationDisabledDialog(viewModel)
@@ -149,7 +142,8 @@ object MainScreen {
         Column(
             modifier = modifier
                 .onGloballyPositioned { GlobalUiState.setBottomOffset(navbarOffset = it.size.height.toFloat()) }
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .background(Color.White),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -192,13 +186,11 @@ object MainScreen {
         }
     }
 
-    @OptIn(ExperimentalComposeUiApi::class)
     @Composable
-    private fun ScanFab(viewModel: MainViewModel, dropEffectState: DropEffectState) {
+    private fun ScanFab(viewModel: MainViewModel) {
         val text: String
         val icon: Int
 
-        var geometry = remember { Rect(0f, 0f, 0f, 0f) }
         if (viewModel.bgServiceIsActive) {
             text = stringResource(R.string.stop)
             icon = R.drawable.ic_cancel
@@ -243,7 +235,6 @@ object MainScreen {
             }
         )
         val haptic = LocalHapticFeedback.current
-        var observeEvent = remember { true }
 
         checkAndStartService = {
             when {
@@ -269,46 +260,13 @@ object MainScreen {
             modifier = Modifier
                 .onGloballyPositioned {
                     GlobalUiState.setBottomOffset(fabOffset = it.size.height.toFloat())
-                    geometry = Rect(Offset(it.positionInRoot().x, it.positionInRoot().y), Size(it.size.width.toFloat(), it.size.height.toFloat()))
-                }
-                .pointerInteropFilter { event ->
-                    val touchX = geometry.left + event.x
-                    val touchY = geometry.top + event.y
-                    when {
-                        event.action == MotionEvent.ACTION_DOWN -> {
-                            dropEffectState.drop(type = DropEffectState.DropEvent.Type.TOUCH, touchX, touchY)
-                            observeEvent = true
-                            true
-                        }
-
-                        observeEvent && event.action == MotionEvent.ACTION_UP -> {
-                            val started = checkAndStartService.invoke()
-                            if (started) {
-                                dropEffectState.drop(type = DropEffectState.DropEvent.Type.RELEASE_HARD, touchX, touchY)
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            } else {
-                                dropEffectState.drop(type = DropEffectState.DropEvent.Type.RELEASE_SOFT, touchX, touchY)
-                            }
-                            true
-                        }
-
-                        observeEvent && event.action == MotionEvent.ACTION_MOVE -> {
-                            if (geometry.contains(Offset(geometry.left + event.x, geometry.top + event.y))) {
-                                dropEffectState.move(touchX, touchY)
-                                true
-                            } else {
-                                dropEffectState.drop(type = DropEffectState.DropEvent.Type.RELEASE_SOFT, touchX, touchY)
-                                observeEvent = false
-                                false
-                            }
-                        }
-
-                        else -> false
-                    }
                 },
             text = { Text(text = text, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer) },
             onClick = {
-                // ignore
+                val started = checkAndStartService?.invoke() == true
+                if (started) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
             },
             icon = {
                 Image(
@@ -414,7 +372,13 @@ object MainScreen {
     private fun TopBar(viewModel: MainViewModel) {
         TopAppBar(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
-            title = { Text(text = stringResource(R.string.app_name), color = MaterialTheme.colorScheme.onSurface) },
+            title = {
+                val gpsChip = if (viewModel.gpsHasRecentFix) "🛰️GPS" else "🚫GPS"
+                Text(
+                    text = "${stringResource(R.string.app_name)} $gpsChip",
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            },
             actions = {
                 if (viewModel.scanStarted && viewModel.bgServiceIsActive) {
                     CircularProgressIndicator(

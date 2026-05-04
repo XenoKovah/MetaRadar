@@ -30,8 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import f.cking.software.R
-import f.cking.software.domain.model.RadarProfile
-import f.cking.software.utils.graphic.GlassBottomSpace
+import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import f.cking.software.utils.navigation.BackCommand
 import f.cking.software.utils.navigation.Router
@@ -43,7 +42,7 @@ object SelectFilterScreen {
     fun Screen(
         initialFilterState: FilterUiState,
         router: Router,
-        onConfirm: (filterState: RadarProfile.Filter) -> Unit
+        onConfirm: (filterState: DeviceFilter) -> Unit
     ) {
 
         val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -53,55 +52,46 @@ object SelectFilterScreen {
                 AppBar(scrollBehavior) { router.navigate(BackCommand) }
             },
             content = { paddings ->
-                GlassBottomSpace(
-                    modifier = Modifier.fillMaxSize(),
-                    globalContent = { bottomPadding ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .background(MaterialTheme.colorScheme.surface)
-                                .padding(top = paddings.calculateTopPadding())
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(16.dp),
-                            ) {
-                                FilterScreen.Filter(
-                                    filterState = initialFilterState,
-                                    router = router,
-                                    onDeleteClick = { router.navigate(BackCommand) }
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(bottomPadding.calculateBottomPadding()))
-                        }
-                    },
-                    bottomContent = {
-                        val context = LocalContext.current
-                        Column {
-                            Button(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                onClick = {
-                                    val filter = initialFilterState
-                                        .takeIf { it.isCorrect() }
-                                        ?.let { FilterUiMapper.mapToDomain(it) }
+                val context = LocalContext.current
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(top = paddings.calculateTopPadding())
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                    ) {
+                        FilterScreen.Filter(
+                            filterState = initialFilterState,
+                            router = router,
+                            onDeleteClick = { router.navigate(BackCommand) }
+                        )
+                    }
+                    Button(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        onClick = {
+                            val filter = initialFilterState
+                                .takeIf { it.isCorrect() }
+                                ?.let { FilterUiMapper.mapToDomain(it) }
 
-                                    if (filter != null) {
-                                        router.navigate(BackCommand)
-                                        onConfirm.invoke(filter)
-                                    } else {
-                                        Toast.makeText(context, context.getString(R.string.filter_is_not_valid), Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            ) {
-                                Text(text = stringResource(R.string.confirm), color = MaterialTheme.colorScheme.onPrimary)
+                            if (filter != null) {
+                                router.navigate(BackCommand)
+                                onConfirm.invoke(filter)
+                            } else {
+                                Toast.makeText(context, context.getString(R.string.filter_is_not_valid), Toast.LENGTH_SHORT).show()
                             }
-                            SystemNavbarSpacer()
                         }
-                    },
-                )
+                    ) {
+                        Text(text = stringResource(R.string.confirm), color = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    SystemNavbarSpacer()
+                }
             }
         )
     }

@@ -22,7 +22,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import f.cking.software.R
-import f.cking.software.utils.graphic.GlassBottomSpace
 import f.cking.software.utils.graphic.RoundedBox
 import f.cking.software.utils.graphic.SystemNavbarSpacer
 import org.koin.androidx.compose.koinViewModel
@@ -39,23 +38,22 @@ object BackgroundLocationRequestScreen {
                 .nestedScroll(scrollBehavior.nestedScrollConnection),
             topBar = { AppBar(scrollBehavior) { viewModel.onBack() } },
             content = { paddings ->
-                GlassBottomSpace(
-                    modifier = Modifier.fillMaxSize(),
-                    globalContent = { bottomPadding ->
-                        Content(Modifier.padding(top = paddings.calculateTopPadding(), bottom = bottomPadding.calculateBottomPadding()), viewModel)
-                    },
-                    bottomContent = {
-                        Button(
-                            enabled = viewModel.grantButtonEnabled,
-                            modifier = Modifier.padding(8.dp).fillMaxWidth(),
-                            onClick = { viewModel.grantPermission() },
-                            content = {
-                                Text(stringResource(R.string.background_location_request_button), color = MaterialTheme.colorScheme.onPrimary)
-                            }
-                        )
-                        SystemNavbarSpacer()
-                    }
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = paddings.calculateTopPadding())
+                ) {
+                    Content(Modifier.weight(1f), viewModel)
+                    Button(
+                        enabled = viewModel.grantButtonEnabled,
+                        modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                        onClick = { viewModel.grantPermission() },
+                        content = {
+                            Text(stringResource(R.string.background_location_request_button), color = MaterialTheme.colorScheme.onPrimary)
+                        }
+                    )
+                    SystemNavbarSpacer()
+                }
             }
         )
     }
