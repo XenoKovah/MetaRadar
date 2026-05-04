@@ -182,14 +182,27 @@ class VendorIdentifier(
             (msdData[3].toInt() and 0xFF) == 0x15
     }
 
+    /**
+     * Parses BLE Advertising / EIR records: each frame is `[length] [type] [data...]` where
+     * `length` covers `type + data` (so data is `length - 1` bytes). The frame at offset `i`
+     * therefore spans `[i, i + length]` inclusive — a total of `length + 1` bytes — and we
+     * need `i + length + 1 <= raw.size` for the frame to be valid.
+     *
+     * Stops parsing on any malformed frame instead of throwing — this runs on the Main thread
+     * under a StateFlow collector, so a throw here would crash the UI. (Past regression: a 62-
+     * byte advertisement whose final frame ended exactly at the buffer boundary tripped an
+     * off-by-one in the data-slice indices and brought down the app on every Connect-All scan.)
+     */
     private fun parseAdvFrames(raw: ByteArray): List<BleRecordFrame> {
         val out = ArrayList<BleRecordFrame>()
         var i = 0
         while (i < raw.size) {
             val length = raw[i].toInt() and 0xFF
-            if (length == 0 || i + length >= raw.size) break
+            // Need length+1 bytes from offset i (the length byte itself + length bytes of type+data).
+            if (length == 0 || i + 1 + length > raw.size) break
             val type = raw[i + 1]
-            val data = raw.copyOfRange(i + 2, i + 1 + length + 1)
+            // Data spans indices [i+2, i+length] inclusive → copyOfRange toIndex = i + length + 1.
+            val data = raw.copyOfRange(i + 2, i + length + 1)
             out.add(BleRecordFrame(type, data))
             i += 1 + length
         }
