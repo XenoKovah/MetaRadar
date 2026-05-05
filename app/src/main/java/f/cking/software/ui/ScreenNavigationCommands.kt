@@ -23,9 +23,13 @@ object ScreenNavigationCommands {
 
     class OpenCreateFilterScreen(
         initialFilterState: FilterUiState,
-        onConfirm: (filterState: DeviceFilter) -> Unit
+        onConfirm: (filterState: DeviceFilter) -> Unit,
+        // Non-null when editing an existing custom filter — surfaces a top-bar trash icon that
+        // pops the editor and removes the filter. Null on the create-new path so the icon
+        // doesn't appear (there's nothing to delete yet).
+        onDelete: (() -> Unit)? = null,
     ) : AddToStackCommand(screenFunction = { key, router ->
-        SelectFilterScreen.Screen(initialFilterState, router, onConfirm)
+        SelectFilterScreen.Screen(initialFilterState, router, onConfirm, onDelete)
     })
 
     class OpenSelectManufacturerScreen(

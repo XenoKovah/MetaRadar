@@ -169,6 +169,7 @@ class BTIDESRepository(
             record["AdvChanArray"] != null -> RECORD_TYPE_ADV
             record["SDPArray"] != null -> RECORD_TYPE_SDP
             record["EIRArray"] != null -> RECORD_TYPE_EIR
+            record["HCIArray"] != null -> RECORD_TYPE_HCI
             else -> RECORD_TYPE_OTHER
         }
         writerStateLock.withLock {
@@ -225,6 +226,7 @@ class BTIDESRepository(
                                     rawLine.contains("\"AdvChanArray\":") -> RECORD_TYPE_ADV
                                     rawLine.contains("\"SDPArray\":") -> RECORD_TYPE_SDP
                                     rawLine.contains("\"EIRArray\":") -> RECORD_TYPE_EIR
+                                    rawLine.contains("\"HCIArray\":") -> RECORD_TYPE_HCI
                                     else -> RECORD_TYPE_OTHER
                                 }
                                 val indexLine = "$addr $typeFlag $offset ${bytes.size}\n".toByteArray(Charsets.UTF_8)
@@ -379,6 +381,51 @@ class BTIDESRepository(
         }
     }
 
+    /**
+     * Append an HCI Remote Name Request Complete record (BTIDES_HCI.json event_code=7). Used for
+     * BR/EDR-inquiry-resolved device names — the schema's own comment notes this event carries
+     * the *reassembled* remote name (post-fragmentation), which matches what Android hands us
+     * via `BluetoothDevice.EXTRA_NAME`. There is no native EIRArray variant for the local name,
+     * and the AdvData CompleteLocalName variants are LE-flavoured, so HCIArray is the cleanest
+     * home for this data.
+     *
+     * `name` may contain non-printable bytes when round-tripping through Android's String type;
+     * `remote_name_hex_str` preserves the original UTF-8 bytes verbatim so downstream tools can
+     * reconstruct the exact wire form, while `utf8_name` is filtered to printable code points
+     * to satisfy the schema's "printable UTF-8" contract.
+     */
+    suspend fun appendHciRemoteName(
+        bdaddr: String,
+        name: String,
+        timestampMs: Long = System.currentTimeMillis(),
+    ) {
+        val nameBytes = name.toByteArray(Charsets.UTF_8)
+        val nameHex = nameBytes.joinToString(separator = "") { "%02x".format(it.toInt() and 0xFF) }
+        val printable = name.filter { c ->
+            // Strip ASCII C0 controls and DEL; everything else (including non-ASCII printable
+            // glyphs and emoji) passes through. Matches the spec's "printable UTF-8" intent.
+            c.code !in 0x00..0x1F && c.code != 0x7F
+        }
+        val hciEntry = buildJsonObject {
+            putJsonObject("std_optional_fields") {
+                putJsonObject("time") {
+                    put("unix_time_milli", timestampMs)
+                    put("unix_time", timestampMs / 1000L)
+                }
+            }
+            put("event_code", 7)
+            put("event_code_str", "HCI_Remote_Name_Request_Complete")
+            put("status", 0)
+            put("remote_name_hex_str", nameHex)
+            if (printable.isNotEmpty()) put("utf8_name", printable)
+        }
+        appendRecord {
+            put("bdaddr", bdaddr.uppercase())
+            put("bdaddr_rand", 0)
+            put("HCIArray", buildJsonArray { add(hciEntry) })
+        }
+    }
+
     /** Begin a buffered GATT capture session for an address (idempotent). */
     suspend fun beginGattSession(bdaddr: String) {
         sessionsLock.withLock { gattSessions.getOrPut(bdaddr.uppercase()) { GattSession() } }
@@ -529,6 +576,7 @@ class BTIDESRepository(
                 obj["GATTArray"]?.jsonArray?.let { acc.mergeGatt(it) }
                 obj["SDPArray"]?.jsonArray?.let { acc.mergeSdp(it) }
                 obj["EIRArray"]?.jsonArray?.let { acc.mergeEir(it) }
+                obj["HCIArray"]?.jsonArray?.let { acc.mergeHci(it) }
                 currentCoroutineContext().ensureActive()
                 onLineConsumed(byteLen)
             }
@@ -813,6 +861,9 @@ class BTIDESRepository(
         // EIR entries (ClassOfDevice, PageScanRepetitionMode) are typed; collapse duplicates by
         // type so a device that's been inquired 100 times doesn't emit 100 identical CoD rows.
         val eirByType: LinkedHashMap<Int, JsonObject> = linkedMapOf()
+        // HCI events are keyed by event_code so re-inquiries don't accumulate duplicate
+        // Remote_Name_Request_Complete records.
+        val hciByCode: LinkedHashMap<Int, JsonObject> = linkedMapOf()
 
         fun mergeGatt(gattArray: JsonArray) {
             for (entry in gattArray) {
@@ -842,6 +893,14 @@ class BTIDESRepository(
             }
         }
 
+        fun mergeHci(hciArray: JsonArray) {
+            for (entry in hciArray) {
+                val rec = entry as? JsonObject ?: continue
+                val code = rec["event_code"]?.jsonPrimitive?.intOrNull ?: continue
+                hciByCode[code] = rec
+            }
+        }
+
         fun toJsonObject(strongest: StrongestRssiLocation? = null): JsonObject = buildJsonObject {
             put("bdaddr", bdaddr)
             put("bdaddr_rand", rand)
@@ -855,17 +914,27 @@ class BTIDESRepository(
             if (eirByType.isNotEmpty()) {
                 put("EIRArray", buildJsonArray { eirByType.values.forEach { add(it) } })
             }
-            // XenoMetaRadar extension (not part of upstream BTIDES): the lat/lng of the
-            // strongest sample we ever recorded for this device. Only emitted when we have
-            // both a location and an RSSI for at least one detection. The XMR_ prefix marks
-            // it as a vendor extension so downstream BTIDES parsers can ignore it cleanly.
+            if (hciByCode.isNotEmpty()) {
+                put("HCIArray", buildJsonArray { hciByCode.values.forEach { add(it) } })
+            }
+            // The strongest-RSSI sample's lat/lng/time/rssi for this device, emitted as a
+            // standard BTIDES `GPSArray` record (BTIDES_GPS.json). This is the same coordinate
+            // that surfaces as the black "strongest sample" marker on the device-details map.
+            // Schema-required fields: time, lat, lon. RSSI is optional but always populated
+            // here (the picker is RSSI-driven). Replaces the old `XMR_strongest_rssi_location`
+            // vendor extension so downstream BTIDES tooling consumes it without special-casing.
             if (strongest != null) {
-                putJsonObject("XMR_strongest_rssi_location") {
-                    put("lat", strongest.lat)
-                    put("lng", strongest.lng)
-                    if (strongest.rssi != null) put("rssi", strongest.rssi)
-                    put("unix_time_milli", strongest.timeMs)
-                }
+                put("GPSArray", buildJsonArray {
+                    add(buildJsonObject {
+                        putJsonObject("time") {
+                            put("unix_time_milli", strongest.timeMs)
+                            put("unix_time", strongest.timeMs / 1000L)
+                        }
+                        put("lat", strongest.lat)
+                        put("lon", strongest.lng)
+                        if (strongest.rssi != null) put("rssi", strongest.rssi)
+                    })
+                })
             }
         }
     }
@@ -988,6 +1057,7 @@ class BTIDESRepository(
         private const val RECORD_TYPE_ADV = "A"
         private const val RECORD_TYPE_SDP = "S"
         private const val RECORD_TYPE_EIR = "E"
+        private const val RECORD_TYPE_HCI = "H"
         private const val RECORD_TYPE_OTHER = "O"
         const val EXPORT_FILE_NAME = "btides_log.btides"
         private const val INDENT_UNIT = "  "

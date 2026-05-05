@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name" translatable="false">BLE Radar</string>
+    <string name="app_name" translatable="false">DM BT</string>
 
     <!-- Common -->
     <string name="search">Search</string>
@@ -10,6 +10,7 @@
     <string name="close">Close</string>
     <string name="understood">Understood</string>
     <string name="delete">Delete</string>
+    <string name="edit">Edit</string>
     <string name="select">Select</string>
     <string name="clear">Clear</string>
     <string name="fetch">Fetch</string>
@@ -194,14 +195,10 @@
     <string name="filter_by_last_detection_period_description">Triggers if the device was last detected during the selected time period</string>
     <string name="filter_by_is_paired">By Paired Status</string>
     <string name="filter_by_is_paired_description">Triggers if the device is paired with your device</string>
+    <string name="filter_by_address_type">By Address Type</string>
+    <string name="filter_by_address_type_description">Triggers when the device\'s BLE address type matches one of the selected types (Public / Static / RPA / NRPA).</string>
     <string name="filter_by_manufacturer">By Manufacturer</string>
     <string name="filter_by_manufacturer_description">Triggers when the device\'s chipset manufacturer matches</string>
-    <string name="filter_by_min_lost_period">By Min Lost Period</string>
-    <string name="filter_by_min_lost_period_description">Triggers if a device has been out of range for the selected period. Helps prevent repeated detections if the device stays nearby.</string>
-    <string name="filter_apple_airdrop_contact">Apple AirDrop Contact</string>
-    <string name="filter_apple_airdrop_contact_description">[DEPRECATED] Triggers when the device is an Apple device and the AirDrop contact matches</string>
-    <string name="filter_device_is_following_me">Device is Following Me</string>
-    <string name="filter_device_is_following_me_description">Triggers if a device stays within range and moves with you for the selected time and distance</string>
     <string name="filter_any_of">Any Of</string>
     <string name="filter_any_of_description">OR operator for a group of filters</string>
     <string name="filter_all_of">All Of</string>
@@ -212,25 +209,16 @@
     <string name="filter_device_location_description">Triggers if the device was previously seen at a specific location during the selected time period</string>
     <string name="filter_user_location">By Your Location</string>
     <string name="filter_user_location_description">Triggers if you are currently in a specific location. Useful to avoid triggering certain filters at home or at the office</string>
-    <string name="filter_by_tag">By Tag</string>
-    <string name="filter_by_tag_description">Triggers if the device has the selected tag</string>
 
     <!-- Filter UI -->
     <string name="add_filter">Add filter</string>
     <string name="filter_unknown">Unknown filter</string>
-    <string name="min_following_duration">Min following duration</string>
-    <string name="min_interval_to_detect">Minimum interval between detections</string>
-    <string name="min_interval_to_detect_description">Prevents this Alert Rule from triggering for the same device more than once within the selected time period. Useful to avoid frequent notifications.</string>
     <string name="time_placeholder">HH:MM</string>
     <string name="filter_unknown_title">Current filter is not supported by your app version</string>
     <string name="placeholder_device_name">Device name (or regex)</string>
     <string name="ignore_case">Ignore case</string>
-    <string name="placeholder_airdrope_contact">email/phone</string>
-    <string name="airdrop_min_lost_period">Min lost period</string>
-    <string name="airdrop_issue_description">Airdrop cannot be linked to a specific device because Apple changes BLE addresses every 15 minutes. To select the min lost period you should use this field.</string>
     <string name="select_device">Select device</string>
     <string name="tap_to_select">Tap to select</string>
-    <string name="chose_time">Chose time</string>
     <string name="from_date">From date</string>
     <string name="from_time">From time</string>
     <string name="to_date">To date</string>
@@ -240,10 +228,9 @@
     <string name="change">Change</string>
     <string name="filter_location_has_data">Location selected. Radius: %.1f m</string>
     <string name="filter_location_no_data">Select target location</string>
-    <string name="select_tag">Select tag</string>
-    <string name="address_type_public_tag" translatable="false">STP</string>
-    <string name="address_type_random_static_tag" translatable="false">RST</string>
-    <string name="address_type_non_resolvable_tag" translatable="false">NRP</string>
+    <string name="address_type_public_tag" translatable="false">Public</string>
+    <string name="address_type_random_static_tag" translatable="false">Static</string>
+    <string name="address_type_non_resolvable_tag" translatable="false">NRPA</string>
     <string name="address_type_resolvable_private_tag" translatable="false">RPA</string>
 
     <string name="address_type_public_description">Static public address (trackable)</string>
@@ -300,10 +287,6 @@
     <string name="lifetime_data_last_update">lifetime: %1$s | last update: %2$s ago</string>
     <string name="lifetime_data">lifetime: %1$s</string>
     <string name="device_list_placeholder">No data yet. To start scanning, click on the Scan button</string>
-    <string name="tag_name">Tag name</string>
-    <string name="create_new_tag">Create new</string>
-    <string name="add_tag">Add tag</string>
-    <string name="delete_tag_title">Delete tag \"%s\"?</string>
     <string name="silent_mode_is_enabled_disclaimer">The map is not available in the offline mode. To see the map disable the offline mode first.</string>
     <string name="rssi_value">%s dBm</string>
     <string name="distance_to_device">%s m</string>
@@ -401,5 +384,5 @@
     <string name="unlowful_usage_disclaimer">This project is developed solely for educational, security research, and personal investigative purposes. The author does not endorse or encourage any use of this software for unlawful or unethical activities. You are solely responsible for ensuring your use of this tool complies with all applicable laws and regulations.</string>
 
     <string name="what_is_this_app_for_title">What is this app for</string>
-    <string name="what_is_this_app_for_long">Bluetooth Low Energy (BLE) is a widely used wireless protocol that powers a huge variety of devices around you — from headphones, smartwatches, and fitness trackers to AirTags, IoT devices, game controllers, and even modern intimate gadgets. BLE devices communicate by broadcasting small packets of data, which can include device identifiers, metadata, and other information necessary for connectivity.\n\nThese broadcasts, while essential for device functionality, can also be used to track your presence and movements. For example, a cheap pair of wireless headphones may expose a persistent identifier publicly. Anyone listening to BLE packets nearby — whether governments, companies, or malicious actors — could potentially use that information to track you without your consent.\n\nFortunately, many modern devices implement privacy features in BLE to prevent tracking, such as randomized addresses and limited advertising. BLE Radar helps you distinguish between devices that protect your privacy and those that might be trackable. By analyzing BLE traffic in your surroundings, the app gives you insight into which devices are safe to use.\n\nBeyond analysis, BLE Radar can help protect you in real-time. The app can alert you when a suspicious device is nearby or if a device is moving with you over time, giving you an early warning against potential stalking or unwanted tracking. You can configure alerts based on device identifiers, types, or behaviors to fit your security needs.\n\nBy making this app, the goal is to empower you with knowledge and control over the BLE devices in your environment. Understanding which devices are broadcasting trackable information and which are privacy-conscious allows you to make informed decisions about what you use, wear, and interact with daily.</string>
+    <string name="what_is_this_app_for_long">Bluetooth Low Energy (BLE) is a widely used wireless protocol that powers a huge variety of devices around you — from headphones, smartwatches, and fitness trackers to AirTags, IoT devices, game controllers, and even modern intimate gadgets. BLE devices communicate by broadcasting small packets of data, which can include device identifiers, metadata, and other information necessary for connectivity.\n\nThese broadcasts, while essential for device functionality, can also be used to track your presence and movements. For example, a cheap pair of wireless headphones may expose a persistent identifier publicly. Anyone listening to BLE packets nearby — whether governments, companies, or malicious actors — could potentially use that information to track you without your consent.\n\nFortunately, many modern devices implement privacy features in BLE to prevent tracking, such as randomized addresses and limited advertising. DM BT helps you distinguish between devices that protect your privacy and those that might be trackable. By analyzing BLE traffic in your surroundings, the app gives you insight into which devices are safe to use.\n\nBeyond analysis, DM BT can help protect you in real-time. The app can alert you when a suspicious device is nearby or if a device is moving with you over time, giving you an early warning against potential stalking or unwanted tracking. You can configure alerts based on device identifiers, types, or behaviors to fit your security needs.\n\nBy making this app, the goal is to empower you with knowledge and control over the BLE devices in your environment. Understanding which devices are broadcasting trackable information and which are privacy-conscious allows you to make informed decisions about what you use, wear, and interact with daily.</string>
 </resources>

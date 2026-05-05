@@ -97,7 +97,6 @@ import f.cking.software.toLocation
 import f.cking.software.topLeft
 import f.cking.software.ui.AsyncBatchProcessor
 import f.cking.software.ui.map.MapView
-import f.cking.software.ui.tagdialog.TagDialog
 import f.cking.software.utils.ScreenSizeLocal
 import f.cking.software.utils.graphic.DevicePairedIcon
 import f.cking.software.utils.graphic.DeviceTypeIcon
@@ -249,8 +248,6 @@ object DeviceDetailsScreen {
                 isMoving = isMoving,
             )
             OnlineStatus(viewModel = viewModel, deviceData.isConnectable)
-            Spacer(modifier = Modifier.height(16.dp))
-            Tags(deviceData = deviceData, viewModel = viewModel)
             Spacer(modifier = Modifier.height(16.dp))
             DeviceContent(modifier = Modifier, deviceData = deviceData, viewModel = viewModel)
             Spacer(modifier = Modifier.height(16.dp))
@@ -455,7 +452,7 @@ object DeviceDetailsScreen {
 
     @Composable
     private fun Services(servicesUuids: Set<DeviceDetailsViewModel.ServiceData>, viewModel: DeviceDetailsViewModel) {
-        val transport = viewModel.deviceState?.transport ?: Transport.UNKNOWN
+        val transport = viewModel.deviceState?.transport ?: Transport.LE
         val sdpIndicatesGatt = viewModel.sdpServices.any { svc ->
             // Generic Access (0x1800) or Generic Attribute (0x1801) in the SDP UUID list means
             // the device claims ATT-over-BR/EDR support. We surface the (likely-empty) GATT
@@ -690,9 +687,17 @@ object DeviceDetailsScreen {
                             expanded = !expanded
                         }
                     }
-                    .padding(vertical = 8.dp)
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                title.invoke()
+                // weight(1f) lets the title share the row width with the icon. Without it, a
+                // long wrapping title (e.g. a 128-bit UUID + long CLUES name) consumes the
+                // Row's full maxWidth, leaving zero space for the icon — Compose renders the
+                // icon with width 0 and it disappears. Reserved for the icon ensures the
+                // expand affordance is always visible right next to the name.
+                Box(modifier = Modifier.weight(1f)) {
+                    title.invoke()
+                }
                 if (isExpandable) {
                     Spacer(Modifier.width(8.dp))
                     Icon(
@@ -709,75 +714,6 @@ object DeviceDetailsScreen {
                 }
             }
         }
-    }
-
-    @Composable
-    private fun Tags(
-        deviceData: DeviceData,
-        viewModel: DeviceDetailsViewModel,
-    ) {
-        RoundedBox(
-            modifier = Modifier.fillMaxWidth(),
-            internalPaddings = 0.dp
-        ) {
-            FlowRow(
-                modifier = Modifier
-                    .padding(8.dp)
-                    .fillMaxWidth(),
-            ) {
-                AddTag(viewModel = viewModel, deviceData = deviceData)
-                deviceData.tags.forEach { tag ->
-                    Tag(name = tag, viewModel = viewModel, deviceData = deviceData)
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun Tag(
-        deviceData: DeviceData,
-        name: String,
-        viewModel: DeviceDetailsViewModel,
-    ) {
-        val dialogState = rememberMaterialDialogState()
-
-        ThemedDialog(
-            dialogState = dialogState,
-            buttons = {
-                negativeButton(
-                    text = stringResource(R.string.cancel),
-                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
-                ) { dialogState.hide() }
-                positiveButton(text = stringResource(R.string.confirm), textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)) {
-                    dialogState.hide()
-                    viewModel.onRemoveTagClick(deviceData, name)
-                }
-            },
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text(text = stringResource(R.string.delete_tag_title, name), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-        TagChip(tagName = name, tagIcon = Icons.Filled.Delete) { dialogState.show() }
-    }
-
-    @Composable
-    private fun AddTag(
-        deviceData: DeviceData,
-        viewModel: DeviceDetailsViewModel,
-    ) {
-        val addTagDialog = TagDialog.rememberDialog {
-            viewModel.onNewTagSelected(deviceData, it)
-        }
-        SuggestionChip(
-            onClick = { addTagDialog.show() },
-            icon = {
-                Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
-            },
-            label = { Text(text = stringResource(R.string.add_tag)) }
-        )
     }
 
     @Composable

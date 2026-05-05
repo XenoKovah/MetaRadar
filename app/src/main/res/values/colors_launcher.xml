@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark background behind the circular avatar in the adaptive launcher icon and the
+         Android 12+ splash screen. Near-black with a slight blue tint to match the reference
+         provided by the project owner. -->
+    <color name="ic_launcher_background_dark">#1B1E26</color>
+</resources>

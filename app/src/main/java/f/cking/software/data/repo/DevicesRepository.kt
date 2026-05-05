@@ -71,7 +71,7 @@ class DevicesRepository(
      * rows.
      *
      * Returns `null` when any of the [filters] can't be expressed in SQL (Apple manufacturer
-     * with iBeacon exemption, AirDrop contacts, IsFollowing, location filters). Caller falls
+     * with iBeacon exemption, location filters). Caller falls
      * back to the in-Kotlin [observeAllDevices] path in that case — slower but correct for
      * filters that need raw BLE bytes / cross-table data.
      *
@@ -139,14 +139,6 @@ class DevicesRepository(
         withContext(Dispatchers.IO) {
             val existing = deviceDao.findByAddress(address) ?: return@withContext
             deviceDao.insert(existing.copy(sdpUuids = uuids))
-            notifyLastBatchListener()
-        }
-    }
-
-    suspend fun saveFollowingDetection(device: DeviceData, detectionTime: Long) {
-        withContext(Dispatchers.IO) {
-            val new = device.copy(lastFollowingDetectionTimeMs = detectionTime)
-            deviceDao.insert(new.toData())
             notifyLastBatchListener()
         }
     }

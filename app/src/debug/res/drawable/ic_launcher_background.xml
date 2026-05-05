@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@drawable/ic_launcher_background_original"/>
-    <item android:drawable="@drawable/ic_launcher_background_grid"/>
-</layer-list>
+<!-- Solid dark background for the adaptive icon. Matches the production look — the previous
+     debug-flavor grid+original layer-list was useful when the debug icon needed to look
+     visibly different from release, but we now want both flavors to render the avatar on a
+     dark circular background so the launcher / splash icon are consistent across builds. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@color/ic_launcher_background_dark" />

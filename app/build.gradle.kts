@@ -147,6 +147,7 @@ dependencies {
 
     // android general
     implementation(libs.appcompat)
+    implementation(libs.core.splashscreen)
     implementation(libs.work.ktx)
     implementation(libs.concurrent.futures)
     implementation(libs.concurrent.futures.ktx)

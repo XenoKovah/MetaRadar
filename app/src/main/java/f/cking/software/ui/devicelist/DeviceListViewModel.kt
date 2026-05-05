@@ -97,6 +97,27 @@ class DeviceListViewModel(
         viewModelScope.launch { appliedFilter.emit(newFilters) }
     }
 
+    /**
+     * True for filter chips the user built via the "+ Add filter" affordance. Quick filters
+     * (Not Apple, BTC) are baked-in and toggled by tapping the chip; custom filters open the
+     * editor on tap (where the user can also delete them via the trash icon in the top bar).
+     */
+    fun isCustomFilter(filter: FilterHolder): Boolean = filter !in quickFilters
+
+    /** Replace [old] with [new] in the active filter list, preserving its position. */
+    fun replaceFilter(old: FilterHolder, new: FilterHolder) {
+        val updated = appliedFilter.value.toMutableList()
+        val idx = updated.indexOf(old)
+        if (idx >= 0) updated[idx] = new else updated.add(new)
+        viewModelScope.launch { appliedFilter.emit(updated) }
+    }
+
+    /** Remove [filter] from the active filter list. Used by the editor's top-bar trash icon. */
+    fun removeFilter(filter: FilterHolder) {
+        val updated = appliedFilter.value.toMutableList().also { it.remove(filter) }
+        viewModelScope.launch { appliedFilter.emit(updated) }
+    }
+
     fun onOpenSearchClick() {
         isSearchMode = !isSearchMode
         if (!isSearchMode) {
@@ -116,14 +137,6 @@ class DeviceListViewModel(
 
     fun onDeviceClick(device: DeviceData) {
         router.navigate(ScreenNavigationCommands.OpenDeviceDetailsScreen(device.address))
-    }
-
-    fun onTagSelected(tag: String) {
-        val tagFilter = FilterHolder(
-            displayName = tag,
-            filter = DeviceFilter.ByTag(tag),
-        )
-        onFilterClick(tagFilter)
     }
 
     private fun observeIsScannerEnabled() {
@@ -234,8 +247,7 @@ class DeviceListViewModel(
                                 // Re-apply filters in Kotlin only on the fallback path
                                 // (sqlSnapshot==null): the SQL snapshot is already filtered
                                 // + sorted. The fallback case happens for non-pushable
-                                // filters (Apple Manufacturer / AppleAirdropContact /
-                                // IsFollowing / Device or User location).
+                                // filters (Apple Manufacturer / Device or User location).
                                 .let { list -> if (sqlSnapshot != null) list else list.withFilters(filterHolders, query) }
                                 .let { list -> if (sqlSnapshot != null) list else list.sortedWith(GENERAL_COMPARATOR) }
                                 .apply { showEnjoyTheAppIfNeeded() }
@@ -450,8 +462,6 @@ class DeviceListViewModel(
 
             when {
                 first.lastDetectTimeMs != second.lastDetectTimeMs -> first.lastDetectTimeMs.compareTo(second.lastDetectTimeMs)
-
-                first.tags.size != second.tags.size -> first.tags.size.compareTo(second.tags.size)
 
                 first.resolvedName != second.resolvedName -> first.resolvedName?.compareTo(second.resolvedName ?: return@Comparator 1) ?: -1
 

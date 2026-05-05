@@ -22,8 +22,6 @@ class BuildDeviceFromScanDataInteractor(
             manufacturerInfo = rawData?.let {
                 getManufacturerInfoFromRawBleInteractor.execute(it, scanData.scanTimeMs)
             },
-            lastFollowingDetectionTimeMs = null,
-            tags = emptySet(),
             rssi = scanData.rssi,
             systemAddressType = scanData.addressType,
             deviceClass = scanData.deviceClass,
@@ -32,11 +30,9 @@ class BuildDeviceFromScanDataInteractor(
             rowDataEncoded = rawData?.toBase64(),
             isConnectable = scanData.isConnectable,
             // BR/EDR inquiry sets `deviceType=DEVICE_TYPE_CLASSIC`; LE scan leaves it null.
-            // Treat null as LE (the legacy scan path) so existing devices keep their pre-BTC
-            // classification when this commit lands. Once BR/EDR discovery wires in, that path
-            // will pass an explicit deviceType.
-            transport = Transport.fromAndroidDeviceType(scanData.deviceType)
-                .let { if (it == Transport.UNKNOWN && rawData != null) Transport.LE else it },
+            // [Transport.fromAndroidDeviceType] already maps null and `DEVICE_TYPE_UNKNOWN`
+            // to LE (the only callers of this builder are LE scans and BR/EDR inquiries).
+            transport = Transport.fromAndroidDeviceType(scanData.deviceType),
             sdpUuids = emptyList(),
         )
     }

@@ -170,11 +170,14 @@ object SettingsScreen {
             onClick = { dialogState.show() },
             enabled = !viewModel.clearDatabaseInProgress,
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
             ),
         ) {
-            Text(text = stringResource(R.string.settings_clear_database))
+            Text(
+                text = stringResource(R.string.settings_clear_database),
+                color = MaterialTheme.colorScheme.onError,
+            )
         }
     }
 
@@ -390,8 +393,15 @@ object SettingsScreen {
             modifier = Modifier.fillMaxWidth(),
             onClick = { dialogState.show() },
             enabled = !viewModel.btidesInProgress,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
         ) {
-            Text(text = stringResource(R.string.btides_clear_log), color = MaterialTheme.colorScheme.onPrimary)
+            Text(
+                text = stringResource(R.string.btides_clear_log),
+                color = MaterialTheme.colorScheme.onError,
+            )
         }
     }
 
@@ -496,9 +506,16 @@ object SettingsScreen {
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = { dialogState.show() },
-            enabled = !viewModel.locationRemovingInProgress
+            enabled = !viewModel.locationRemovingInProgress,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
         ) {
-            Text(text = stringResource(R.string.settings_clear_all_location_history), color = MaterialTheme.colorScheme.onPrimary)
+            Text(
+                text = stringResource(R.string.settings_clear_all_location_history),
+                color = MaterialTheme.colorScheme.onError,
+            )
         }
     }
 

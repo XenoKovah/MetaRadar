@@ -21,6 +21,7 @@ import f.cking.software.ui.connectall.ConnectAllScreen
 import f.cking.software.ui.devicelist.DeviceListScreen
 import f.cking.software.ui.settings.SettingsScreen
 import f.cking.software.utils.navigation.Router
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -47,6 +48,11 @@ class MainViewModel(
      * being attached to scan records.
      */
     var gpsHasRecentFix: Boolean by mutableStateOf(false)
+    /** True while a user-tapped GPS refresh is in flight. Drives the spinner overlay on the
+     *  🚫GPS chip. Cleared either when a fresh fix arrives or after a max-wait timeout, so
+     *  the spinner doesn't spin forever when the system genuinely can't get a fix. */
+    var gpsRefreshInProgress: Boolean by mutableStateOf(false)
+    private var gpsRefreshTimeoutJob: Job? = null
 
     var tabs by mutableStateOf(
         listOf(
@@ -131,6 +137,54 @@ class MainViewModel(
                 gpsHasRecentFix, fresh, handle != null,
                 handle?.let { System.currentTimeMillis() - it.emitTime })
             gpsHasRecentFix = fresh
+        }
+        // A fresh fix arriving cancels any in-flight refresh spinner immediately.
+        if (fresh && gpsRefreshInProgress) {
+            gpsRefreshInProgress = false
+            gpsRefreshTimeoutJob?.cancel()
+            gpsRefreshTimeoutJob = null
+        }
+    }
+
+    /**
+     * User tapped the 🚫GPS chip — kick a one-shot location refresh through the existing
+     * [LocationProvider.fetchOnce] path. Shows a cycling spinner over the chip while the
+     * fetch is in flight. The system may still fail to get a fix (no satellite lock, no
+     * cell-tower assist) — in that case the spinner times out after [GPS_REFRESH_TIMEOUT_MS]
+     * and we fall back to the static 🚫 icon so the user knows the attempt completed.
+     *
+     * Permission gating mirrors [onScanButtonClick]: re-checks via PermissionHelper so a user
+     * who denied location-when-asked at install time gets prompted again on tap.
+     */
+    fun onGpsChipClick() {
+        // Toggle behavior: if a refresh is already showing, the second tap cancels the
+        // spinner so the user has clear feedback that the refresh is *not* in progress.
+        // The underlying location request the system queued may still complete and emit a
+        // fix (we don't have a clean per-request cancel via LocationManager, only a coarse
+        // stopLocationListening that would also tear down the periodic loop) — but the UI
+        // returns to its idle state, which is what the user asked for.
+        if (gpsRefreshInProgress) {
+            Timber.tag("GpsChip").i("User cancelled in-flight GPS refresh")
+            gpsRefreshInProgress = false
+            gpsRefreshTimeoutJob?.cancel()
+            gpsRefreshTimeoutJob = null
+            return
+        }
+        checkPermissions {
+            gpsRefreshInProgress = true
+            gpsRefreshTimeoutJob?.cancel()
+            gpsRefreshTimeoutJob = viewModelScope.launch {
+                delay(GPS_REFRESH_TIMEOUT_MS)
+                gpsRefreshInProgress = false
+            }
+            try {
+                locationProvider.fetchOnce()
+            } catch (e: Throwable) {
+                Timber.tag("GpsChip").w(e, "fetchOnce threw; clearing spinner")
+                gpsRefreshInProgress = false
+                gpsRefreshTimeoutJob?.cancel()
+                gpsRefreshTimeoutJob = null
+            }
         }
     }
 
@@ -228,5 +282,10 @@ class MainViewModel(
         private const val GPS_FRESH_WINDOW_MS = 2L * 60L * 1000L
         // Re-poll cadence so the chip flips from 🛰️ to 🚫 within ~30s of the fix going stale.
         private const val GPS_FRESHNESS_POLL_MS = 30L * 1000L
+        // Max time we leave the spinner up before giving up on a user-tapped GPS refresh. Keep
+        // this a hair longer than LocationProvider.LOCATION_REQUEST_MAX_DURATION_MILLS (30s)
+        // so the underlying getCurrentLocation has a chance to complete or fail before the UI
+        // gives up.
+        private const val GPS_REFRESH_TIMEOUT_MS = 35L * 1000L
     }
 }

@@ -83,16 +83,13 @@ object SelectFilterTypeScreen {
             FilterType.BY_LAST_DETECTION -> FilterUiState.LastDetectionInterval()
             FilterType.BY_FIRST_DETECTION -> FilterUiState.FirstDetectionInterval()
             FilterType.BY_IS_PAIRED -> FilterUiState.IsPaired()
+            FilterType.BY_ADDRESS_TYPE -> FilterUiState.AddressType()
             FilterType.BY_MANUFACTURER -> FilterUiState.Manufacturer()
             FilterType.BY_LOGIC_ALL -> FilterUiState.All()
             FilterType.BY_LOGIC_ANY -> FilterUiState.Any()
             FilterType.BY_LOGIC_NOT -> FilterUiState.Not()
-            FilterType.BY_MIN_DETECTION_TIME -> FilterUiState.MinLostTime()
-            FilterType.AIRDROP_CONTACT -> FilterUiState.AppleAirdropContact()
-            FilterType.IS_FOLLOWING -> FilterUiState.IsFollowing()
             FilterType.BY_DEVICE_LOCATION -> FilterUiState.DeviceLocation()
             FilterType.BY_USER_LOCATION -> FilterUiState.UserLocation()
-            FilterType.BY_TAG -> FilterUiState.Tag()
         }
     }
 }

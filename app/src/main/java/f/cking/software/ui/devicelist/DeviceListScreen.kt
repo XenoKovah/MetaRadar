@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import f.cking.software.R
 import f.cking.software.ui.ScreenNavigationCommands
+import f.cking.software.ui.filter.FilterUiMapper
 import f.cking.software.ui.filter.SelectFilterTypeScreen
 import f.cking.software.utils.graphic.ContentPlaceholder
 import f.cking.software.utils.graphic.DeviceListItem
@@ -182,7 +184,6 @@ object DeviceListScreen {
                         modifier = Modifier.animateItem(),
                         device = deviceData,
                         onClick = { viewModel.onDeviceClick(deviceData) },
-                        onTagSelected = { viewModel.onTagSelected(it) },
                     )
 
                 val showDivider = devices.getOrNull(index + 1)?.lastDetectTimeMs != deviceData.lastDetectTimeMs
@@ -339,7 +340,6 @@ object DeviceListScreen {
                     showSignalData = true,
                     showLastUpdate = false,
                     onClick = { viewModel.onDeviceClick(deviceData) },
-                    onTagSelected = { viewModel.onTagSelected(it) },
                 )
                 if (index < visibleDevices.lastIndex) {
                     Divider()
@@ -517,24 +517,60 @@ object DeviceListScreen {
                         Spacer(modifier = Modifier.width(8.dp))
                     }
 
-                    allFilters.forEach {
+                    allFilters.forEach { holder ->
                         item {
-                            val isSelected = appliedFilter.contains(it)
+                            val isSelected = appliedFilter.contains(holder)
+                            val isCustom = viewModel.isCustomFilter(holder)
+                            val customFilterName = stringResource(R.string.custom_filter)
 
                             FilterChip(
-                                onClick = { viewModel.onFilterClick(it) },
+                                // Quick filters (Not Apple / BTC): tap toggles selection,
+                                // showing a trash icon in the leading slot when active so the
+                                // user knows another tap will remove it.
+                                // Custom filters: tap opens the editor with the existing
+                                // filter state, preserving the chip's position via
+                                // [replaceFilter]. Deletion lives in the editor's top-bar
+                                // trash icon ([removeFilter]) so click-to-delete and
+                                // click-to-edit don't compete for the same gesture.
+                                onClick = {
+                                    if (isCustom) {
+                                        viewModel.router.navigate(
+                                            ScreenNavigationCommands.OpenCreateFilterScreen(
+                                                initialFilterState = FilterUiMapper.mapToUi(holder.filter),
+                                                onConfirm = { edited ->
+                                                    viewModel.replaceFilter(
+                                                        old = holder,
+                                                        new = DeviceListViewModel.FilterHolder(
+                                                            displayName = customFilterName,
+                                                            filter = edited,
+                                                        ),
+                                                    )
+                                                },
+                                                onDelete = { viewModel.removeFilter(holder) },
+                                            )
+                                        )
+                                    } else {
+                                        viewModel.onFilterClick(holder)
+                                    }
+                                },
                                 leadingIcon = {
-                                    if (isSelected) {
-                                        Icon(
+                                    when {
+                                        isCustom -> Icon(
+                                            Icons.Filled.Edit,
+                                            contentDescription = stringResource(R.string.edit),
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                        isSelected -> Icon(
                                             Icons.Filled.Delete,
                                             contentDescription = stringResource(R.string.delete),
-                                            modifier = Modifier.size(24.dp)
+                                            modifier = Modifier.size(24.dp),
                                         )
+                                        else -> {}
                                     }
                                 },
                                 selected = isSelected,
                                 label = {
-                                    Text(text = it.displayName)
+                                    Text(text = holder.displayName)
                                 }
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -561,15 +597,18 @@ object DeviceListScreen {
 
         val selectFilterDialog = rememberMaterialDialogState()
         SelectFilterTypeScreen.Dialog(selectFilterDialog) { initialFilter ->
-            viewModel.router.navigate(ScreenNavigationCommands.OpenCreateFilterScreen(
-                initialFilterState = initialFilter,
-            ) { filter ->
-                val filterHolder = DeviceListViewModel.FilterHolder(
-                    displayName = filterName,
-                    filter = filter,
+            viewModel.router.navigate(
+                ScreenNavigationCommands.OpenCreateFilterScreen(
+                    initialFilterState = initialFilter,
+                    onConfirm = { filter ->
+                        val filterHolder = DeviceListViewModel.FilterHolder(
+                            displayName = filterName,
+                            filter = filter,
+                        )
+                        viewModel.onFilterClick(filterHolder)
+                    },
                 )
-                viewModel.onFilterClick(filterHolder)
-            })
+            )
         }
 
         SuggestionChip(

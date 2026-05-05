@@ -79,6 +79,7 @@ import com.vanpra.composematerialdialogs.datetime.time.TimePickerDefaults
 import com.vanpra.composematerialdialogs.datetime.time.timepicker
 import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import f.cking.software.R
+import f.cking.software.domain.model.DeviceClass
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.ExtendedAddressInfo
 import f.cking.software.domain.model.Transport
@@ -314,7 +315,6 @@ fun DeviceListItem(
     device: DeviceData,
     showSignalData: Boolean = false,
     showLastUpdate: Boolean = true,
-    onTagSelected: (tag: String) -> Unit = {},
     onClick: () -> Unit,
 ) {
     Box(
@@ -327,12 +327,18 @@ fun DeviceListItem(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            DeviceTypeIcon(
-                modifier = Modifier.size(64.dp),
-                device = device,
-            )
-
-            Spacer(Modifier.width(16.dp))
+            // Suppress the leading icon when CoD didn't classify the device — that's the
+            // overwhelming majority of LE-only rows (LE has no CoD), and the question-mark
+            // placeholder added rendering cost (Icon + tinted CircleShape background +
+            // painterResource lookup + colorByHash) without conveying any information. CoD-
+            // identified BR/EDR devices keep their meaningful icon.
+            if (device.resolvedDeviceClass !is DeviceClass.Unknown) {
+                DeviceTypeIcon(
+                    modifier = Modifier.size(64.dp),
+                    device = device,
+                )
+                Spacer(Modifier.width(16.dp))
+            }
 
             Column {
                 Row(verticalAlignment = Alignment.Top) {
@@ -351,17 +357,6 @@ fun DeviceListItem(
                     if (showSignalData) {
                         Spacer(modifier = Modifier.width(8.dp))
                         SignalData(rssi = device.rssi, distance = device.distance())
-                    }
-                }
-                device.tags.takeIf { it.isNotEmpty() }?.let { tags ->
-                    FlowRow(
-                        modifier = Modifier
-                            .fillMaxWidth(),
-                        mainAxisSpacing = 4.dp,
-                    ) {
-                        tags.forEachIndexed { index, tag ->
-                            TagChip(tagName = tag, onClick = { onTagSelected.invoke(tag) })
-                        }
                     }
                 }
                 device.resolvedManufacturerName?.let {
@@ -464,7 +459,7 @@ fun DeviceTypeIcon(
 @Composable
 fun ExtendedAddressView(
     extendedAddressInfo: ExtendedAddressInfo,
-    transport: Transport = Transport.UNKNOWN,
+    transport: Transport = Transport.LE,
 ) {
 
     Row {
@@ -617,7 +612,7 @@ fun Divider(modifier: Modifier = Modifier) {
 fun ContentPlaceholder(
     text: String,
     modifier: Modifier = Modifier,
-    icon: Painter = painterResource(R.drawable.ic_ghost),
+    icon: Painter = painterResource(R.drawable.ic_wifi),
 ) {
     Box(
         modifier = modifier,
@@ -704,23 +699,18 @@ fun colorByHash(hash: Int): Color {
 
 /**
  * Small inline label showing the radio transport a device was observed on (LE / BR / Dual).
- * Renders nothing for [Transport.UNKNOWN] so legacy rows that pre-date the migration stay
- * visually unchanged.
  */
 @Composable
 fun TransportBadge(transport: Transport) {
-    if (transport == Transport.UNKNOWN) return
     val (label, container) = when (transport) {
         Transport.LE -> stringResource(R.string.transport_badge_le) to MaterialTheme.colorScheme.secondaryContainer
         Transport.BREDR -> stringResource(R.string.transport_badge_brEdr) to MaterialTheme.colorScheme.tertiaryContainer
         Transport.DUAL -> stringResource(R.string.transport_badge_dual) to MaterialTheme.colorScheme.primaryContainer
-        Transport.UNKNOWN -> return
     }
     val onContainer = when (transport) {
         Transport.LE -> MaterialTheme.colorScheme.onSecondaryContainer
         Transport.BREDR -> MaterialTheme.colorScheme.onTertiaryContainer
         Transport.DUAL -> MaterialTheme.colorScheme.onPrimaryContainer
-        Transport.UNKNOWN -> MaterialTheme.colorScheme.onSurface
     }
     Box(
         modifier = Modifier

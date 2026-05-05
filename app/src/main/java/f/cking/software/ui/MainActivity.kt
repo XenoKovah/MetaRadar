@@ -5,10 +5,10 @@ import android.app.ComponentCaller
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -19,8 +19,6 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -67,6 +65,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Install the splash screen *before* super.onCreate per AndroidX docs. Without this
+        // call the system shows the splash but never hands it to androidx.core.splashscreen
+        // for a clean fade-out, which produces a visible flicker as the activity attaches.
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         val navigationBarStyle = if (isDarkModeOn()) {
@@ -165,11 +167,14 @@ class MainActivity : AppCompatActivity() {
 
     @Composable
     private fun themeColorScheme(): ColorScheme {
-        val dynamicColorsAreSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        // Dynamic-color (Material You) intentionally disabled. The hand-tuned `md_theme_*`
+        // palette in colors.xml is the canonical look — letting Android 12+ derive colors from
+        // the user's wallpaper produces wildly different palettes per device (a TCL with a
+        // warm wallpaper rendered every Button as pink-coral, which clashed with the explicit
+        // saturated-red destructive buttons). Forcing the static scheme keeps the app looking
+        // identical across devices and matches the published screenshots.
         val darkMode = isSystemInDarkTheme()
         val colors = when {
-            dynamicColorsAreSupported && darkMode -> dynamicDarkColorScheme(this)
-            dynamicColorsAreSupported && !darkMode -> dynamicLightColorScheme(this)
             darkMode -> darkColorScheme(
                 primary = colorResource(id = R.color.md_theme_dark_primary),
                 onPrimary = colorResource(id = R.color.md_theme_dark_onPrimary),

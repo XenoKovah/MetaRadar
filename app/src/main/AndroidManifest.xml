@@ -72,7 +72,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="user"
             android:enableOnBackInvokedCallback="false"
-            android:theme="@style/Theme.MetaRadar">
+            android:theme="@style/Theme.MetaRadar.SplashScreen">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

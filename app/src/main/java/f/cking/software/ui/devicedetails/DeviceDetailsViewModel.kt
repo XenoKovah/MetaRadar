@@ -21,13 +21,11 @@ import f.cking.software.data.helpers.SdpServiceClassNames
 import f.cking.software.domain.model.Transport
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.LocationRepository
-import f.cking.software.domain.interactor.AddTagToDeviceInteractor
 import f.cking.software.domain.interactor.GetBleAdTypeName
 import f.cking.software.domain.interactor.GetBleRecordFramesFromRawInteractor
 import f.cking.software.domain.interactor.GetCharacteristicNameFromUUID
 import f.cking.software.domain.interactor.GetServiceNameFromBluetoothService
 import f.cking.software.domain.interactor.ParseBleAdRecord
-import f.cking.software.domain.interactor.RemoveTagFromDeviceInteractor
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.LocationModel
 import f.cking.software.domain.toDomain
@@ -60,8 +58,6 @@ class DeviceDetailsViewModel(
     private val locationRepository: LocationRepository,
     private val locationProvider: LocationProvider,
     private val permissionHelper: PermissionHelper,
-    private val addTagToDeviceInteractor: AddTagToDeviceInteractor,
-    private val removeTagFromDeviceInteractor: RemoveTagFromDeviceInteractor,
     private val bleScannerHelper: BleScannerHelper,
     private val getBleRecordFramesFromRawInteractor: GetBleRecordFramesFromRawInteractor,
     private val cluesRepository: CluesRepository,
@@ -105,10 +101,21 @@ class DeviceDetailsViewModel(
     var recentReadFailures: Set<String> by mutableStateOf(emptySet())
     private val readFailureJobs: MutableMap<String, Job> = mutableMapOf()
     private var connectionJob: Job? = null
+    // True between when the user taps Connect and when they tap Disconnect (or leave the screen).
+    // Lets us tell apart a peer-initiated drop ("Sargon hung up after 30s") from a user-initiated
+    // teardown — only the former should trigger an auto-reconnect.
+    private var userWantsConnected: Boolean = false
+    // Bounded auto-reconnect counter to avoid hammering an unreachable peer. Reset on every
+    // user-initiated Connect / Disconnect.
+    private var autoReconnectAttempts: Int = 0
 
     var mapExpanded: Boolean by mutableStateOf(false)
 
-    var useHeatmap: Boolean by mutableStateOf(true)
+    // Default off — the heatmap renders an opaque GroundOverlay over OSM tiles which makes it
+    // hard to see the actual point markers / device path on a fresh load. The user can opt in
+    // per-device-screen via the toggle in the map header. Auto-disabled via a different code
+    // path further down when the point count exceeds MAX_POINTS_FOR_HEATMAP.
+    var useHeatmap: Boolean by mutableStateOf(false)
 
     sealed class ConnectionStatus(@StringRes val statusRes: Int) {
         data class CONNECTED(val gatt: BluetoothGatt) : ConnectionStatus(R.string.device_details_status_connected)
@@ -178,10 +185,19 @@ class DeviceDetailsViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        // Stop auto-reconnect when the screen goes away — otherwise we'd keep dialing the peer
+        // even after the user has navigated back to the device list.
+        userWantsConnected = false
         connectionJob?.cancel()
     }
 
     fun establishConnection() {
+        userWantsConnected = true
+        autoReconnectAttempts = 0
+        beginConnectionAttempt()
+    }
+
+    private fun beginConnectionAttempt() {
         connectionJob?.cancel()
         // Pick the transport that matches what the user is investigating: BR/EDR-only or
         // dual-mode peers connect over Classic so we exercise GATT-over-BR/EDR (and any
@@ -205,10 +221,37 @@ class DeviceDetailsViewModel(
         }
     }
 
+    /**
+     * Schedule a reconnect attempt after a peer-initiated drop. Only fires when the user still
+     * wants to be connected (hasn't tapped Disconnect / left the screen) and we haven't burned
+     * through [MAX_AUTO_RECONNECT_ATTEMPTS]. Apple peers (iPhone, MacBook) routinely close
+     * GATT links once the central has read everything they care about; the user expectation is
+     * "stay connected until I say otherwise," so we re-initiate the link.
+     */
+    private fun maybeScheduleAutoReconnect() {
+        if (!userWantsConnected) return
+        if (autoReconnectAttempts >= MAX_AUTO_RECONNECT_ATTEMPTS) {
+            Timber.tag(TAG).w("Auto-reconnect cap (%d) reached for %s; giving up", MAX_AUTO_RECONNECT_ATTEMPTS, address)
+            return
+        }
+        autoReconnectAttempts++
+        Timber.tag(TAG).i("Auto-reconnecting to %s (attempt %d/%d)", address, autoReconnectAttempts, MAX_AUTO_RECONNECT_ATTEMPTS)
+        viewModelScope.launch {
+            // Brief backoff so we don't hammer the peer's just-closed connection slot. Apple
+            // devices in particular reject reconnects fired too quickly with status=133.
+            kotlinx.coroutines.delay(AUTO_RECONNECT_DELAY_MS)
+            if (userWantsConnected) beginConnectionAttempt()
+        }
+    }
+
     private fun handleBleConnectResult(result: BleScannerHelper.DeviceConnectResult) {
         when (result) {
             is BleScannerHelper.DeviceConnectResult.Connected -> {
                 connectionStatus = ConnectionStatus.CONNECTED(result.gatt)
+                // Reset the auto-reconnect counter once we're back in: subsequent peer drops
+                // get a fresh budget of retries. Without this, three quick drops would
+                // exhaust the cap and leave the user stuck.
+                autoReconnectAttempts = 0
                 discoverServices(result.gatt)
             }
 
@@ -220,6 +263,7 @@ class DeviceDetailsViewModel(
                 connectionStatus = ConnectionStatus.DISCONNECTED
                 resetGattQueue()
                 connectionJob?.cancel()
+                maybeScheduleAutoReconnect()
             }
 
             is BleScannerHelper.DeviceConnectResult.Disconnecting -> {
@@ -231,6 +275,7 @@ class DeviceDetailsViewModel(
                 connectionStatus = ConnectionStatus.DISCONNECTED
                 resetGattQueue()
                 connectionJob?.cancel()
+                maybeScheduleAutoReconnect()
             }
 
             // services update
@@ -456,6 +501,11 @@ class DeviceDetailsViewModel(
     }
 
     fun disconnect(gatt: BluetoothGatt) {
+        // Mark this as user-initiated so the Disconnected callback doesn't trigger an
+        // auto-reconnect — otherwise we'd immediately reconnect to the device the user just
+        // told us to drop.
+        userWantsConnected = false
+        autoReconnectAttempts = 0
         viewModelScope.launch {
             try {
                 bleScannerHelper.disconnect(gatt)
@@ -549,10 +599,28 @@ class DeviceDetailsViewModel(
         // the GATT table only when the SDP table doesn't know the UUID.
         val name = SdpServiceClassNames.lookup(canonical)
             ?: GetServiceNameFromBluetoothService.execute(canonical)
+        // CLUES community data takes precedence for the Purpose field when present. When CLUES
+        // doesn't carry a purpose (or doesn't know the UUID at all), fall back to the SIG-spec
+        // profile summary so SDP rows for standard service classes (HID, A2DP, HFP, …) still
+        // get an expandable Purpose section. The UI's expand arrow keys off `clues.purpose`
+        // being non-null, so populating it from the spec table makes those rows expandable.
+        val cluesEntry = lookupClues(canonical)
+        val mergedClues = when {
+            cluesEntry?.purpose != null -> cluesEntry
+            else -> {
+                val specPurpose = SdpServiceClassNames.lookupPurpose(canonical)
+                if (specPurpose == null) cluesEntry
+                else CluesInfo(
+                    company = cluesEntry?.company,
+                    name = cluesEntry?.name,
+                    purpose = specPurpose,
+                )
+            }
+        }
         return SdpServiceData(
             uuid = canonical,
             name = name,
-            clues = lookupClues(canonical),
+            clues = mergedClues,
         )
     }
 
@@ -782,20 +850,6 @@ class DeviceDetailsViewModel(
         }
     }
 
-    fun onNewTagSelected(device: DeviceData, tag: String) {
-        viewModelScope.launch {
-            addTagToDeviceInteractor.execute(device, tag)
-            loadDevice(deviceState!!.address)
-        }
-    }
-
-    fun onRemoveTagClick(device: DeviceData, tag: String) {
-        viewModelScope.launch {
-            removeTagFromDeviceInteractor.execute(device, tag)
-            loadDevice(deviceState!!.address)
-        }
-    }
-
     fun back() {
         router.navigate(BackCommand)
     }
@@ -844,8 +898,16 @@ class DeviceDetailsViewModel(
     )
 
     companion object {
+        private const val TAG = "DeviceDetailsVM"
         private const val DESCRIPTOR_CHARACTERISTIC_USER_DESCRIPTION = "00002901-0000-1000-8000-00805f9b34fb"
         private const val READ_FAILED_DISPLAY_MS = 2_000L
+        // How many times to auto-reconnect after a peer-initiated drop before giving up. Apple
+        // peers typically allow 1-2 quick reconnects before the system rate-limits.
+        private const val MAX_AUTO_RECONNECT_ATTEMPTS = 3
+        // Pause between disconnect and the next connectGatt attempt. Some Apple peers reject
+        // immediate reconnects with status=133 (GATT_ERROR), but a sub-second backoff is enough
+        // for the host's GATT client to release the resource.
+        private const val AUTO_RECONNECT_DELAY_MS = 750L
         private const val MAX_POINTS_FOR_MARKERS = 5_000
         private const val MAX_POINTS_FOR_HEATMAP = 30_000
         private const val HISTORY_PERIOD_DAY = 24 * 60 * 60 * 1000L // 24 hours

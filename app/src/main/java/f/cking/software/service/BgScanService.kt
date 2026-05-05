@@ -269,16 +269,35 @@ class BgScanService : Service() {
                 // is the only BR/EDR-specific schema record we can populate from the high-level
                 // Android API today (PageScanRepetitionMode is not exposed). One record per
                 // device per inquiry — DeviceAccumulator dedups by `type` on export.
+                //
+                // Also write the Remote Name (when Android resolved one) as an HCI
+                // Remote_Name_Request_Complete record. The schema's EIRArray doesn't define a
+                // local-name variant and the AdvData CompleteLocalName types are LE-flavoured,
+                // so HCIArray is the right home for the BR/EDR-side reassembled name.
                 for (device in batch) {
-                    val cod = device.deviceClass ?: continue
-                    try {
-                        btidesRepository.appendEirClassOfDevice(
-                            bdaddr = device.address,
-                            cod = cod,
-                            timestampMs = device.scanTimeMs,
-                        )
-                    } catch (e: Throwable) {
-                        Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
+                    val cod = device.deviceClass
+                    if (cod != null) {
+                        try {
+                            btidesRepository.appendEirClassOfDevice(
+                                bdaddr = device.address,
+                                cod = cod,
+                                timestampMs = device.scanTimeMs,
+                            )
+                        } catch (e: Throwable) {
+                            Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
+                        }
+                    }
+                    val remoteName = device.name
+                    if (!remoteName.isNullOrEmpty()) {
+                        try {
+                            btidesRepository.appendHciRemoteName(
+                                bdaddr = device.address,
+                                name = remoteName,
+                                timestampMs = device.scanTimeMs,
+                            )
+                        } catch (e: Throwable) {
+                            Timber.w(e, "Failed to write BTIDES HCI record for ${device.address}")
+                        }
                     }
                 }
             }

@@ -46,8 +46,6 @@ fun DeviceEntity.toDomain(appleAirDrop: AppleAirDrop? = null): DeviceData {
         manufacturerInfo = manufacturerId?.let { id ->
             manufacturerName?.let { name -> ManufacturerInfo(id, name, appleAirDrop) }
         },
-        lastFollowingDetectionTimeMs = lastFollowingDetectionMs,
-        tags = tags.toSet(),
         rssi = lastSeenRssi,
         systemAddressType = systemAddressType,
         deviceClass = deviceClass,
@@ -55,7 +53,9 @@ fun DeviceEntity.toDomain(appleAirDrop: AppleAirDrop? = null): DeviceData {
         servicesUuids = serviceUuids,
         rowDataEncoded = rowDataEncoded,
         isConnectable = isConnectable,
-        transport = Transport.entries.getOrElse(transport) { Transport.UNKNOWN },
+        // Stored ordinals come from migration 24→25: 0=LE, 1=BREDR, 2=DUAL. Anything out of
+        // range falls back to LE (the same default new rows get).
+        transport = Transport.entries.getOrElse(transport) { Transport.LE },
         sdpUuids = sdpUuids,
     )
 }
@@ -70,8 +70,6 @@ fun DeviceData.toData(): DeviceEntity {
         customName = customName,
         manufacturerId = manufacturerInfo?.id,
         manufacturerName = manufacturerInfo?.name,
-        lastFollowingDetectionMs = lastFollowingDetectionTimeMs,
-        tags = tags.toList(),
         lastSeenRssi = rssi,
         systemAddressType = systemAddressType,
         deviceClass = deviceClass,

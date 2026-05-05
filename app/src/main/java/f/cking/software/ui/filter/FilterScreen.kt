@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import com.google.accompanist.flowlayout.FlowRow
+import f.cking.software.domain.model.ExtendedAddressInfo
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -48,7 +50,6 @@ import f.cking.software.dateTimeStringFormat
 import f.cking.software.toLocalTime
 import f.cking.software.toMilliseconds
 import f.cking.software.ui.ScreenNavigationCommands
-import f.cking.software.ui.tagdialog.TagDialog
 import f.cking.software.utils.graphic.ClickableField
 import f.cking.software.utils.graphic.RoundedBox
 import f.cking.software.utils.graphic.TagChip
@@ -74,59 +75,14 @@ object FilterScreen {
             is FilterUiState.Not -> FilterNot(filterState, router, onDeleteClick)
             is FilterUiState.Name -> FilterName(filterState, onDeleteClick)
             is FilterUiState.Address -> FilterAddress(router, filterState, onDeleteClick)
-            is FilterUiState.AppleAirdropContact -> FilterAirdropContact(filterState, onDeleteClick)
             is FilterUiState.IsPaired -> FilterIsPaired(filterState, onDeleteClick)
+            is FilterUiState.AddressType -> FilterAddressType(filterState, onDeleteClick)
             is FilterUiState.Manufacturer -> FilterManufacturer(router, filterState, onDeleteClick)
-            is FilterUiState.MinLostTime -> FilterMinLostPeriod(filterState, onDeleteClick)
             is FilterUiState.LastDetectionInterval -> FilterLastDetectionInterval(filterState, onDeleteClick)
             is FilterUiState.FirstDetectionInterval -> FilterFirstDetectionInterval(filterState, onDeleteClick)
-            is FilterUiState.IsFollowing -> FilterIsFollowing(filterState, onDeleteClick)
             is FilterUiState.DeviceLocation -> FilterDeviceLocation(filterState, router, onDeleteClick)
             is FilterUiState.UserLocation -> FilterUserLocation(filterState, router, onDeleteClick)
-            is FilterUiState.Tag -> FilterTag(filterState, onDeleteClick)
             is FilterUiState.Unknown, is FilterUiState.Interval -> FilterUnknown(filterState, onDeleteClick)
-        }
-    }
-
-    @Composable
-    private fun FilterIsFollowing(
-        filter: FilterUiState.IsFollowing,
-        onDeleteClick: (child: FilterUiState) -> Unit,
-    ) {
-        FilterBase(
-            title = stringResource(R.string.filter_device_is_following_me),
-            color = colorResource(R.color.filter_is_following),
-            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
-        ) {
-            val followingDuration = rememberTimeDialog(filter.followingDurationMs.toLocalTime(ZoneId.of("GMT"))) { time ->
-                filter.followingDurationMs = time.toMilliseconds()
-            }
-
-            val followingInterval = rememberTimeDialog(filter.followingDetectionIntervalMs.toLocalTime(ZoneId.of("GMT"))) { time ->
-                filter.followingDetectionIntervalMs = time.toMilliseconds()
-            }
-
-            val followingDurationText = filter.followingDurationMs.dateTimeStringFormat("HH:mm", ZoneId.of("GMT"))
-            val followingIntervalText = filter.followingDetectionIntervalMs.dateTimeStringFormat("HH:mm", ZoneId.of("GMT"))
-
-            Column {
-                ClickableField(
-                    text = followingDurationText,
-                    placeholder = stringResource(R.string.time_placeholder),
-                    label = stringResource(R.string.min_following_duration),
-                ) {
-                    followingDuration.show()
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                ClickableField(
-                    text = followingIntervalText,
-                    placeholder = stringResource(R.string.time_placeholder),
-                    label = stringResource(R.string.min_interval_to_detect),
-                ) {
-                    followingInterval.show()
-                }
-                Text(text = stringResource(R.string.min_interval_to_detect_description), fontWeight = FontWeight.Light)
-            }
         }
     }
 
@@ -165,78 +121,6 @@ object FilterScreen {
                         filter.ignoreCase = it
                     })
                 }
-            }
-        }
-    }
-
-    @Composable
-    private fun FilterTag(
-        filter: FilterUiState.Tag,
-        onDeleteClick: (child: FilterUiState) -> Unit,
-    ) {
-        FilterBase(
-            title = stringResource(R.string.filter_by_tag),
-            color = colorResource(R.color.filter_tag),
-            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
-        ) {
-
-            val addTagDialog = TagDialog.rememberDialog {
-                filter.tag = it
-            }
-            val tag = filter.tag
-
-            if (tag == null) {
-                SuggestionChip(
-                    onClick = { addTagDialog.show() },
-                    icon = {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = null)
-                    },
-                    label = { Text(text = stringResource(R.string.select_tag)) }
-                )
-            } else {
-                TagChip(tagName = tag, tagIcon = Icons.Filled.Delete) { filter.tag = null }
-            }
-        }
-    }
-
-    @Composable
-    private fun FilterAirdropContact(
-        filter: FilterUiState.AppleAirdropContact,
-        onDeleteClick: (child: FilterUiState) -> Unit,
-    ) {
-        FilterBase(
-            title = stringResource(R.string.filter_apple_airdrop_contact),
-            color = colorResource(R.color.filter_airdrop_contact),
-            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
-        ) {
-            Column {
-                TextField(value = filter.contactString, singleLine = true, onValueChange = {
-                    filter.contactString = it.lowercase()
-                }, placeholder = { Text(text = stringResource(R.string.placeholder_airdrope_contact)) })
-
-                val text = filter.minLostTime?.dateTimeStringFormat("HH:mm", ZoneId.of("GMT"))
-                val defaultTime: Long = filter.minLostTime ?: TimeUnit.HOURS.toMillis(1)
-                val timeDialog = rememberTimeDialog(defaultTime.toLocalTime(ZoneId.of("GMT"))) { time ->
-                    filter.minLostTime = time.toMilliseconds()
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-                Row {
-                    ClickableField(
-                        text = text,
-                        label = stringResource(R.string.airdrop_min_lost_period),
-                        placeholder = stringResource(R.string.time_placeholder)
-                    ) {
-                        timeDialog.show()
-                    }
-                    Spacer(modifier = Modifier.width(4.dp))
-                    ClearIcon { filter.minLostTime = null }
-                }
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = stringResource(R.string.airdrop_issue_description),
-                    fontWeight = FontWeight.Light,
-                )
             }
         }
     }
@@ -299,29 +183,6 @@ object FilterScreen {
                 router.navigate(ScreenNavigationCommands.OpenSelectManufacturerScreen { manufacturer ->
                     filter.manufacturer = manufacturer
                 })
-            }
-        }
-    }
-
-    @Composable
-    private fun FilterMinLostPeriod(
-        filter: FilterUiState.MinLostTime,
-        onDeleteClick: (child: FilterUiState) -> Unit,
-    ) {
-        FilterBase(
-            title = stringResource(R.string.filter_by_min_lost_period),
-            color = colorResource(R.color.filter_lost_time),
-            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
-        ) {
-            val defaultTime = filter.minLostTime ?: TimeUnit.HOURS.toMillis(1)
-            val timeDialog = rememberTimeDialog(defaultTime.toLocalTime(ZoneId.of("GMT"))) { time ->
-                filter.minLostTime = time.toMilliseconds()
-            }
-
-            val text = filter.minLostTime?.dateTimeStringFormat("HH:mm", ZoneId.of("GMT"))
-
-            ClickableField(text = text, placeholder = stringResource(R.string.chose_time), label = null) {
-                timeDialog.show()
             }
         }
     }
@@ -449,6 +310,44 @@ object FilterScreen {
                 Checkbox(checked = filter.isPaired, onCheckedChange = {
                     filter.isPaired = it
                 })
+            }
+        }
+    }
+
+    @Composable
+    private fun FilterAddressType(
+        filter: FilterUiState.AddressType,
+        onDeleteClick: (child: FilterUiState) -> Unit,
+    ) {
+        FilterBase(
+            title = stringResource(R.string.filter_by_address_type),
+            color = colorResource(R.color.filter_address),
+            onDeleteButtonClick = { onDeleteClick.invoke(filter) }
+        ) {
+            // Pair each enum value with the same short label that appears as the chip on a
+            // device row, so the filter UI reads as "match anything tagged Static / NRPA / …".
+            // INVALID is intentionally omitted — devices we couldn't classify shouldn't be
+            // selectable as a target type.
+            val choices = listOf(
+                ExtendedAddressInfo.BleAddressType.PUBLIC to R.string.address_type_public_tag,
+                ExtendedAddressInfo.BleAddressType.STATIC_RANDOM to R.string.address_type_random_static_tag,
+                ExtendedAddressInfo.BleAddressType.RESOLVABLE_PRIVATE to R.string.address_type_resolvable_private_tag,
+                ExtendedAddressInfo.BleAddressType.NON_RESOLVABLE_PRIVATE to R.string.address_type_non_resolvable_tag,
+            )
+            FlowRow(modifier = Modifier.fillMaxWidth(), mainAxisSpacing = 8.dp, crossAxisSpacing = 4.dp) {
+                choices.forEach { (type, labelRes) ->
+                    val name = type.name
+                    val selected = name in filter.selectedTypeNames
+                    androidx.compose.material3.FilterChip(
+                        selected = selected,
+                        onClick = {
+                            filter.selectedTypeNames =
+                                if (selected) filter.selectedTypeNames - name
+                                else filter.selectedTypeNames + name
+                        },
+                        label = { Text(text = stringResource(labelRes)) },
+                    )
+                }
             }
         }
     }

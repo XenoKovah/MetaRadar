@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.Painter
@@ -95,7 +96,11 @@ object MainScreen {
         )
         LocationDisabledDialog(viewModel)
         BluetoothDisabledDialog(viewModel)
-        SideEffect { viewModel.checkAndShowAboutApp() }
+        // First-launch "What is this app for" intro removed — it kept popping back up across
+        // installs because the app's data dir gets wiped between development reinstalls
+        // (resetting the "was-shown" flag), and the static text doesn't add value once the
+        // user has seen the app once. The same content is still reachable from the in-app
+        // Settings → Information block via the "About" link if anyone wants the long copy.
     }
 
     @Composable
@@ -345,11 +350,35 @@ object MainScreen {
         TopAppBar(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
             title = {
-                val gpsChip = if (viewModel.gpsHasRecentFix) "🛰️GPS" else "🚫GPS"
-                Text(
-                    text = "${stringResource(R.string.app_name)} $gpsChip",
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    // Tappable GPS chip — single tap kicks a one-shot LocationProvider.fetchOnce()
+                    // and shows a 16-dp spinner over the chip until the refresh completes (or the
+                    // ~35s timeout fires). Visually mirrors the foreground-scan spinner in the
+                    // top-bar actions slot so the user has consistent "in-flight" affordances.
+                    Box(
+                        modifier = Modifier.clickable { viewModel.onGpsChipClick() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val gpsChip = if (viewModel.gpsHasRecentFix) "🛰️GPS" else "🚫GPS"
+                        Text(
+                            text = gpsChip,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = if (viewModel.gpsRefreshInProgress) Modifier.alpha(0.3f) else Modifier,
+                        )
+                        if (viewModel.gpsRefreshInProgress) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
+                }
             },
             actions = {
                 if (viewModel.scanStarted && viewModel.bgServiceIsActive) {

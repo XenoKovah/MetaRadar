@@ -10,11 +10,11 @@ import f.cking.software.domain.model.ManufacturerInfo
  * and returns 50 rows) vs. filtering in Kotlin (DB returns 200k rows, Kotlin loops them) is
  * orders of magnitude.
  *
- * Filters that can't be expressed in SQL — chiefly [DeviceFilter.AppleAirdropContact],
- * [DeviceFilter.IsFollowing], [DeviceFilter.DeviceLocation], [DeviceFilter.UserLocation], and
- * the Apple-specific [DeviceFilter.Manufacturer] case (which delegates to VendorIdentifier for
- * iBeacon exemption) — return [Result.NotPushable] so the caller knows to fall back to the
- * existing in-Kotlin filter chain. Composite filters propagate "not pushable" upward.
+ * Filters that can't be expressed in SQL — chiefly [DeviceFilter.DeviceLocation],
+ * [DeviceFilter.UserLocation], and the Apple-specific [DeviceFilter.Manufacturer] case (which
+ * delegates to VendorIdentifier for iBeacon exemption) — return [Result.NotPushable] so the
+ * caller knows to fall back to the existing in-Kotlin filter chain. Composite filters
+ * propagate "not pushable" upward.
  */
 object DeviceFilterSqlBuilder {
 
@@ -36,14 +36,6 @@ object DeviceFilterSqlBuilder {
         is DeviceFilter.FirstDetectionInterval ->
             Result.Pushable("first_detect_time_ms BETWEEN ? AND ?", listOf(filter.from, filter.to))
 
-        is DeviceFilter.MinLostTime ->
-            // "lost for ≥ X ms" means last_detect_time_ms ≤ now - X. The value is computed at
-            // query time, not row-evaluation time — close enough for human-scale intervals.
-            Result.Pushable(
-                "last_detect_time_ms <= ?",
-                listOf(System.currentTimeMillis() - filter.minLostTime),
-            )
-
         is DeviceFilter.Name ->
             // The in-Kotlin variant supports regex; SQL only does LIKE substrings. We push the
             // LIKE form and let the FilterCheckerImpl accept the result as-is. The escape char
@@ -51,15 +43,6 @@ object DeviceFilterSqlBuilder {
             Result.Pushable(
                 "name LIKE ? ESCAPE '\\' COLLATE NOCASE",
                 listOf("%${filter.name.escapeLike()}%"),
-            )
-
-        is DeviceFilter.ByTag ->
-            // Tags are stored as a comma-joined string in the `tags` column (per Converters).
-            // Wrap with commas so "ab" doesn't match "label". Tag names can't contain commas
-            // (the converter splits on them) so this is unambiguous.
-            Result.Pushable(
-                "',' || tags || ',' LIKE ? ESCAPE '\\'",
-                listOf("%,${filter.tag.escapeLike()},%"),
             )
 
         is DeviceFilter.TransportFilter -> {
@@ -99,10 +82,12 @@ object DeviceFilterSqlBuilder {
         is DeviceFilter.All -> combineComposite(filter.filters, " AND ")
         is DeviceFilter.Any -> combineComposite(filter.filters, " OR ")
 
-        is DeviceFilter.AppleAirdropContact,
-        is DeviceFilter.IsFollowing,
         is DeviceFilter.DeviceLocation,
         is DeviceFilter.UserLocation,
+        // BleAddressType is computed at read time from address bytes + lifetime + MSD vendor
+        // hints (see BuildExtendedAddressInfoInteractor), not stored as its own column. The
+        // in-Kotlin filter chain runs on the cached extendedAddressInfo() per device.
+        is DeviceFilter.AddressType,
             -> Result.NotPushable
     }
 

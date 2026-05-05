@@ -61,19 +61,14 @@ sealed class FilterUiState {
         }
     }
 
-    class MinLostTime : FilterUiState() {
-        var minLostTime: Long? by mutableStateOf(null)
+    class AddressType : FilterUiState() {
+        // Multi-select set of [ExtendedAddressInfo.BleAddressType.name]s. The filter matches
+        // when the device's resolved type is in this set; an empty set is invalid (the user
+        // hasn't selected anything yet).
+        var selectedTypeNames: Set<String> by mutableStateOf(emptySet())
 
         override fun isCorrect(): Boolean {
-            return minLostTime != null
-        }
-    }
-
-    class Tag : FilterUiState() {
-        var tag: String? by mutableStateOf(null)
-
-        override fun isCorrect(): Boolean {
-            return !tag.isNullOrBlank()
+            return selectedTypeNames.isNotEmpty()
         }
     }
 
@@ -113,15 +108,6 @@ sealed class FilterUiState {
         }
     }
 
-    class AppleAirdropContact : FilterUiState() {
-        var contactString: String by mutableStateOf("")
-        var minLostTime: Long? by mutableStateOf(null)
-
-        override fun isCorrect(): Boolean {
-            return contactString.isNotBlank()
-        }
-    }
-
     class DeviceLocation : Interval() {
         var targetLocation: LocationModel? by mutableStateOf(null)
         var radius: Float by mutableStateOf(TheAppConfig.DEFAULT_LOCATION_FILTER_RADIUS)
@@ -140,15 +126,6 @@ sealed class FilterUiState {
 
         override fun isCorrect(): Boolean {
             return targetLocation != null
-        }
-    }
-
-    class IsFollowing() : FilterUiState() {
-        var followingDurationMs: Long by mutableStateOf(TheAppConfig.MIN_FOLLOWING_DURATION_TIME_MS)
-        var followingDetectionIntervalMs: Long by mutableStateOf(TheAppConfig.MIN_FOLLOWING_INTERVAL_TIME_MS)
-
-        override fun isCorrect(): Boolean {
-            return true
         }
     }
 

@@ -47,28 +47,16 @@ sealed class DeviceFilter(@Transient protected val checkDifficulty: Int = 0) {
     @SerialName("is_paired")
     data class IsPaired(val isPaired: Boolean) : DeviceFilter()
 
+    /**
+     * Match devices whose resolved [ExtendedAddressInfo.BleAddressType] is in [types]. Carries
+     * an enum-name list so the filter is fully serialisable. The address-type classification
+     * is computed on the fly by [BuildExtendedAddressInfoInteractor] (using the address bytes
+     * + observed lifetime + MSD vendor signal) so this filter can't be pushed to SQL — the
+     * Kotlin filter chain runs against the cached `extendedAddressInfo()` value.
+     */
     @Serializable
-    @SerialName("min_lost_time")
-    data class MinLostTime(val minLostTime: Long) : DeviceFilter()
-
-    @Serializable
-    @SerialName("tag")
-    data class ByTag(val tag: String) : DeviceFilter()
-
-    @Serializable
-    @SerialName("airdrop_contact")
-    data class AppleAirdropContact(
-        val contactStr: String,
-        val airdropShaFormat: Int,
-        val minLostTime: Long? = null,
-    ) : DeviceFilter(checkDifficulty = 20)
-
-    @Serializable
-    @SerialName("is_following")
-    data class IsFollowing(
-        val followingDurationMs: Long,
-        val followingDetectionIntervalMs: Long,
-    ) : DeviceFilter(checkDifficulty = 50)
+    @SerialName("address_type")
+    data class AddressType(val typeNames: List<String>) : DeviceFilter()
 
     @Serializable
     @SerialName("any")

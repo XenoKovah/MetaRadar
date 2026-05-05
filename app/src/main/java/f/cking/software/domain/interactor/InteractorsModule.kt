@@ -6,7 +6,7 @@ import org.koin.dsl.module
 object InteractorsModule {
 
     val module = module {
-        single { FilterCheckerImpl(get(), get(), get(), get(), get(), get()) }
+        single { FilterCheckerImpl(get(), get(), get(), get()) }
 
         factory { ClearGarbageInteractor(get(), get(), get(), get()) }
         factory { ClearAllDevicesInteractor(get()) }
@@ -16,7 +16,6 @@ object InteractorsModule {
         factory { GetManufacturerInfoFromRawBleInteractor(get(), get()) }
         factory { BuildDeviceFromScanDataInteractor(get()) }
         factory { GetAirdropInfoFromBleFrame() }
-        factory { CheckDeviceIsFollowingInteractor(get()) }
         factory { SaveReportInteractor(get()) }
         factory { BackupDatabaseInteractor(get(), get()) }
         factory { CreateBackupFileInteractor(get(), get()) }
@@ -29,8 +28,6 @@ object InteractorsModule {
         factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get(), get()) }
         factory { CheckDeviceLocationHistoryInteractor(get()) }
         factory { CheckUserLocationHistoryInteractor(get()) }
-        factory { AddTagToDeviceInteractor(get(), get()) }
-        factory { RemoveTagFromDeviceInteractor(get()) }
         factory { GetAppUsageDaysInteractor(get()) }
         factory { SaveFirstAppLaunchTimeInteractor(get()) }
         factory { CheckNeedToShowEnjoyTheAppInteractor(get(), get()) }

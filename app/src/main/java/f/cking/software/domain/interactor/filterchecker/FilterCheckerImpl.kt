@@ -2,19 +2,14 @@ package f.cking.software.domain.interactor.filterchecker
 
 import f.cking.software.checkRegexSafe
 import f.cking.software.data.helpers.PowerModeHelper
-import f.cking.software.data.repo.DevicesRepository
-import f.cking.software.domain.interactor.CheckDeviceIsFollowingInteractor
 import f.cking.software.domain.interactor.CheckDeviceLocationHistoryInteractor
 import f.cking.software.domain.interactor.CheckUserLocationHistoryInteractor
 import f.cking.software.domain.interactor.VendorIdentifier
-import f.cking.software.domain.model.AppleAirDrop
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.ManufacturerInfo
 
 class FilterCheckerImpl(
-    private val checkDeviceIsFollowing: CheckDeviceIsFollowingInteractor,
-    private val devicesRepository: DevicesRepository,
     private val powerModeHelper: PowerModeHelper,
     private val checkDeviceLocationHistoryInteractor: CheckDeviceLocationHistoryInteractor,
     private val checkUserLocationHistoryInteractor: CheckUserLocationHistoryInteractor,
@@ -51,6 +46,12 @@ class FilterCheckerImpl(
     private val isPaired = filterChecker<DeviceFilter.IsPaired> { device, filter ->
         device.isPaired == filter.isPaired
     }
+    private val addressType = filterChecker<DeviceFilter.AddressType>(useCache = true) { device, filter ->
+        // The cached `extendedAddressInfo()` does the heavy classification work once per
+        // DeviceData instance; filter rows by enum-name match against the user's selection.
+        val deviceTypeName = device.extendedAddressInfo().type.name
+        deviceTypeName in filter.typeNames
+    }
     private val transportFilter = filterChecker<DeviceFilter.TransportFilter>(useCache = true) { device, filter ->
         // Mirror DeviceFilterSqlBuilder's BREDR-includes-DUAL semantics: anything seen on the
         // BR/EDR radio matches the BTC chip whether or not it also showed up on LE.
@@ -60,20 +61,6 @@ class FilterCheckerImpl(
         } else {
             deviceOrdinal == filter.transportOrdinal
         }
-    }
-    private val minLostTime = filterChecker<DeviceFilter.MinLostTime> { device, filter ->
-        System.currentTimeMillis() - device.lastDetectTimeMs >= filter.minLostTime
-    }
-    private val airdrop = filterChecker<DeviceFilter.AppleAirdropContact> { device, filter ->
-        fun checkMinLostTime(contact: AppleAirDrop.AppleContact): Boolean {
-            val currentTime = System.currentTimeMillis()
-            return filter.minLostTime == null
-                    || (contact.firstDetectionTimeMs == contact.lastDetectionTimeMs)
-                    || (currentTime - contact.lastDetectionTimeMs >= filter.minLostTime)
-        }
-        device.manufacturerInfo?.airdrop?.contacts?.any { contact ->
-            contact.sha256 == filter.airdropShaFormat && checkMinLostTime(contact)
-        } == true
     }
     private val any = filterChecker<DeviceFilter.Any> { device, filter ->
         filter.filters
@@ -86,21 +73,11 @@ class FilterCheckerImpl(
     private val not = filterChecker<DeviceFilter.Not> { device, filter ->
         !check(device, filter.filter)
     }
-    private val isFollowing = filterChecker<DeviceFilter.IsFollowing> { deviceData, filter ->
-        val detected = checkDeviceIsFollowing.execute(deviceData, filter.followingDurationMs, filter.followingDetectionIntervalMs)
-        if (detected) {
-            devicesRepository.saveFollowingDetection(deviceData, System.currentTimeMillis())
-        }
-        detected
-    }
     private val deviceLocation = filterChecker<DeviceFilter.DeviceLocation>(useCache = true) { device, filter ->
         checkDeviceLocationHistoryInteractor.execute(filter.location, filter.radiusMeters, device, filter.fromTimeMs, filter.toTimeMs)
     }
     private val userLocation = filterChecker<DeviceFilter.UserLocation> { device, filter ->
         checkUserLocationHistoryInteractor.execute(filter.location, filter.radiusMeters, filter.noLocationDefaultValue)
-    }
-    private val tag = filterChecker<DeviceFilter.ByTag> { device, filter ->
-        device.tags.contains(filter.tag)
     }
 
     override suspend fun checkInternal(deviceData: DeviceData, filter: DeviceFilter): Boolean {
@@ -111,16 +88,13 @@ class FilterCheckerImpl(
             is DeviceFilter.Address -> address.check(deviceData, filter)
             is DeviceFilter.Manufacturer -> manufacturer.check(deviceData, filter)
             is DeviceFilter.IsPaired -> isPaired.check(deviceData, filter)
+            is DeviceFilter.AddressType -> addressType.check(deviceData, filter)
             is DeviceFilter.TransportFilter -> transportFilter.check(deviceData, filter)
-            is DeviceFilter.MinLostTime -> minLostTime.check(deviceData, filter)
-            is DeviceFilter.AppleAirdropContact -> airdrop.check(deviceData, filter)
             is DeviceFilter.Any -> any.check(deviceData, filter)
             is DeviceFilter.All -> all.check(deviceData, filter)
             is DeviceFilter.Not -> not.check(deviceData, filter)
-            is DeviceFilter.IsFollowing -> isFollowing.check(deviceData, filter)
             is DeviceFilter.DeviceLocation -> deviceLocation.check(deviceData, filter)
             is DeviceFilter.UserLocation -> userLocation.check(deviceData, filter)
-            is DeviceFilter.ByTag -> tag.check(deviceData, filter)
         }
     }
 

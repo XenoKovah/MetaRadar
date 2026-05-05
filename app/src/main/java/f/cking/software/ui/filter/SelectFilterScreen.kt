@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -42,14 +43,28 @@ object SelectFilterScreen {
     fun Screen(
         initialFilterState: FilterUiState,
         router: Router,
-        onConfirm: (filterState: DeviceFilter) -> Unit
+        onConfirm: (filterState: DeviceFilter) -> Unit,
+        // When non-null, the editor is being opened to edit an *existing* filter rather than
+        // create a new one. The trash icon in the top app bar fires this callback and pops the
+        // screen so the user has a single, obvious place to delete an existing filter (replaces
+        // the old "delete by tapping the chip" affordance, which conflated edit and delete).
+        onDelete: (() -> Unit)? = null,
     ) {
 
         val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             topBar = {
-                AppBar(scrollBehavior) { router.navigate(BackCommand) }
+                AppBar(
+                    scrollBehavior = scrollBehavior,
+                    onBackClick = { router.navigate(BackCommand) },
+                    onDeleteClick = onDelete?.let { delete ->
+                        {
+                            router.navigate(BackCommand)
+                            delete.invoke()
+                        }
+                    },
+                )
             },
             content = { paddings ->
                 val context = LocalContext.current
@@ -98,7 +113,11 @@ object SelectFilterScreen {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun AppBar(scrollBehavior: TopAppBarScrollBehavior, onBackClick: () -> Unit) {
+    private fun AppBar(
+        scrollBehavior: TopAppBarScrollBehavior,
+        onBackClick: () -> Unit,
+        onDeleteClick: (() -> Unit)?,
+    ) {
         TopAppBar(
             scrollBehavior = scrollBehavior,
             colors = TopAppBarDefaults.topAppBarColors(
@@ -111,7 +130,18 @@ object SelectFilterScreen {
                 IconButton(onClick = onBackClick) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                 }
-            }
+            },
+            actions = {
+                if (onDeleteClick != null) {
+                    IconButton(onClick = onDeleteClick) {
+                        Icon(
+                            imageVector = Icons.Filled.Delete,
+                            contentDescription = stringResource(R.string.delete),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
         )
     }
 }

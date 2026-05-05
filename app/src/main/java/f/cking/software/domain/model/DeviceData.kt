@@ -15,8 +15,6 @@ data class DeviceData(
     val manufacturerInfo: ManufacturerInfo?,
     val detectCount: Int,
     val customName: String?,
-    val tags: Set<String>,
-    val lastFollowingDetectionTimeMs: Long?,
     val rssi: Int?,
     val systemAddressType: Int?,
     val deviceClass: Int?,
@@ -24,7 +22,7 @@ data class DeviceData(
     val servicesUuids: List<String>,
     val rowDataEncoded: String?,
     val isConnectable: Boolean,
-    val transport: Transport = Transport.UNKNOWN,
+    val transport: Transport = Transport.LE,
     val sdpUuids: List<String> = emptyList(),
 ) {
 
@@ -34,7 +32,24 @@ data class DeviceData(
 
     val resolvedName: String? by lazy { name }
 
-    val resolvedManufacturerName by lazy { manufacturerInfo?.name }
+    /**
+     * Manufacturer name with an IEEE OUI fallback. Precedence:
+     *   1. MSD-derived manufacturer (the SIG company id from a 0xFF advertisement frame).
+     *   2. IEEE OUI of the BD_ADDR — but only when the address is classified as PUBLIC.
+     *      A random address that happens to coincide with an assigned OUI shouldn't be
+     *      mis-attributed to that manufacturer.
+     * The OUI repository is fetched lazily via [BuildExtendedAddressInfoInteractor]'s shared
+     * GlobalContext access — same one-call-per-instance overhead as `cachedExtendedAddressInfo`.
+     */
+    val resolvedManufacturerName: String? by lazy {
+        manufacturerInfo?.name?.takeIf { it.isNotBlank() }
+            ?: run {
+                if (cachedExtendedAddressInfo.type != ExtendedAddressInfo.BleAddressType.PUBLIC) return@run null
+                val koin = org.koin.core.context.GlobalContext.get()
+                val ouiRepo = koin.get<f.cking.software.data.helpers.OuiRepository>()
+                ouiRepo.lookupByAddress(address)
+            }
+    }
 
     fun knownLifetime(): Long {
         return lastDetectTimeMs - firstDetectTimeMs
@@ -66,24 +81,41 @@ data class DeviceData(
         return System.currentTimeMillis() - lastDetectTimeMs
     }
 
-    fun extendedAddressInfo(): ExtendedAddressInfo {
-        return BuildExtendedAddressInfoInteractor.execute(this)
+    /**
+     * Cached so the device list / details paths don't re-parse the address on every Compose
+     * recomposition. The result depends only on `address` + `systemAddressType` + `isPaired`,
+     * all of which are val-fields on this immutable data class — caching is safe for the
+     * lifetime of the instance. (A fresh detection produces a fresh [DeviceData] via copy(),
+     * which gets its own new lazy cache.)
+     */
+    private val cachedExtendedAddressInfo: ExtendedAddressInfo by lazy {
+        BuildExtendedAddressInfoInteractor.execute(this)
     }
 
-    fun distance(): Float? {
-        return if (rssi != null) {
-            val txPower = -59 //hard coded power value. Usually ranges between -59 to -65
+    fun extendedAddressInfo(): ExtendedAddressInfo = cachedExtendedAddressInfo
+
+    /**
+     * Cached so DeviceListItem (active-scan stream) doesn't recompute Math.pow on every
+     * recomposition. RSSI is val, so the cached value is valid for the instance's lifetime —
+     * a re-detection produces a new copy() with a fresh lazy.
+     */
+    private val cachedDistance: Float? by lazy {
+        if (rssi == null) {
+            null
+        } else {
+            val txPower = -59 // hard-coded; the BLE/BR-EDR txPower for most consumer peers
+            // sits in the -59..-65 dBm range and we don't have a per-device override.
             val ratio = rssi * 1.0 / txPower
-            val distance = if (ratio < 1.0) {
+            val raw = if (ratio < 1.0) {
                 Math.pow(ratio, 10.0)
             } else {
                 (0.89976) * Math.pow(ratio, 7.7095) + 0.111
             }
-            distance.toFloat()
-        } else {
-            null
+            raw.toFloat()
         }
     }
+
+    fun distance(): Float? = cachedDistance
 
     fun mergeWithNewDetected(new: DeviceData): DeviceData {
         return this.copy(

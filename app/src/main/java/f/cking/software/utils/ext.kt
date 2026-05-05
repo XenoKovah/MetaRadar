@@ -106,22 +106,6 @@ val String.sha256: ByteArray
         return digest.digest()
     }
 
-object SHA256 {
-    private val digest = MessageDigest.getInstance("SHA-256")
-
-    fun fromString(string: String): ByteArray {
-        val bytes = string.toByteArray()
-        digest.update(bytes, 0, bytes.size)
-        return digest.digest().apply {
-            digest.reset()
-        }
-    }
-
-    fun fromStringAirdrop(string: String): Int {
-        return fromString(string).let { concatTwoBytes(it[0], it[1]) }
-    }
-}
-
 /**
  * Opens [url] in whatever browser the user has installed. On devices with no app registered for
  * `https` (some stripped-down OEM builds, kiosk devices, emulators) ACTION_VIEW resolves to

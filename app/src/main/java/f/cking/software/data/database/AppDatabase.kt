@@ -13,13 +13,11 @@ import f.cking.software.data.database.dao.AppleContactDao
 import f.cking.software.data.database.dao.DeviceDao
 import f.cking.software.data.database.dao.JournalDao
 import f.cking.software.data.database.dao.LocationDao
-import f.cking.software.data.database.dao.TagDao
 import f.cking.software.data.database.entity.AppleContactEntity
 import f.cking.software.data.database.entity.DeviceEntity
 import f.cking.software.data.database.entity.DeviceToLocationEntity
 import f.cking.software.data.database.entity.JournalEntryEntity
 import f.cking.software.data.database.entity.LocationEntity
-import f.cking.software.data.database.entity.TagEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
@@ -33,7 +31,6 @@ import java.io.File
         LocationEntity::class,
         DeviceToLocationEntity::class,
         JournalEntryEntity::class,
-        TagEntity::class,
     ],
     autoMigrations = [
         AutoMigration(from = 7, to = 8),
@@ -42,7 +39,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 23,
+    version = 25,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -51,7 +48,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun appleContactDao(): AppleContactDao
     abstract fun locationDao(): LocationDao
     abstract fun journalDao(): JournalDao
-    abstract fun tagDao(): TagDao
 
     suspend fun backupDatabase(toUri: Uri, context: Context) {
         Timber.i("Backup DB to file: ${toUri}")
@@ -135,6 +131,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_20_21,
                     MIGRATION_21_22,
                     MIGRATION_22_23,
+                    MIGRATION_23_24,
+                    MIGRATION_24_25,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -268,11 +266,75 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         // Adds the columns that back BR/EDR (Bluetooth Classic) support. `transport` is the
-        // ordinal of `domain.model.Transport` (0=UNKNOWN, 1=LE, 2=BREDR, 3=DUAL); `sdp_uuids`
-        // mirrors the `service_uuids` storage shape (TEXT JSON list).
+        // ordinal of `domain.model.Transport`; in this version (v23) the encoding was
+        // 0=UNKNOWN, 1=LE, 2=BREDR, 3=DUAL — migration 24→25 collapses out the UNKNOWN slot.
+        // `sdp_uuids` mirrors the `service_uuids` storage shape (TEXT JSON list).
         val MIGRATION_22_23 = migration(22, 23) {
             it.execSQL("ALTER TABLE device ADD COLUMN transport INTEGER NOT NULL DEFAULT 0;")
             it.execSQL("ALTER TABLE device ADD COLUMN sdp_uuids TEXT NOT NULL DEFAULT '';")
+        }
+
+        // Drops the user-tagging feature (the `tag` lookup table and the `device.tags` column)
+        // and the device-tracking feature (`device.last_following_detection_ms`). Recreate-the-
+        // device-table dance because SQLite below 3.35 (older than Android 14's bundled SQLite)
+        // doesn't support `ALTER TABLE … DROP COLUMN`.
+        val MIGRATION_23_24 = migration(23, 24) {
+            it.execSQL("DROP TABLE IF EXISTS `tag`;")
+            it.execSQL(
+                "CREATE TABLE IF NOT EXISTS `device_new` (" +
+                    "`address` TEXT NOT NULL, " +
+                    "`name` TEXT, " +
+                    "`last_detect_time_ms` INTEGER NOT NULL, " +
+                    "`first_detect_time_ms` INTEGER NOT NULL, " +
+                    "`detect_count` INTEGER NOT NULL, " +
+                    "`custom_name` TEXT, " +
+                    "`favorite` INTEGER NOT NULL, " +
+                    "`manufacturer_id` INTEGER, " +
+                    "`manufacturer_name` TEXT, " +
+                    "`last_seen_rssi` INTEGER, " +
+                    "`system_address_type` INTEGER, " +
+                    "`device_class` INTEGER, " +
+                    "`is_paired` INTEGER NOT NULL, " +
+                    "`service_uuids` TEXT NOT NULL DEFAULT '', " +
+                    "`row_data_encoded` TEXT, " +
+                    "`metadata` TEXT, " +
+                    "`is_connectable` INTEGER NOT NULL, " +
+                    "`transport` INTEGER NOT NULL DEFAULT 0, " +
+                    "`sdp_uuids` TEXT NOT NULL DEFAULT '', " +
+                    "PRIMARY KEY(`address`));"
+            )
+            it.execSQL(
+                "INSERT INTO `device_new` (" +
+                    "address, name, last_detect_time_ms, first_detect_time_ms, detect_count, " +
+                    "custom_name, favorite, manufacturer_id, manufacturer_name, " +
+                    "last_seen_rssi, system_address_type, device_class, is_paired, " +
+                    "service_uuids, row_data_encoded, metadata, is_connectable, transport, " +
+                    "sdp_uuids) " +
+                    "SELECT address, name, last_detect_time_ms, first_detect_time_ms, " +
+                    "detect_count, custom_name, favorite, manufacturer_id, manufacturer_name, " +
+                    "last_seen_rssi, system_address_type, device_class, is_paired, " +
+                    "service_uuids, row_data_encoded, metadata, is_connectable, transport, " +
+                    "sdp_uuids FROM `device`;"
+            )
+            it.execSQL("DROP TABLE `device`;")
+            it.execSQL("ALTER TABLE `device_new` RENAME TO `device`;")
+            // Recreate the index that DeviceEntity declares so query plans stay the same.
+            it.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_device_last_detect_time_ms` " +
+                    "ON `device` (`last_detect_time_ms`);"
+            )
+        }
+
+        // Drops the [Transport.UNKNOWN] enum value. The old encoding (UNKNOWN=0, LE=1, BREDR=2,
+        // DUAL=3) shifts down by one (LE=0, BREDR=1, DUAL=2) so callers can drop the
+        // "what if it's UNKNOWN" branches. Existing rows with transport=0 (UNKNOWN) get
+        // remapped to 0 (the new LE) since LE was the historical fallback for legacy LE-only
+        // detections. Rows at 1/2/3 each shift down by one.
+        val MIGRATION_24_25 = migration(24, 25) {
+            it.execSQL(
+                "UPDATE device SET transport = " +
+                    "CASE WHEN transport = 0 THEN 0 ELSE transport - 1 END;"
+            )
         }
 
         private fun migration(

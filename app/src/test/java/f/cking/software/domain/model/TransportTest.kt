@@ -7,6 +7,9 @@ class TransportTest {
 
     // ---- fromAndroidDeviceType: maps the raw android.bluetooth.BluetoothDevice.DEVICE_TYPE_*
     // constants without leaking those imports into the domain layer. Stable per the platform.
+    // After the v24→v25 schema migration there is no UNKNOWN member — anything Android can't
+    // classify falls back to LE since the only callers of this builder are LE scans (rawData
+    // present) and BR/EDR inquiries (deviceType == 1 explicitly).
 
     @Test
     fun `device_type_classic maps to BREDR`() {
@@ -27,32 +30,22 @@ class TransportTest {
     }
 
     @Test
-    fun `device_type_unknown and null map to UNKNOWN`() {
+    fun `device_type_unknown and null fall back to LE`() {
         // BluetoothDevice.DEVICE_TYPE_UNKNOWN == 0
-        assertEquals(Transport.UNKNOWN, Transport.fromAndroidDeviceType(0))
-        assertEquals(Transport.UNKNOWN, Transport.fromAndroidDeviceType(null))
-        // Unrecognized future value defaults to UNKNOWN rather than throwing.
-        assertEquals(Transport.UNKNOWN, Transport.fromAndroidDeviceType(99))
+        assertEquals(Transport.LE, Transport.fromAndroidDeviceType(0))
+        assertEquals(Transport.LE, Transport.fromAndroidDeviceType(null))
+        // Unrecognized future value also defaults to LE rather than throwing.
+        assertEquals(Transport.LE, Transport.fromAndroidDeviceType(99))
     }
 
     // ---- merge: combines a stored Transport with a freshly-observed one when the same address
-    // is re-detected. UNKNOWN is treated as "no information" — anything specific overrides it.
+    // is re-detected.
 
     @Test
     fun `merge identical transports returns same`() {
         for (t in Transport.entries) {
             assertEquals(t, Transport.merge(t, t))
         }
-    }
-
-    @Test
-    fun `merge UNKNOWN with anything yields the other`() {
-        assertEquals(Transport.LE, Transport.merge(Transport.UNKNOWN, Transport.LE))
-        assertEquals(Transport.LE, Transport.merge(Transport.LE, Transport.UNKNOWN))
-        assertEquals(Transport.BREDR, Transport.merge(Transport.UNKNOWN, Transport.BREDR))
-        assertEquals(Transport.BREDR, Transport.merge(Transport.BREDR, Transport.UNKNOWN))
-        assertEquals(Transport.DUAL, Transport.merge(Transport.UNKNOWN, Transport.DUAL))
-        assertEquals(Transport.DUAL, Transport.merge(Transport.DUAL, Transport.UNKNOWN))
     }
 
     @Test
@@ -76,7 +69,6 @@ class TransportTest {
         assertEquals(true, Transport.LE.supportsGattOverLe())
         assertEquals(true, Transport.DUAL.supportsGattOverLe())
         assertEquals(false, Transport.BREDR.supportsGattOverLe())
-        assertEquals(false, Transport.UNKNOWN.supportsGattOverLe())
     }
 
     @Test
@@ -84,7 +76,6 @@ class TransportTest {
         assertEquals(true, Transport.BREDR.isBrEdrOnly())
         assertEquals(false, Transport.LE.isBrEdrOnly())
         assertEquals(false, Transport.DUAL.isBrEdrOnly())
-        assertEquals(false, Transport.UNKNOWN.isBrEdrOnly())
     }
 
     // ---- Ordinal stability — these ordinals back the persisted DeviceEntity.transport column;
@@ -92,10 +83,9 @@ class TransportTest {
 
     @Test
     fun `ordinals are stable for persistence`() {
-        assertEquals(0, Transport.UNKNOWN.ordinal)
-        assertEquals(1, Transport.LE.ordinal)
-        assertEquals(2, Transport.BREDR.ordinal)
-        assertEquals(3, Transport.DUAL.ordinal)
+        assertEquals(0, Transport.LE.ordinal)
+        assertEquals(1, Transport.BREDR.ordinal)
+        assertEquals(2, Transport.DUAL.ordinal)
     }
 
     @Test
@@ -103,6 +93,5 @@ class TransportTest {
         assertEquals("LE", Transport.LE.shortLabel())
         assertEquals("BR", Transport.BREDR.shortLabel())
         assertEquals("Dual", Transport.DUAL.shortLabel())
-        assertEquals("", Transport.UNKNOWN.shortLabel())
     }
 }

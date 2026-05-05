@@ -9,6 +9,7 @@ import f.cking.software.data.helpers.BleFiltersProvider
 import f.cking.software.data.helpers.BleScannerHelper
 import f.cking.software.data.helpers.BrEdrDiscoveryHelper
 import f.cking.software.data.helpers.CluesRepository
+import f.cking.software.data.helpers.OuiRepository
 import f.cking.software.data.helpers.SdpEnumerationHelper
 import f.cking.software.data.helpers.IntentHelper
 import f.cking.software.data.helpers.LocationProvider
@@ -19,7 +20,6 @@ import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.JournalRepository
 import f.cking.software.data.repo.LocationRepository
 import f.cking.software.data.repo.SettingsRepository
-import f.cking.software.data.repo.TagsRepository
 import kotlinx.coroutines.CoroutineScope
 import org.koin.dsl.module
 
@@ -32,6 +32,7 @@ class DataModule(
         single { globalScope }
         single { BTIDESRepository(get()) }
         single { CluesRepository(get()) }
+        single { OuiRepository(get()) }
         single { BleScannerHelper(get(), get(), get(), get(), get(), get()) }
         single { BrEdrDiscoveryHelper(get()) }
         single { SdpEnumerationHelper(get()) }
@@ -48,6 +49,5 @@ class DataModule(
         single { JournalRepository(get()) }
         single { NotificationsHelper(get(), get(), get()) }
         single { PowerModeHelper(get(), get(), get()) }
-        single { TagsRepository(get()) }
     }
 }

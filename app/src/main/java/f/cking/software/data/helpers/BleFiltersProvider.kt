@@ -55,12 +55,7 @@ class BleFiltersProvider(
                 .map { it.address }
                 .toSet()
 
-            val shouldBeIncluded = allKnownDevices
-                .filter { it.tags.isNotEmpty() }
-                .map { it.address }
-                .toSet()
-
-            (lastSeenDevices + shouldBeIncluded)
+            lastSeenDevices
                 .map {
                     ScanFilter.Builder()
                         .setDeviceAddress(it)

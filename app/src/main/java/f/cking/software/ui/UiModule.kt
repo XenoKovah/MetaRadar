@@ -28,7 +28,7 @@ object UiModule {
         viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { SelectManufacturerViewModel(get()) }
         viewModel { SelectDeviceViewModel(get(), get()) }
-        viewModel { DeviceDetailsViewModel(address = it[0], get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+        viewModel { DeviceDetailsViewModel(address = it[0], get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { JournalViewModel(get(), get(), get()) }
         viewModel { ConnectAllViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { MapViewModel(get(), get(), get()) }

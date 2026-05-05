@@ -8,17 +8,18 @@ package f.cking.software.domain.model
  * - [BREDR] : seen only via BR/EDR inquiry (Android `DEVICE_TYPE_CLASSIC`).
  * - [DUAL]  : Android reports `DEVICE_TYPE_DUAL`, OR we've observed the same address on both
  *             transports across different scan/inquiry cycles.
- * - [UNKNOWN]: legacy rows from before we tracked this, or Android returned `DEVICE_TYPE_UNKNOWN`
- *             and no observation source has clarified the device's nature yet.
+ *
+ * There is no `UNKNOWN` member — every device we surface has been observed on at least one
+ * radio, so the transport is always determinable. Stale rows from older schema versions get
+ * remapped to LE in migration 24→25 (the historical fallback).
  */
 enum class Transport {
-    UNKNOWN, LE, BREDR, DUAL;
+    LE, BREDR, DUAL;
 
     fun shortLabel(): String = when (this) {
         LE -> "LE"
         BREDR -> "BR"
         DUAL -> "Dual"
-        UNKNOWN -> ""
     }
 
     fun supportsGattOverLe(): Boolean = this == LE || this == DUAL
@@ -28,26 +29,25 @@ enum class Transport {
         /**
          * Convert from the raw Android `BluetoothDevice.DEVICE_TYPE_*` constant. Avoids importing
          * the Android constant into the domain model — callers pass the int through unchanged.
+         * Falls back to [LE] for `DEVICE_TYPE_UNKNOWN` (0) and null because the only callers
+         * that hit this path are LE scan results (BR/EDR inquiry sets the type explicitly), and
+         * raw advertisement bytes are always LE-only.
          */
         fun fromAndroidDeviceType(deviceType: Int?): Transport = when (deviceType) {
             // BluetoothDevice.DEVICE_TYPE_CLASSIC == 1
             1 -> BREDR
-            // BluetoothDevice.DEVICE_TYPE_LE == 2
-            2 -> LE
             // BluetoothDevice.DEVICE_TYPE_DUAL == 3
             3 -> DUAL
-            else -> UNKNOWN
+            // 2 (DEVICE_TYPE_LE) and everything else (0 / null) treated as LE.
+            else -> LE
         }
 
         /**
          * Combine two observed transports — used when we re-detect a device that was previously
-         * seen on a different transport. LE + BREDR (in either order) → DUAL. UNKNOWN is treated
-         * as "no information" and is replaced by anything more specific.
+         * seen on a different transport. LE + BREDR (in either order) → DUAL.
          */
         fun merge(prior: Transport, current: Transport): Transport = when {
             prior == current -> prior
-            prior == UNKNOWN -> current
-            current == UNKNOWN -> prior
             prior == DUAL || current == DUAL -> DUAL
             // One is LE and the other is BREDR.
             else -> DUAL

@@ -1,4 +1,15 @@
 <resources>
+    <!-- Splash screen theme — applied at app startup before the activity attaches. The
+         system draws the launcher icon centered on this background color (Android 12+).
+         Using the same dark color as the adaptive icon background so the splash reads as a
+         single circular avatar on a dark surround, matching the reference image.
+         The activity then re-themes itself to Theme.MetaRadar via setContentView. -->
+    <style name="Theme.MetaRadar.SplashScreen" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background_dark</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.MetaRadar</item>
+    </style>
+
     <!-- Base application theme. -->
     <style name="Theme.MetaRadar" parent="Theme.Material3.DayNight.NoActionBar">
 

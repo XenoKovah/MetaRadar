@@ -24,8 +24,6 @@ data class DeviceEntity(
     @ColumnInfo(name = "favorite") val favorite: Boolean = false,
     @ColumnInfo(name = "manufacturer_id") val manufacturerId: Int? = null,
     @ColumnInfo(name = "manufacturer_name") val manufacturerName: String? = null,
-    @ColumnInfo(name = "last_following_detection_ms") val lastFollowingDetectionMs: Long? = null,
-    @ColumnInfo(name = "tags", defaultValue = "") val tags: List<String>,
     @ColumnInfo(name = "last_seen_rssi") val lastSeenRssi: Int? = null,
     @ColumnInfo(name = "system_address_type") val systemAddressType: Int? = null,
     @ColumnInfo(name = "device_class") val deviceClass: Int? = null,
@@ -34,8 +32,9 @@ data class DeviceEntity(
     @ColumnInfo(name = "row_data_encoded") val rowDataEncoded: String? = null,
     @ColumnInfo(name = "metadata") val metadata: String? = null,
     @ColumnInfo(name = "is_connectable") val isConnectable: Boolean = false,
-    // Stores Transport.ordinal — 0=UNKNOWN, 1=LE, 2=BREDR, 3=DUAL. Default 0 keeps legacy
-    // rows neutral until a fresh observation classifies them.
+    // Stores Transport.ordinal — 0=LE, 1=BREDR, 2=DUAL. Default 0 (LE) is the historical
+    // fallback for newly-inserted rows whose transport hasn't yet been classified by a real
+    // scan observation.
     @ColumnInfo(name = "transport", defaultValue = "0") val transport: Int = 0,
     // SDP service-class UUIDs returned by BluetoothDevice.fetchUuidsWithSdp(); same
     // serialization shape as `service_uuids`.

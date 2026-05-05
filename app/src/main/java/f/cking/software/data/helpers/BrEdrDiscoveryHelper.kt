@@ -40,6 +40,18 @@ class BrEdrDiscoveryHelper(
 
     private val inProgress = AtomicBoolean(false)
     private val batch: MutableMap<String, BleScanDevice> = ConcurrentHashMap()
+    // One timestamp per inquiry window, applied to every device found in it. Mirrors
+    // BleScannerHelper.currentScanTimeMs so DevicesRepository.getLastBatch (which selects rows
+    // tied at max(last_detect_time_ms)) returns the whole inquiry batch instead of just the
+    // last-arriving ACTION_FOUND. Without this, BR/EDR devices fall out of `lastBatch` and
+    // Connect All never sees them.
+    @Volatile private var inquiryStartMs: Long = 0L
+    // Set true when ACTION_DISCOVERY_STARTED reaches the receiver after our startDiscovery().
+    // We only treat ACTION_DISCOVERY_FINISHED as ours once this flag is set; any FINISHED that
+    // arrives earlier is the system finishing the *previous* discovery (e.g. the one we just
+    // cancelDiscovery()'d) and would otherwise tear our session down within milliseconds with
+    // 0 devices found. Reset to false on cleanup().
+    @Volatile private var discoveryActuallyStarted: Boolean = false
     private var scanListener: BleScannerHelper.ScanListener? = null
     private var registeredReceiver: BroadcastReceiver? = null
     private val mainHandler: Handler = Handler(Looper.getMainLooper())
@@ -71,18 +83,30 @@ class BrEdrDiscoveryHelper(
         }
         scanListener = listener
         batch.clear()
+        inquiryStartMs = System.currentTimeMillis()
+        discoveryActuallyStarted = false
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
+                    BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                        discoveryActuallyStarted = true
+                    }
                     BluetoothDevice.ACTION_FOUND -> handleFound(intent)
-                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> handleFinished()
+                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                        // Suppress the stray FINISHED that the system fires when our prior
+                        // cancelDiscovery() takes effect — it predates our STARTED. The 18s
+                        // timeoutRunnable still rescues us if STARTED genuinely never arrives.
+                        if (discoveryActuallyStarted) handleFinished()
+                        else Timber.tag(TAG).d("Ignoring DISCOVERY_FINISHED before STARTED (stray cancelDiscovery broadcast)")
+                    }
                 }
             }
         }
         registeredReceiver = receiver
 
         val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
@@ -151,11 +175,34 @@ class BrEdrDiscoveryHelper(
             intent.getParcelableExtra(BluetoothDevice.EXTRA_CLASS, BluetoothClass::class.java)
                 ?: device.bluetoothClass
 
-        val now = System.currentTimeMillis()
+        // Some Android Bluetooth stacks (observed on a B160V / BLU View 5) leak LE-only
+        // advertisers into the ACTION_FOUND stream even though startDiscovery() is the
+        // BR/EDR-only API. The leaked entries are characterised by:
+        //   - device.type == DEVICE_TYPE_LE (system explicitly classifies them as LE-only), AND/OR
+        //   - BluetoothClass.getMajorDeviceClass() == Major.UNCATEGORIZED (0x1F00) — there is no
+        //     real FHS/CoD information because no actual inquiry response was received.
+        // Real BR/EDR-discoverable peers always carry a meaningful Major Device Class
+        // (Phone/Computer/Audio/Wearable/etc.). Suppressing the noise here gives Connect All a
+        // candidate list that matches what the user can actually connect to over Classic.
+        val majorClass = cls?.majorDeviceClass
+        val isLeOnly = device.type == BluetoothDevice.DEVICE_TYPE_LE
+        val isUncategorised = majorClass == null || majorClass == BluetoothClass.Device.Major.UNCATEGORIZED
+        if (isLeOnly || isUncategorised) {
+            Timber.tag(TAG).d(
+                "Skipping leaked LE/uncategorised ACTION_FOUND %s type=%d majorClass=0x%04X",
+                device.address,
+                device.type,
+                majorClass ?: 0,
+            )
+            return
+        }
+
         val scanDevice = BleScanDevice(
             address = device.address,
             name = name,
-            scanTimeMs = now,
+            // Use the inquiry-start timestamp (not the per-broadcast arrival time) so all devices
+            // in this inquiry share a single `last_detect_time_ms`. See [inquiryStartMs] above.
+            scanTimeMs = inquiryStartMs,
             // BR/EDR inquiries do not carry advertisement payloads. SDP populates the UUID list
             // separately; until then we leave it empty.
             scanRecordRaw = null,
@@ -197,6 +244,7 @@ class BrEdrDiscoveryHelper(
         }
         registeredReceiver = null
         scanListener = null
+        discoveryActuallyStarted = false
         inProgress.set(false)
     }
 
