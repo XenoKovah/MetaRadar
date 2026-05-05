@@ -152,48 +152,81 @@ object ConnectAllScreen {
                     fontWeight = FontWeight.Light,
                 )
             }
-            if (viewModel.lastDoneSummary.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                ExpandableDoneSummary(viewModel)
-            }
+            // Three running-total categories (Connected / Errors / Too-many-attempts). Each
+            // shows just its count when collapsed; expanding reveals the most-recent-first
+            // device list. Always rendered (even with zero count) so the user knows the
+            // session bookkeeping is live.
+            Spacer(modifier = Modifier.height(8.dp))
+            CategoryBlock(
+                title = stringResource(R.string.connect_all_category_connected, viewModel.connectedEntries.size),
+                expanded = viewModel.connectedExpanded,
+                onToggle = { viewModel.onToggleConnectedExpanded() },
+                emptyText = stringResource(R.string.connect_all_category_connected_empty),
+                lines = viewModel.connectedEntries.map { entry ->
+                    "• ${entry.device.buildDisplayName()} (${entry.device.address}): ${entry.outcome}"
+                },
+            )
+            CategoryBlock(
+                title = stringResource(R.string.connect_all_category_errors, viewModel.errorEntries.size),
+                expanded = viewModel.errorsExpanded,
+                onToggle = { viewModel.onToggleErrorsExpanded() },
+                emptyText = stringResource(R.string.connect_all_category_errors_empty),
+                lines = viewModel.errorEntries.map { entry ->
+                    "• ${entry.device.buildDisplayName()} (${entry.device.address}) " +
+                            "[attempt ${entry.attempts}]: ${entry.outcome} — ${entry.message ?: "no details"}"
+                },
+            )
+            CategoryBlock(
+                title = stringResource(R.string.connect_all_category_too_many_attempts, viewModel.tooManyAttemptsEntries.size),
+                expanded = viewModel.tooManyAttemptsExpanded,
+                onToggle = { viewModel.onToggleTooManyAttemptsExpanded() },
+                emptyText = stringResource(R.string.connect_all_category_too_many_attempts_empty),
+                lines = viewModel.tooManyAttemptsEntries.map { entry ->
+                    "• ${entry.device.buildDisplayName()} (${entry.device.address}) " +
+                            "[${entry.attempts} attempts]: ${entry.lastError ?: "no details"}"
+                },
+            )
         }
     }
 
+    /**
+     * Collapsible category row: header (arrow + count line) is the always-on tap target;
+     * the body is the most-recent-first device list, materialised only when expanded.
+     */
     @Composable
-    private fun ExpandableDoneSummary(viewModel: ConnectAllViewModel) {
-        // Persistent "Done: …" summary from the most recent completed pass. Always shown after
-        // any pass finishes, so under "Retry forever" the user can still inspect prior errors
-        // even after the next pass has already started.
+    private fun CategoryBlock(
+        title: String,
+        expanded: Boolean,
+        onToggle: () -> Unit,
+        emptyText: String,
+        lines: List<String>,
+    ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { viewModel.onToggleErrorsExpanded() },
+                    .clickable { onToggle() },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = if (viewModel.errorsExpanded) Icons.Filled.KeyboardArrowDown
+                    imageVector = if (expanded) Icons.Filled.KeyboardArrowDown
                                   else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(text = viewModel.lastDoneSummary, fontWeight = FontWeight.Light)
+                Text(text = title, fontWeight = FontWeight.Light)
             }
-            AnimatedVisibility(visible = viewModel.errorsExpanded) {
+            AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(start = 24.dp, top = 4.dp)) {
-                    if (viewModel.errorDetails.isEmpty()) {
+                    if (lines.isEmpty()) {
                         Text(
-                            text = stringResource(R.string.connect_all_errors_none),
+                            text = emptyText,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        viewModel.errorDetails.forEach { entry ->
-                            Text(
-                                text = "• ${entry.device.buildDisplayName()} (${entry.device.address}): " +
-                                        "${entry.outcome} — ${entry.message ?: "no details"}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                        lines.forEach { line ->
+                            Text(text = line, style = MaterialTheme.typography.bodySmall)
                             Spacer(modifier = Modifier.height(2.dp))
                         }
                     }

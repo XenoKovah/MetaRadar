@@ -47,18 +47,22 @@ class ConnectAllViewModel(
      * order so the same slot's progress stays in the same visual row across attempts.
      */
     var inFlightLines: List<String> by mutableStateOf(emptyList())
-    /**
-     * "Done: X connected, Y skipped, Z errors" from the most recently completed pass. Held
-     * across passes so the user can still inspect prior errors after a "Retry forever" loop has
-     * already moved on to the next pass.
-     */
-    var lastDoneSummary: String by mutableStateOf("")
     /** Devices that have successfully completed GATT enumeration during the latest run. */
     var connectedDevices: List<DeviceData> by mutableStateOf(emptyList())
-    /** Devices whose latest attempt ended in ERROR or TIMEOUT, with the captured failure reason. */
-    var errorDetails: List<ErrorEntry> by mutableStateOf(emptyList())
-    /** Whether the persistent "Done: …" summary is expanded to reveal the per-device errors. */
+
+    /**
+     * Three running-total categories from the live session, surfaced for the screen's
+     * collapsible category boxes. Each list is most-recent-first; success on a previously-
+     * errored address removes it from [errorEntries]/[tooManyAttemptsEntries] and lifts it
+     * into [connectedEntries].
+     */
+    var connectedEntries: List<ConnectAllSession.ConnectedEntry> by mutableStateOf(emptyList())
+    var errorEntries: List<ConnectAllSession.ErrorEntry> by mutableStateOf(emptyList())
+    var tooManyAttemptsEntries: List<ConnectAllSession.TooManyAttemptsEntry> by mutableStateOf(emptyList())
+
+    var connectedExpanded: Boolean by mutableStateOf(false)
     var errorsExpanded: Boolean by mutableStateOf(false)
+    var tooManyAttemptsExpanded: Boolean by mutableStateOf(false)
 
     /**
      * Live preview of devices the next "Connect to all" pass would attempt — visible + connectable
@@ -98,10 +102,13 @@ class ConnectAllViewModel(
                 inProgress = s.inProgress
                 statusLine = s.statusLine
                 inFlightLines = s.inFlightBySlot.toSortedMap().values.toList()
-                lastDoneSummary = s.lastDoneSummary
                 connectedDevices = s.connectedDevices
-                errorDetails = s.errorDetails.map { ErrorEntry(it.device, it.outcome, it.message) }
+                connectedEntries = s.connected
+                errorEntries = s.errors
+                tooManyAttemptsEntries = s.tooManyAttempts
+                connectedExpanded = s.connectedExpanded
                 errorsExpanded = s.errorsExpanded
+                tooManyAttemptsExpanded = s.tooManyAttemptsExpanded
             }
         }
     }
@@ -206,8 +213,6 @@ class ConnectAllViewModel(
         candidateVendorFiltered = filtered
     }
 
-    data class ErrorEntry(val device: DeviceData, val outcome: BulkEnumerateGattInteractor.Outcome, val message: String?)
-
     fun onSkipAppleToggled() {
         bulkSkipApple = !bulkSkipApple
         settingsRepository.setBulkSkipApple(bulkSkipApple)
@@ -225,8 +230,16 @@ class ConnectAllViewModel(
         settingsRepository.setBulkRetryForever(retryForever)
     }
 
+    fun onToggleConnectedExpanded() {
+        connectAllSession.toggleConnectedExpanded()
+    }
+
     fun onToggleErrorsExpanded() {
         connectAllSession.toggleErrorsExpanded()
+    }
+
+    fun onToggleTooManyAttemptsExpanded() {
+        connectAllSession.toggleTooManyAttemptsExpanded()
     }
 
     fun onConnectAllClick() {

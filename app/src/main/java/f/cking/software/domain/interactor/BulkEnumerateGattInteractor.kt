@@ -77,24 +77,39 @@ class BulkEnumerateGattInteractor(
     private data class EnumResult(val outcome: Outcome, val errorMessage: String? = null)
 
     /**
-     * Drives one pass.
+     * Drives a Connect All run.
      *
-     * Re-snapshots the last batch *between every attempt* and re-sorts by RSSI, so a device
-     * that got closer (better RSSI) since the previous attempt jumps ahead of one that got
-     * further. Matches the user-walking case: by the time you've processed device #3, the
-     * RSSI ranking of devices #4..N is no longer the ranking from when the pass started.
+     * Two modes, controlled by [continuous]:
+     *
+     * - [continuous] = false (default): one pass. The candidate pool is built once from the
+     *   current scan batch, workers drain it, and the flow emits [Progress.Done] when the pool
+     *   is empty and all workers have exited. Used by the "retry forever OFF" branch and by
+     *   tests that want a single deterministic round.
+     *
+     * - [continuous] = true: workers never exit. A background refresher continuously merges
+     *   freshly-scanned connectable devices into the pool, applying the same skip/cap/vendor
+     *   filters used at pass start. Workers loop forever until the channelFlow is cancelled
+     *   (i.e., the session is stopped). No [Progress.Done] is emitted — the session keeps
+     *   running totals from the per-device events. This is the "retry forever ON" path; it
+     *   keeps all 4 LE workers + 1 BR/EDR worker continuously busy whenever there are enough
+     *   candidates, instead of stalling between rounds while a single straggler finishes.
+     *
+     * Re-sorting on RSSI happens at every refresher tick (continuous) or once at pass start
+     * (one-shot). Either way the strongest-signal candidate at the time of pick gets attempted
+     * first.
      *
      * @param skipAddresses devices already successfully enumerated in this session — never
-     * re-attempted (across passes; managed by the VM).
+     * re-attempted (managed by the session).
      * @param attemptCounts session-wide attempt counter (address.uppercase() → count). Mutated
      * in place: incremented on every connect attempt. Devices whose count reaches
      * [maxAttemptsPerDevice] get filtered out of subsequent picks for the rest of the session.
-     * The map is owned by the VM so the cap survives across passes under "Retry forever".
+     * The map is owned by the session so the cap survives across passes / continuous runs.
      */
     fun execute(
         skipAddresses: Set<String> = emptySet(),
         attemptCounts: MutableMap<String, Int> = mutableMapOf(),
         maxAttemptsPerDevice: Int = MAX_ATTEMPTS_PER_DEVICE,
+        continuous: Boolean = false,
     ): Flow<Progress> = channelFlow {
         val skipApple = settingsRepository.getBulkSkipApple()
         val skipSamsung = settingsRepository.getBulkSkipSamsung()
@@ -121,58 +136,86 @@ class BulkEnumerateGattInteractor(
         // the actual attempt count (initialCandidateCount minus the per-pass max-retries cap).
 
         // Concurrent workers: BLE_PARALLELISM LE slots + BREDR_PARALLELISM BR/EDR slot. Each
-        // worker loops "pop next eligible device for my radio → enumerate → repeat" until the
-        // frozen candidate list is exhausted. The list is serialised under [pickerLock] so
-        // two workers never grab the same device, but the actual enumeration runs in
-        // parallel — up to 5 simultaneous in-flight connections show up in the multi-line
-        // status display.
+        // worker loops "pop next eligible device for my radio → enumerate → repeat". The pool
+        // is serialised under [pickerLock] so two workers never grab the same device, but the
+        // actual enumeration runs in parallel — up to 5 simultaneous in-flight connections
+        // show up in the multi-line status display.
         //
-        // The candidate set is FROZEN at pass start: we snapshot the connectable devices
-        // once, sort by RSSI desc, and workers pop from the frozen queue. New devices that
-        // appear mid-pass do NOT get attempted in this pass — they'll be picked up in the
-        // next pass (under "Retry forever") with full N-worker parallelism. The previous
-        // re-snapshot-on-every-pick design produced a "single straggler at end of run"
-        // failure mode: 4 of 5 workers exited (no candidates left), then a new device
-        // appeared, the surviving worker grabbed it, the now-single-threaded tail dragged
-        // on as more devices trickled in, and parallelism was never recovered until the
-        // pass finally ended and a fresh one began.
+        // Pool semantics depend on [continuous]:
+        //   - one-shot: pool is built once from the initial scan batch, workers exit when
+        //     it's empty, [Progress.Done] is emitted.
+        //   - continuous: a background refresher rebuilds the pool from every fresh
+        //     [observeLastBatch] emit, applying the same skip/cap/vendor filters and
+        //     excluding addresses currently in flight. Workers never exit; pickNext blocks
+        //     (with a small poll delay) when the pool is empty, then returns whatever the
+        //     refresher pushed in. This eliminates the "single straggler at end of round"
+        //     stall under retry-forever — workers refill the moment a new device appears,
+        //     instead of waiting for the surviving worker to finish + the next pass to
+        //     start before parallelism recovers.
         val succeeded = java.util.concurrent.atomic.AtomicInteger(0)
         val skippedVendor = java.util.concurrent.atomic.AtomicInteger(0)
         val errors = java.util.concurrent.atomic.AtomicInteger(0)
         val attemptIndex = java.util.concurrent.atomic.AtomicInteger(0)
         val pickerLock = kotlinx.coroutines.sync.Mutex()
 
-        // Frozen candidate queue, sorted by RSSI desc (null RSSI sinks to the bottom). We
-        // build it ONCE here and pop from it per worker; once empty, all workers exit and
-        // the pass completes cleanly.
-        val frozenCandidates: ArrayDeque<DeviceData> = ArrayDeque(
-            BulkEnumerateCandidateSelection.selectFrozenCandidates(
-                connectable = initialConnectable,
+        // Pool = address.uppercase() → DeviceData, ordered by RSSI desc on insert. Workers
+        // pop from the head; refresher rebuilds in continuous mode.
+        val pool: java.util.LinkedHashMap<String, DeviceData> = java.util.LinkedHashMap()
+        // Addresses currently being enumerated. The refresher excludes these so a device that
+        // re-appears in the scan batch mid-attempt isn't double-popped by another worker.
+        val inFlight: MutableSet<String> = mutableSetOf()
+
+        suspend fun rebuildPool(snapshot: List<DeviceData>) = pickerLock.withLock {
+            val candidates = BulkEnumerateCandidateSelection.selectFrozenCandidates(
+                connectable = snapshot.filter { it.isConnectable },
                 normalizedSkipAddresses = normalizedSkip,
                 attemptCounts = attemptCounts,
                 maxAttemptsPerDevice = maxAttemptsPerDevice,
                 shouldSkipVendor = shouldSkipVendor,
             )
-        )
-        send(Progress.Started(total = frozenCandidates.size, skippedAdvFilter = initialAdvSkippedCount))
+            pool.clear()
+            for (d in candidates) {
+                val key = d.address.uppercase()
+                if (key !in inFlight) pool[key] = d
+            }
+        }
 
-        suspend fun pickNext(forBrEdr: Boolean): DeviceData? = pickerLock.withLock {
-            // Find the first device matching this worker's radio. We iterate the deque
-            // (rather than building separate per-radio queues) because a single LE worker
-            // may need to skip past BR/EDR-only entries until it finds an LE/DUAL one.
-            val it = frozenCandidates.iterator()
+        rebuildPool(initialConnectable)
+        // Send Started with the initial pool size. In continuous mode `total` is just the
+        // initial snapshot — the actual attempt count climbs via attemptIndex as devices
+        // arrive over time.
+        send(Progress.Started(total = pool.size, skippedAdvFilter = initialAdvSkippedCount))
+
+        suspend fun popMatching(forBrEdr: Boolean): DeviceData? = pickerLock.withLock {
+            val it = pool.entries.iterator()
             while (it.hasNext()) {
-                val d = it.next()
+                val d = it.next().value
                 val matches = if (forBrEdr) d.transport == Transport.BREDR
                               else d.transport != Transport.BREDR
                 if (matches) {
                     it.remove()
                     val key = d.address.uppercase()
+                    inFlight.add(key)
                     attemptCounts[key] = (attemptCounts[key] ?: 0) + 1
                     return@withLock d
                 }
             }
             null
+        }
+
+        suspend fun pickNext(forBrEdr: Boolean): DeviceData? {
+            while (true) {
+                val popped = popMatching(forBrEdr)
+                if (popped != null) return popped
+                if (!continuous) return null
+                // Continuous: pool empty for this radio. Sleep briefly and let the refresher
+                // pump in fresh candidates (or, for BR/EDR, wait for the slow inquiry cadence).
+                delay(POOL_POLL_INTERVAL_MS)
+            }
+        }
+
+        suspend fun releaseInFlight(address: String) = pickerLock.withLock {
+            inFlight.remove(address.uppercase())
         }
 
         suspend fun runWorker(slotId: Int, forBrEdr: Boolean) {
@@ -190,6 +233,7 @@ class BulkEnumerateGattInteractor(
                     Timber.tag(TAG).w(t, "Worker slot %d crashed on %s", slotId, device.address)
                     EnumResult(Outcome.ERROR, t.message ?: t::class.java.simpleName)
                 }
+                releaseInFlight(device.address)
                 when (result.outcome) {
                     Outcome.SUCCESS, Outcome.SDP_SUCCESS -> succeeded.incrementAndGet()
                     Outcome.SKIPPED_VENDOR -> skippedVendor.incrementAndGet()
@@ -200,14 +244,29 @@ class BulkEnumerateGattInteractor(
         }
 
         coroutineScope {
-            val jobs = (0 until BLE_PARALLELISM).map { slot ->
+            val refresherJob = if (continuous) {
+                launch {
+                    devicesRepository.observeLastBatch().collect { batch ->
+                        rebuildPool(batch)
+                    }
+                }
+            } else null
+
+            val workerJobs = (0 until BLE_PARALLELISM).map { slot ->
                 launch { runWorker(slotId = slot, forBrEdr = false) }
             } + (0 until BREDR_PARALLELISM).map { slot ->
                 launch { runWorker(slotId = BLE_PARALLELISM + slot, forBrEdr = true) }
             }
-            jobs.forEach { it.join() }
+            // In continuous mode, workers never exit on their own — this join blocks until
+            // the channelFlow is cancelled (session.stop()), which propagates cancellation
+            // down the worker tree and breaks them out of pickNext's delay loop.
+            workerJobs.forEach { it.join() }
+            refresherJob?.cancel()
         }
 
+        // Only meaningful in one-shot mode. In continuous mode the workerJobs.join() above
+        // only returns under cancellation, which throws a CancellationException before we
+        // get here, so this Done event is naturally suppressed.
         send(
             Progress.Done(
                 total = attemptIndex.get(),
@@ -506,6 +565,10 @@ class BulkEnumerateGattInteractor(
         // user has to Stop and re-press "Connect to all" to give it another chance.
         const val MAX_ATTEMPTS_PER_DEVICE = 5
         private val PER_DEVICE_TIMEOUT = 20.seconds
+        // How often a worker re-checks the pool when it found nothing on the prior pop. Short
+        // enough to keep parallelism filling fast as new scan batches arrive (LE scan emits
+        // every ~10s; BR/EDR every ~60s) without busy-spinning while we wait on the radio.
+        private const val POOL_POLL_INTERVAL_MS: Long = 500L
         // Most BR/EDR-only peers reject the ATT-over-BR/EDR connection; fail fast so the bulk
         // pass keeps moving.
         private val BR_EDR_GATT_TIMEOUT = 8.seconds
