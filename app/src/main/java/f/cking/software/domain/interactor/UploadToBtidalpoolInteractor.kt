@@ -96,16 +96,51 @@ class UploadToBtidalpoolInteractor(
                 email = authRepository.current()?.email,
             )
         }
+        // Aggregate progress across the whole multi-log loop so the single visible progress
+        // bar advances 0→1 across N archives. Per-log byte counts are summed up-front; each
+        // archive's local (processed, total) callback is rebased into the global span.
+        // Doubling the per-log size accounts for the export pass (file → temp .btides) AND
+        // the upload pass (temp .btides → server) that BTIDES exports run through —
+        // [exportTo] reports `total = 2 * sourceSize` for the same reason internally.
+        val perLogTotal = logs.map { it.file.length() * 2L }
+        val grandTotal = perLogTotal.sum().coerceAtLeast(1L)
         val results = mutableListOf<LogResult>()
-        for (log in logs) {
-            results.add(uploadOneLog(log.file, useTestDb, onProgress))
+        var completedBytes = 0L
+        for ((index, log) in logs.withIndex()) {
+            val logBudget = perLogTotal[index]
+            val baseBefore = completedBytes
+            val rebased: suspend (Long, Long) -> Unit = { processed, total ->
+                val localFraction = if (total > 0L) processed.toDouble() / total else 0.0
+                onProgress?.invoke(
+                    (baseBefore + (localFraction * logBudget).toLong()).coerceAtMost(grandTotal),
+                    grandTotal,
+                )
+            }
+            val r = try {
+                uploadOneLog(log.file, useTestDb, rebased)
+            } catch (t: Throwable) {
+                Timber.w(t, "Per-log upload threw for ${log.file.name}")
+                LogResult.Failed(log.file.name, t.message ?: t::class.java.simpleName)
+            }
+            results.add(r)
+            completedBytes += logBudget
+            onProgress?.invoke(completedBytes.coerceAtMost(grandTotal), grandTotal)
         }
         Outcome.WithResults(results = results, email = authRepository.current()?.email)
     }
 
     /**
-     * Export [logFile] to a temp `.btides` file, hash + check + upload, delete the source
-     * archive on success. Single-log workhorse for both [executeCurrent] and [executeAll].
+     * Export [logFile] to a temp `.btides` file, hash + check (only when small enough) +
+     * upload, delete the source archive on success. Single-log workhorse for both
+     * [executeCurrent] and [executeAll].
+     *
+     * For files at or below [HASH_CHECK_FILE_BYTES] we run the canonical SHA1 dedup
+     * optimisation: parse → re-emit in Python-compatible canonical form → hash → ask the
+     * server if it already has that content, skipping the upload if so. Above that
+     * threshold the parse + canonical re-emit blew the heap (a 125 MB file with a 4-5x
+     * JsonElement-tree expansion needs >500 MB peak — observed crashing the Moto with
+     * "Failed to allocate a 134250504 byte allocation"). For large files we go straight
+     * to the streaming upload, which the server then dedupes on its own end.
      */
     private suspend fun uploadOneLog(
         logFile: File,
@@ -115,8 +150,22 @@ class UploadToBtidalpoolInteractor(
         val displayName = logFile.name
         val tempExport = File.createTempFile("btidalpool_upload_", ".btides", context.cacheDir)
         try {
+            // Split this log's progress budget into [export-half, upload-half]. The export
+            // pass already reports `total = 2 * sourceSize` internally so we map it into the
+            // first half of our budget; the upload pass reports actual byte counts that we
+            // map into the second half. Caller's [onProgress] gets a smooth 0→1 across both.
+            val sourceSize = logFile.length().coerceAtLeast(1L)
+            val phaseTotal = sourceSize * 2L
+            val exportProgress: suspend (Long, Long) -> Unit = { processed, total ->
+                val frac = if (total > 0L) processed.toDouble() / total else 0.0
+                onProgress?.invoke((frac * sourceSize).toLong().coerceAtMost(sourceSize), phaseTotal)
+            }
+            val uploadProgress: suspend (Long, Long) -> Unit = { sent, total ->
+                val frac = if (total > 0L) sent.toDouble() / total else 0.0
+                onProgress?.invoke((sourceSize + frac * sourceSize).toLong().coerceAtMost(phaseTotal), phaseTotal)
+            }
             val deviceCount = try {
-                exportBTIDESInteractor.executeForLog(logFile, tempExport, onProgress)
+                exportBTIDESInteractor.executeForLog(logFile, tempExport, exportProgress)
             } catch (t: Throwable) {
                 Timber.w(t, "BTIDES export failed for %s", displayName)
                 return LogResult.Failed(displayName, t.message ?: t::class.java.simpleName)
@@ -125,32 +174,38 @@ class UploadToBtidalpoolInteractor(
                 return LogResult.EmptyLog(displayName)
             }
 
-            val rawJson = tempExport.readText(Charsets.UTF_8)
-            val parsed = try {
-                Json.parseToJsonElement(rawJson)
-            } catch (t: Throwable) {
-                Timber.e(t, "Exported BTIDES for %s failed to parse — refusing upload", displayName)
-                return LogResult.Failed(displayName, "exported file was not valid JSON")
-            }
-            val canonical = PythonCanonicalJson.encode(parsed)
-            val sha1 = sha1Hex(canonical.toByteArray(Charsets.UTF_8))
-
-            // Two-step: hash check first, then upload if the server doesn't have it. Both share
-            // the same auth-refresh-and-retry wrapper.
-            when (val hashResult = withTokenRefresh { (t, r) -> client.checkHash(sha1, t, r, useTestDb) }) {
-                is BtidalpoolClient.CheckHashResult.AlreadyPresent -> {
-                    // Server already has this content — drop the archive on the floor so we
-                    // don't keep retrying the same upload on every "Upload all".
-                    deleteIfArchive(logFile)
-                    return LogResult.AlreadyOnServer(displayName, deviceCount)
+            // Optional client-side dedup short-circuit. Only safe to run when the file is
+            // small enough that the parse + canonical re-emit doesn't OOM. On larger files
+            // we accept the wasted bandwidth in exchange for not crashing — the server runs
+            // the same SHA1 check on the streamed upload and rejects duplicates with HTTP
+            // 400 + "already exists".
+            if (tempExport.length() <= HASH_CHECK_FILE_BYTES) {
+                val rawJson = tempExport.readText(Charsets.UTF_8)
+                val canonical = try {
+                    PythonCanonicalJson.encode(Json.parseToJsonElement(rawJson))
+                } catch (t: Throwable) {
+                    Timber.e(t, "Exported BTIDES for %s failed to parse — refusing upload", displayName)
+                    return LogResult.Failed(displayName, "exported file was not valid JSON")
                 }
-                is BtidalpoolClient.CheckHashResult.NotPresent -> Unit
-                is BtidalpoolClient.CheckHashResult.AuthFailed -> return LogResult.AuthFailed(displayName)
-                is BtidalpoolClient.CheckHashResult.Failed ->
-                    return LogResult.Failed(displayName, "hash check HTTP ${hashResult.httpCode}: ${hashResult.body}")
+                val sha1 = sha1Hex(canonical.toByteArray(Charsets.UTF_8))
+                when (val hashResult = withTokenRefresh { (t, r) -> client.checkHash(sha1, t, r, useTestDb) }) {
+                    is BtidalpoolClient.CheckHashResult.AlreadyPresent -> {
+                        deleteIfArchive(logFile)
+                        return LogResult.AlreadyOnServer(displayName, deviceCount)
+                    }
+                    is BtidalpoolClient.CheckHashResult.NotPresent -> Unit
+                    is BtidalpoolClient.CheckHashResult.AuthFailed -> return LogResult.AuthFailed(displayName)
+                    is BtidalpoolClient.CheckHashResult.Failed ->
+                        return LogResult.Failed(displayName, "hash check HTTP ${hashResult.httpCode}: ${hashResult.body}")
+                }
+            } else {
+                Timber.i(
+                    "Skipping client-side hash check for %s (%d bytes > %d threshold); server will dedup",
+                    displayName, tempExport.length(), HASH_CHECK_FILE_BYTES,
+                )
             }
 
-            return when (val up = withTokenRefresh { (t, r) -> client.upload(rawJson, t, r, useTestDb) }) {
+            return when (val up = withTokenRefresh { (t, r) -> client.uploadFile(tempExport, t, r, useTestDb, uploadProgress) }) {
                 is BtidalpoolClient.UploadResult.Success -> {
                     deleteIfArchive(logFile)
                     LogResult.Success(displayName, deviceCount)
@@ -194,6 +249,17 @@ class UploadToBtidalpoolInteractor(
         is BtidalpoolClient.UploadResult.AuthFailed,
         -> true
         else -> false
+    }
+
+    companion object {
+        /**
+         * Files at or below this size run through the in-memory parse + canonical encode +
+         * SHA1 + server check_hash optimisation. Larger files skip straight to the streaming
+         * upload because the parse step's JsonElement tree expands ~4-5x, which OOM'd a 4 GB
+         * heap on a 125 MB BTIDES log on a Moto g play 2024 (Android 14, ~200 MB cap). 8 MB
+         * is well under that ceiling and covers the typical Connect-All-pass output.
+         */
+        private const val HASH_CHECK_FILE_BYTES = 8L * 1024 * 1024
     }
 
     private fun sha1Hex(bytes: ByteArray): String {

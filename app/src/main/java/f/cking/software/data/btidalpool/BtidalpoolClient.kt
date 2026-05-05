@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.json.JSONObject
 import timber.log.Timber
+import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -79,29 +80,56 @@ class BtidalpoolClient(
     }
 
     /**
-     * POST `{"command":"upload", "btides_content":<json>, "token":..., "refresh_token":..., "use_test_db":...}`.
-     * `btidesJson` is the literal canonical JSON of the file content; this method splices it in
-     * as a JSON value (no double-encoding).
+     * POST `{"command":"upload", "btides_content":<json file content>, "token":..., "refresh_token":..., "use_test_db":...}`,
+     * streaming the file body directly to the HTTPS output stream. The JSON envelope is
+     * written prefix → file → suffix in 64KB chunks so we never hold the file content in
+     * memory — critical for the multi-MB BTIDES exports that previously OOM'd a 4GB-heap
+     * device on a 125 MB log (read full file into String → parse to JsonElement tree →
+     * canonicalize back to String → concatenate envelope = ~5x file-size peak heap).
      */
-    suspend fun upload(
-        btidesJson: String,
+    suspend fun uploadFile(
+        btidesFile: File,
         token: String,
         refreshToken: String,
         useTestDb: Boolean,
+        /**
+         * Optional progress callback for the network-transfer phase. Reports
+         * `(bytesSentSoFar, totalBytesToSend)` after each chunk write — `totalBytesToSend`
+         * is the full envelope size (prefix + file + suffix), so the progress fraction
+         * advances smoothly from 0 → 1 across the upload. Called from the IO dispatcher;
+         * callers should keep the body cheap (e.g., a state-flow update).
+         */
+        onProgress: (suspend (bytesSent: Long, totalBytes: Long) -> Unit)? = null,
     ): UploadResult = withContext(Dispatchers.IO) {
-        // Build the outer envelope by string concatenation rather than parse+re-serialize so we
-        // don't pay to load the (potentially multi-MB) BTIDES content into a JsonElement tree.
-        val sb = StringBuilder(btidesJson.length + 256)
-        sb.append("{\"command\":\"upload\",\"btides_content\":")
-        sb.append(btidesJson)
-        sb.append(",\"token\":")
-        sb.append(JSONObject.quote(token))
-        sb.append(",\"refresh_token\":")
-        sb.append(JSONObject.quote(refreshToken))
-        sb.append(",\"use_test_db\":")
-        sb.append(if (useTestDb) "true" else "false")
-        sb.append("}")
-        val (code, respBody) = postPinned(UPLOAD_URL, sb.toString())
+        val prefix = "{\"command\":\"upload\",\"btides_content\":".toByteArray(Charsets.UTF_8)
+        val suffix = (
+            ",\"token\":" + JSONObject.quote(token) +
+                ",\"refresh_token\":" + JSONObject.quote(refreshToken) +
+                ",\"use_test_db\":" + (if (useTestDb) "true" else "false") +
+                "}"
+            ).toByteArray(Charsets.UTF_8)
+        val totalLen = prefix.size.toLong() + btidesFile.length() + suffix.size.toLong()
+        val (code, respBody) = postPinnedStreaming(UPLOAD_URL, totalLen) { out ->
+            var sent = 0L
+            out.write(prefix)
+            sent += prefix.size
+            onProgress?.invoke(sent, totalLen)
+            // 64KB transfer buffer keeps us well under any single-allocation cap and matches
+            // what HttpsURLConnection's chunked encoding would use anyway.
+            btidesFile.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    sent += n
+                    onProgress?.invoke(sent, totalLen)
+                }
+            }
+            out.write(suffix)
+            sent += suffix.size
+            onProgress?.invoke(sent, totalLen)
+        }
         when {
             code == 200 -> UploadResult.Success
             code == 400 && respBody.contains("already exists", ignoreCase = true) -> UploadResult.AlreadyPresent
@@ -187,22 +215,42 @@ class BtidalpoolClient(
      * pinned `btidalpool_server.crt` shipped in assets. Returns (status code, response body).
      */
     @Throws(IOException::class)
-    private fun postPinned(urlStr: String, body: String): Pair<Int, String> {
+    private suspend fun postPinned(urlStr: String, body: String): Pair<Int, String> {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        return postPinnedStreaming(urlStr, bytes.size.toLong()) { out -> out.write(bytes) }
+    }
+
+    /**
+     * Streaming POST — caller writes the request body directly to the connection's
+     * outputStream via [writer]. With FixedLengthStreamingMode set, HttpsURLConnection
+     * doesn't buffer the body in memory; bytes flow straight to the socket as they're
+     * written. Used by [uploadFile] so a multi-megabyte BTIDES export never has to be
+     * materialised as a single byte array.
+     *
+     * The writer is `suspend` so progress callbacks (themselves suspend, since they update
+     * StateFlow / Compose state on the calling coroutine context) can fire mid-stream.
+     */
+    @Throws(IOException::class)
+    private suspend fun postPinnedStreaming(
+        urlStr: String,
+        contentLength: Long,
+        writer: suspend (java.io.OutputStream) -> Unit,
+    ): Pair<Int, String> {
         val url = URL(urlStr)
         val conn = (url.openConnection() as HttpsURLConnection).apply {
             sslSocketFactory = pinnedSocketFactory()
-            // Self-signed cert has CN=btidalpool.ddns.net but the issuer chain is also
-            // self-rooted; bypass hostname verification because the pinning by-cert above
-            // already proves we're talking to the intended endpoint.
             hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
             requestMethod = "POST"
             connectTimeout = 30_000
-            readTimeout = 60_000
+            // Long enough for a 100 MB upload over slow Wi-Fi to finish without the connection
+            // dropping mid-stream.
+            readTimeout = 5 * 60_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
+            setFixedLengthStreamingMode(contentLength)
         }
         return try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            conn.outputStream.use { writer(it) }
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""

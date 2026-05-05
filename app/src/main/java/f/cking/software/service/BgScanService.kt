@@ -89,11 +89,26 @@ class BgScanService : Service() {
             // Log and reschedule the next inquiry; do not call handleError(), which would
             // increment the LE failure counter.
             Timber.w(exception, "BR/EDR inquiry failed")
+            // When startDiscovery silently no-ops (the watchdog-detected case), nudge the
+            // system BLE scanner state to drop any LE-scan registrations from this UID that
+            // the OS didn't reclaim — that's the typical block on Qualcomm stacks.
+            val msg = exception.message.orEmpty()
+            if (msg.contains("silently no-op'd")) {
+                bleScannerHelper.flushLeakedScans()
+            }
             scheduleNextBrEdrInquiry()
         }
 
         override fun onSuccess(batch: List<BleScanDevice>) {
             handleBrEdrInquiryResult(batch)
+        }
+
+        override fun onIncrementalDevice(device: BleScanDevice) {
+            // Push each ACTION_FOUND through the persist + BTIDES path immediately so the
+            // Devices list shows BTC peers as the inquiry sees them, instead of waiting for
+            // ACTION_DISCOVERY_FINISHED ~13s later. The closing onSuccess(batch) still rolls
+            // up the full inquiry; DB merge handles the dedup.
+            scope.launch { persistBrEdrDevice(device) }
         }
     }
 
@@ -265,43 +280,61 @@ class BgScanService : Service() {
                 } catch (e: Throwable) {
                     Timber.w(e, "Failed to persist BR/EDR inquiry batch (${batch.size} devices)")
                 }
-                // Capture the Class-of-Device byte for each inquired device. EIR ClassOfDevice
-                // is the only BR/EDR-specific schema record we can populate from the high-level
-                // Android API today (PageScanRepetitionMode is not exposed). One record per
-                // device per inquiry — DeviceAccumulator dedups by `type` on export.
-                //
-                // Also write the Remote Name (when Android resolved one) as an HCI
-                // Remote_Name_Request_Complete record. The schema's EIRArray doesn't define a
-                // local-name variant and the AdvData CompleteLocalName types are LE-flavoured,
-                // so HCIArray is the right home for the BR/EDR-side reassembled name.
                 for (device in batch) {
-                    val cod = device.deviceClass
-                    if (cod != null) {
-                        try {
-                            btidesRepository.appendEirClassOfDevice(
-                                bdaddr = device.address,
-                                cod = cod,
-                                timestampMs = device.scanTimeMs,
-                            )
-                        } catch (e: Throwable) {
-                            Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
-                        }
-                    }
-                    val remoteName = device.name
-                    if (!remoteName.isNullOrEmpty()) {
-                        try {
-                            btidesRepository.appendHciRemoteName(
-                                bdaddr = device.address,
-                                name = remoteName,
-                                timestampMs = device.scanTimeMs,
-                            )
-                        } catch (e: Throwable) {
-                            Timber.w(e, "Failed to write BTIDES HCI record for ${device.address}")
-                        }
-                    }
+                    appendBrEdrBtidesRecords(device)
                 }
             }
             scheduleNextBrEdrInquiry()
+        }
+    }
+
+    /**
+     * Persist a single BR/EDR device discovered mid-inquiry. Same code path as
+     * [handleBrEdrInquiryResult] but for one device, so the UI can show it the moment
+     * ACTION_FOUND arrives. Idempotent against the closing batch — the DB merge dedups.
+     */
+    private suspend fun persistBrEdrDevice(device: BleScanDevice) {
+        try {
+            saveOrMergeBatchInteractor.execute(listOf(device))
+        } catch (e: Throwable) {
+            Timber.w(e, "Failed to persist incremental BR/EDR device ${device.address}")
+        }
+        appendBrEdrBtidesRecords(device)
+    }
+
+    /**
+     * Capture the Class-of-Device byte and (when available) the Remote Name as BTIDES sidecar
+     * records. EIR ClassOfDevice is the only BR/EDR-specific schema record we can populate
+     * from the high-level Android API today (PageScanRepetitionMode is not exposed). One
+     * record per device per inquiry — DeviceAccumulator dedups by `type` on export. The
+     * Remote Name lands in HCIArray as a Remote_Name_Request_Complete record because the
+     * EIRArray doesn't define a local-name variant and the AdvData CompleteLocalName types
+     * are LE-flavoured.
+     */
+    private suspend fun appendBrEdrBtidesRecords(device: BleScanDevice) {
+        val cod = device.deviceClass
+        if (cod != null) {
+            try {
+                btidesRepository.appendEirClassOfDevice(
+                    bdaddr = device.address,
+                    cod = cod,
+                    timestampMs = device.scanTimeMs,
+                )
+            } catch (e: Throwable) {
+                Timber.w(e, "Failed to write BTIDES EIR record for ${device.address}")
+            }
+        }
+        val remoteName = device.name
+        if (!remoteName.isNullOrEmpty()) {
+            try {
+                btidesRepository.appendHciRemoteName(
+                    bdaddr = device.address,
+                    name = remoteName,
+                    timestampMs = device.scanTimeMs,
+                )
+            } catch (e: Throwable) {
+                Timber.w(e, "Failed to write BTIDES HCI record for ${device.address}")
+            }
         }
     }
 

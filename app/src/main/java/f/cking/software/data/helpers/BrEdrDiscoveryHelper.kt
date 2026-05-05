@@ -52,12 +52,41 @@ class BrEdrDiscoveryHelper(
     // cancelDiscovery()'d) and would otherwise tear our session down within milliseconds with
     // 0 devices found. Reset to false on cleanup().
     @Volatile private var discoveryActuallyStarted: Boolean = false
+    // Counts consecutive inquiries where startDiscovery() returned true but ACTION_DISCOVERY_
+    // STARTED never arrived. On Qualcomm stacks (observed on moto g play) this happens when
+    // LE scan registrations from a prior, force-killed process instance leak at the system
+    // level — they aren't GC'd on linkToDeath as they should be, and they then block our
+    // fresh BR/EDR inquiry. Reset to 0 on the next successful STARTED broadcast.
+    @Volatile private var consecutiveSilentFailures: Int = 0
     private var scanListener: BleScannerHelper.ScanListener? = null
     private var registeredReceiver: BroadcastReceiver? = null
     private val mainHandler: Handler = Handler(Looper.getMainLooper())
     private val timeoutRunnable: Runnable = Runnable {
         Timber.tag(TAG).w("BR/EDR inquiry timed out after %dms — synthesizing finish event", INQUIRY_TIMEOUT_MS)
         handleFinished()
+    }
+    // Watchdog: ACTION_DISCOVERY_STARTED should arrive within ~milliseconds of
+    // startDiscovery() returning true. If it doesn't within DISCOVERY_STARTED_DEADLINE_MS,
+    // the controller silently dropped our request — surface the failure quickly so the
+    // periodic loop retries on a tight cadence instead of stalling for the full 18s
+    // INQUIRY_TIMEOUT_MS.
+    private val startedWatchdogRunnable: Runnable = Runnable {
+        if (discoveryActuallyStarted) return@Runnable
+        if (!inProgress.get()) return@Runnable
+        consecutiveSilentFailures += 1
+        Timber.tag(TAG).w(
+            "BR/EDR startDiscovery() silently no-op'd: no ACTION_DISCOVERY_STARTED within %dms (streak=%d). " +
+                "Likely OS-side leaked LE scans from a prior process — toggle Bluetooth to recover.",
+            DISCOVERY_STARTED_DEADLINE_MS,
+            consecutiveSilentFailures,
+        )
+        val listener = scanListener
+        cleanup()
+        listener?.onFailure(
+            DiscoveryFailure(
+                "startDiscovery silently no-op'd (no ACTION_DISCOVERY_STARTED in ${DISCOVERY_STARTED_DEADLINE_MS}ms; streak=$consecutiveSilentFailures)"
+            )
+        )
     }
 
     private fun adapter(): BluetoothAdapter? =
@@ -91,6 +120,14 @@ class BrEdrDiscoveryHelper(
                 when (intent.action) {
                     BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
                         discoveryActuallyStarted = true
+                        mainHandler.removeCallbacks(startedWatchdogRunnable)
+                        if (consecutiveSilentFailures > 0) {
+                            Timber.tag(TAG).i(
+                                "BR/EDR inquiry recovered after %d silent failures",
+                                consecutiveSilentFailures,
+                            )
+                            consecutiveSilentFailures = 0
+                        }
                     }
                     BluetoothDevice.ACTION_FOUND -> handleFound(intent)
                     BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
@@ -150,6 +187,9 @@ class BrEdrDiscoveryHelper(
             // call because scheduleNextBrEdrInquiry is only invoked from the listener's
             // onSuccess/onFailure handlers.
             mainHandler.postDelayed(timeoutRunnable, INQUIRY_TIMEOUT_MS)
+            // STARTED watchdog: catches the silent-no-op case (controller blocked by leaked
+            // LE scans) in 3s instead of waiting the full 18s for the synthetic finish.
+            mainHandler.postDelayed(startedWatchdogRunnable, DISCOVERY_STARTED_DEADLINE_MS)
         }
     }
 
@@ -177,19 +217,19 @@ class BrEdrDiscoveryHelper(
 
         // Some Android Bluetooth stacks (observed on a B160V / BLU View 5) leak LE-only
         // advertisers into the ACTION_FOUND stream even though startDiscovery() is the
-        // BR/EDR-only API. The leaked entries are characterised by:
-        //   - device.type == DEVICE_TYPE_LE (system explicitly classifies them as LE-only), AND/OR
-        //   - BluetoothClass.getMajorDeviceClass() == Major.UNCATEGORIZED (0x1F00) — there is no
-        //     real FHS/CoD information because no actual inquiry response was received.
-        // Real BR/EDR-discoverable peers always carry a meaningful Major Device Class
-        // (Phone/Computer/Audio/Wearable/etc.). Suppressing the noise here gives Connect All a
-        // candidate list that matches what the user can actually connect to over Classic.
+        // BR/EDR-only API. Those leaked entries arrive with device.type == DEVICE_TYPE_LE,
+        // i.e. the system has explicitly classified them as LE-only — that is the only
+        // signal we can trust to suppress them.
+        //
+        // We deliberately do NOT filter on UNCATEGORIZED majorDeviceClass: legitimate BR/EDR-
+        // discoverable peers on the Motorola moto g (and other Qualcomm-based phones) routinely
+        // arrive with majorClass=0x1F00 in the initial inquiry response — Apple iPhone/iPad
+        // peers in particular do not carry CoD until SDP returns. Filtering on UNCATEGORIZED
+        // dropped every BR/EDR device on this hardware.
         val majorClass = cls?.majorDeviceClass
-        val isLeOnly = device.type == BluetoothDevice.DEVICE_TYPE_LE
-        val isUncategorised = majorClass == null || majorClass == BluetoothClass.Device.Major.UNCATEGORIZED
-        if (isLeOnly || isUncategorised) {
+        if (device.type == BluetoothDevice.DEVICE_TYPE_LE) {
             Timber.tag(TAG).d(
-                "Skipping leaked LE/uncategorised ACTION_FOUND %s type=%d majorClass=0x%04X",
+                "Skipping leaked LE-only ACTION_FOUND %s type=%d majorClass=0x%04X",
                 device.address,
                 device.type,
                 majorClass ?: 0,
@@ -229,8 +269,18 @@ class BrEdrDiscoveryHelper(
             deviceType = device.type,
         )
         // Coalesce duplicate ACTION_FOUND broadcasts for the same address within one inquiry —
-        // the system can fire several as RSSI updates arrive.
-        batch[device.address] = scanDevice
+        // the system can fire several as RSSI updates arrive. We fire the incremental listener
+        // callback only on the *first* sighting in this window so the UI/DB path runs once per
+        // device per inquiry, then the final onSuccess at handleFinished still rolls everything
+        // up into a single batch (which DB merge dedups anyway).
+        val firstSighting = batch.put(device.address, scanDevice) == null
+        if (firstSighting) {
+            try {
+                scanListener?.onIncrementalDevice(scanDevice)
+            } catch (e: Throwable) {
+                Timber.tag(TAG).w(e, "onIncrementalDevice listener threw for ${device.address}")
+            }
+        }
     }
 
     private fun handleFinished() {
@@ -245,6 +295,7 @@ class BrEdrDiscoveryHelper(
 
     private fun cleanup() {
         mainHandler.removeCallbacks(timeoutRunnable)
+        mainHandler.removeCallbacks(startedWatchdogRunnable)
         registeredReceiver?.let {
             runCatching { appContext.unregisterReceiver(it) }
                 .onFailure { Timber.tag(TAG).w(it, "unregisterReceiver failed (already unregistered?)") }
@@ -264,5 +315,9 @@ class BrEdrDiscoveryHelper(
         // Spec: ~12.8s for the inquiry window itself; allow a 5s grace so the late
         // ACTION_DISCOVERY_FINISHED still wins over our synthesized finish.
         private const val INQUIRY_TIMEOUT_MS: Long = 18_000L
+        // ACTION_DISCOVERY_STARTED arrives within milliseconds in the healthy case; 3s is a
+        // generous deadline that comfortably tolerates a busy main looper. After that window
+        // we treat the silence as the controller having silently dropped startDiscovery().
+        private const val DISCOVERY_STARTED_DEADLINE_MS: Long = 3_000L
     }
 }

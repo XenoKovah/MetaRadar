@@ -84,9 +84,19 @@ class BtidalpoolUploadInstrumentedTest {
                 )
         }
 
-        // Step 2: actually upload the canonical JSON. Same canonical-form bytes that we just
-        // hashed — server will recompute SHA1 on its side and confirm dedup if applicable.
-        val uploadResult = client.upload(rawJson, auth.token, auth.refreshToken, useTestDb = true)
+        // Step 2: actually upload via the streaming path. Server recomputes SHA1 on its side
+        // and confirms dedup if applicable. We materialise the fixture into a temp file
+        // because [BtidalpoolClient.uploadFile] takes a File handle (and the prod path always
+        // does — the BTIDES export goes to disk first), but the underlying transport never
+        // holds the full body in memory.
+        val tempFile = java.io.File.createTempFile(
+            "btidalpool_test_", ".btides", targetContext.cacheDir,
+        ).apply { writeText(rawJson, Charsets.UTF_8) }
+        val uploadResult = try {
+            client.uploadFile(tempFile, auth.token, auth.refreshToken, useTestDb = true)
+        } finally {
+            tempFile.delete()
+        }
         when (uploadResult) {
             is BtidalpoolClient.UploadResult.Success,
             is BtidalpoolClient.UploadResult.AlreadyPresent,

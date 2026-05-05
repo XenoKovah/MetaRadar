@@ -47,8 +47,10 @@ object DeviceFilterSqlBuilder {
 
         is DeviceFilter.TransportFilter -> {
             // BREDR + DUAL when includeDual=true (the BTC chip's contract: anything seen on
-            // the Classic radio); strict equality otherwise. Transport.DUAL.ordinal = 3.
-            val dualOrdinal = 3
+            // the Classic radio); strict equality otherwise. Read the ordinal off the enum
+            // rather than hardcoding it — migration 24→25 collapsed the old UNKNOWN=0 entry,
+            // so DUAL is currently 2, and any future reorder shouldn't silently break this.
+            val dualOrdinal = f.cking.software.domain.model.Transport.DUAL.ordinal
             if (filter.includeDual && filter.transportOrdinal != dualOrdinal) {
                 Result.Pushable(
                     "transport IN (?, ?)",

@@ -113,42 +113,60 @@ class BulkEnumerateGattInteractor(
             d.address.uppercase() !in normalizedSkip &&
                 !vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)
         }
-        send(Progress.Started(total = initialCandidateCount, skippedAdvFilter = initialAdvSkippedCount))
+        // Note: Started.total is sent below after [frozenCandidates] is built, so it reflects
+        // the actual attempt count (initialCandidateCount minus the per-pass max-retries cap).
 
         // Concurrent workers: BLE_PARALLELISM LE slots + BREDR_PARALLELISM BR/EDR slot. Each
-        // worker loops "pick next eligible device for my radio → enumerate → repeat" until
-        // there are no more candidates. The picker is serialised under [pickerLock] so two
-        // workers never grab the same device, but the actual enumeration runs in parallel —
-        // up to 5 simultaneous in-flight connections show up in the multi-line status display.
+        // worker loops "pop next eligible device for my radio → enumerate → repeat" until the
+        // frozen candidate list is exhausted. The list is serialised under [pickerLock] so
+        // two workers never grab the same device, but the actual enumeration runs in
+        // parallel — up to 5 simultaneous in-flight connections show up in the multi-line
+        // status display.
         //
-        // The original single-worker "re-snapshot before every attempt + pick highest RSSI"
-        // semantics is approximated: each worker picks under the lock, so the pick still uses
-        // a fresh snapshot, but with N workers running concurrently we no longer guarantee
-        // strict highest-RSSI order across slots. For Connect All this trade-off is fine —
-        // throughput matters more than per-device ordering at the macro level.
+        // The candidate set is FROZEN at pass start: we snapshot the connectable devices
+        // once, sort by RSSI desc, and workers pop from the frozen queue. New devices that
+        // appear mid-pass do NOT get attempted in this pass — they'll be picked up in the
+        // next pass (under "Retry forever") with full N-worker parallelism. The previous
+        // re-snapshot-on-every-pick design produced a "single straggler at end of run"
+        // failure mode: 4 of 5 workers exited (no candidates left), then a new device
+        // appeared, the surviving worker grabbed it, the now-single-threaded tail dragged
+        // on as more devices trickled in, and parallelism was never recovered until the
+        // pass finally ended and a fresh one began.
         val succeeded = java.util.concurrent.atomic.AtomicInteger(0)
         val skippedVendor = java.util.concurrent.atomic.AtomicInteger(0)
         val errors = java.util.concurrent.atomic.AtomicInteger(0)
         val attemptIndex = java.util.concurrent.atomic.AtomicInteger(0)
-        val attemptedThisPass = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val pickerLock = kotlinx.coroutines.sync.Mutex()
 
-        suspend fun pickNext(forBrEdr: Boolean): DeviceData? = pickerLock.withLock {
-            val snapshot = devicesRepository.observeLastBatch().first().toList()
-            val candidates = snapshot
-                .asSequence()
-                .filter { it.isConnectable }
+        // Frozen candidate queue, sorted by RSSI desc (null RSSI sinks to the bottom). We
+        // build it ONCE here and pop from it per worker; once empty, all workers exit and
+        // the pass completes cleanly.
+        val frozenCandidates: ArrayDeque<DeviceData> = ArrayDeque(
+            initialConnectable
                 .filter { it.address.uppercase() !in normalizedSkip }
-                .filter { it.address.uppercase() !in attemptedThisPass }
                 .filter { (attemptCounts[it.address.uppercase()] ?: 0) < maxAttemptsPerDevice }
                 .filterNot { vendorIdentifier.shouldSkip(it, skipApple, skipSamsung) }
-                .filter { if (forBrEdr) it.transport == Transport.BREDR else it.transport != Transport.BREDR }
-                .toList()
-            val pick = candidates.maxByOrNull { it.rssi ?: Int.MIN_VALUE } ?: return@withLock null
-            val key = pick.address.uppercase()
-            attemptedThisPass.add(key)
-            attemptCounts[key] = (attemptCounts[key] ?: 0) + 1
-            pick
+                .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+        )
+        send(Progress.Started(total = frozenCandidates.size, skippedAdvFilter = initialAdvSkippedCount))
+
+        suspend fun pickNext(forBrEdr: Boolean): DeviceData? = pickerLock.withLock {
+            // Find the first device matching this worker's radio. We iterate the deque
+            // (rather than building separate per-radio queues) because a single LE worker
+            // may need to skip past BR/EDR-only entries until it finds an LE/DUAL one.
+            val it = frozenCandidates.iterator()
+            while (it.hasNext()) {
+                val d = it.next()
+                val matches = if (forBrEdr) d.transport == Transport.BREDR
+                              else d.transport != Transport.BREDR
+                if (matches) {
+                    it.remove()
+                    val key = d.address.uppercase()
+                    attemptCounts[key] = (attemptCounts[key] ?: 0) + 1
+                    return@withLock d
+                }
+            }
+            null
         }
 
         suspend fun runWorker(slotId: Int, forBrEdr: Boolean) {

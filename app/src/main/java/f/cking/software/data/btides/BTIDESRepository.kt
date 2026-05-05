@@ -193,12 +193,22 @@ class BTIDESRepository(
             else -> RECORD_TYPE_OTHER
         }
         writerStateLock.withLock {
-            // Per-day automatic rotation: if the current active log was first written on an
-            // earlier local-time day than now, rotate it before appending so each day's data
-            // ends up in a separate archive file. Only fires when day rolls over — checked
-            // once per record but the rotation itself is the only expensive bit.
+            // Auto-rotation triggers (in priority order):
+            //   1. Per-day rollover — first capture into the current active log was on an
+            //      earlier local-time day than now.
+            //   2. Per-size rollover — the current active log has grown past
+            //      [MAX_ACTIVE_LOG_BYTES] (sized to keep merged exports under the BTIDALPOOL
+            //      server's 10 MB upload cap with headroom). Without this, a long-running
+            //      capture session produces a single 100+ MB log that the server rejects with
+            //      "File size too big" — the user then has to manually rotate / clear before
+            //      they can upload anything.
+            // The rotation itself is the only expensive part; the size check is a cheap
+            // long compare against the in-memory bytesInLog counter on every write.
             val firstMs = firstCaptureMs
-            if (firstMs != null && shouldRolloverToNewDay(firstMs, System.currentTimeMillis())) {
+            val now = System.currentTimeMillis()
+            val rolloverByDay = firstMs != null && shouldRolloverToNewDay(firstMs, now)
+            val rolloverBySize = bytesInLog >= MAX_ACTIVE_LOG_BYTES
+            if (rolloverByDay || rolloverBySize) {
                 rotateActiveLocked()
             }
             ensureStreamsOpenLocked()
@@ -1321,6 +1331,15 @@ class BTIDESRepository(
         private const val ARCHIVE_IDX_EXT = "idx.jsonl"
         private const val EXPORT_EXT = "btides"
         private const val MS_PER_DAY = 86_400_000L
+        // Auto-rotate the active BTIDES log once it crosses this byte threshold. Sized to
+        // keep merged exports comfortably under the BTIDALPOOL server's per-upload cap
+        // (currently 50 MB) — the merged JSON output is roughly the same size as the source
+        // jsonl for typical captures, so 40 MB of jsonl source ≈ 40-45 MB exported. With
+        // logs bounded this small the multi-archive "Upload all" path produces lots of small
+        // requests instead of one giant one — the server's `json.loads()` heap blowup
+        // (~4-5x parsed-tree expansion) stays modest, and a transient network drop only
+        // costs us one chunk worth of upload time.
+        private const val MAX_ACTIVE_LOG_BYTES = 40L * 1024 * 1024
         // Short TTL: filter chip evaluation runs per scan-batch, but a fresh GATT enumeration
         // arrives much less often than scan batches. 5s makes the cache hot during
         // recompositions while still picking up new GATT records soon after they land.

@@ -69,8 +69,8 @@ class DeviceDetailsViewModel(
     var pointsState: List<LocationModel> by mutableStateOf(emptyList())
     /**
      * Per-detection RSSI keyed by [LocationModel.time]. Sidecar to [pointsState] so the
-     * existing markers/path rendering code stays untouched, while the heatmap renderer can
-     * colour each point by signal strength. Keys are missing (not null) for older detections
+     * existing markers/path rendering code stays untouched, while the best-fit centroid can
+     * weight each point by signal strength. Keys are missing (not null) for older detections
      * recorded before migration 21→22.
      */
     var rssiByTime: Map<Long, Int?> by mutableStateOf(emptyMap())
@@ -83,7 +83,6 @@ class DeviceDetailsViewModel(
     var cameraState: MapCameraState by mutableStateOf(DEFAULT_MAP_CAMERA_STATE)
     var historyPeriod by mutableStateOf(DEFAULT_HISTORY_PERIOD)
     var markersInLoadingState by mutableStateOf(false)
-    var loadingHeatmap by mutableStateOf(false)
     var onlineStatusData: OnlineStatus? by mutableStateOf(null)
     var pointsStyle: PointsStyle by mutableStateOf(DEFAULT_POINTS_STYLE)
     var rawData: List<AdRecord> by mutableStateOf(listOf())
@@ -110,12 +109,6 @@ class DeviceDetailsViewModel(
     private var autoReconnectAttempts: Int = 0
 
     var mapExpanded: Boolean by mutableStateOf(false)
-
-    // Default off — the heatmap renders an opaque GroundOverlay over OSM tiles which makes it
-    // hard to see the actual point markers / device path on a fresh load. The user can opt in
-    // per-device-screen via the toggle in the map header. Auto-disabled via a different code
-    // path further down when the point count exceeds MAX_POINTS_FOR_HEATMAP.
-    var useHeatmap: Boolean by mutableStateOf(false)
 
     sealed class ConnectionStatus(@StringRes val statusRes: Int) {
         data class CONNECTED(val gatt: BluetoothGatt) : ConnectionStatus(R.string.device_details_status_connected)
@@ -205,6 +198,20 @@ class DeviceDetailsViewModel(
         userWantsConnected = true
         autoReconnectAttempts = 0
         beginConnectionAttempt()
+    }
+
+    /**
+     * User-driven cancel of an in-flight connect attempt. Tearing down the in-progress
+     * `connectGatt` requires both clearing [userWantsConnected] (so [maybeScheduleAutoReconnect]
+     * doesn't immediately re-fire) and cancelling [connectionJob] (which closes the BLE
+     * connection-state Flow). Called when the user taps the spinner on the Device Details
+     * "Connecting…" row.
+     */
+    fun cancelConnect() {
+        userWantsConnected = false
+        autoReconnectAttempts = MAX_AUTO_RECONNECT_ATTEMPTS // suppress any retry that races
+        connectionJob?.cancel()
+        connectionStatus = ConnectionStatus.DISCONNECTED
     }
 
     private fun beginConnectionAttempt() {
@@ -668,6 +675,38 @@ class DeviceDetailsViewModel(
         }
     }
 
+    /**
+     * User-initiated "Re-fetch SDP" entry point. Fires the standard SDP enumeration AND, if
+     * the peer is currently in range and we don't already have an active link, kicks off a
+     * fresh GATT connection attempt. The connection is the load-bearing piece on Qualcomm/
+     * Motorola moto g stacks: [BluetoothDevice.fetchUuidsWithSdp] there returns the link-
+     * key-cached UUID list and never re-queries the peer until a live link forces re-
+     * discovery — without the connection, every "Re-fetch SDP" tap returns identical data.
+     *
+     * Skipping the connection when out of range avoids hammering an unreachable peer with
+     * doomed `connectGatt` retries; the SDP fetch still runs (cheap, no-op when offline).
+     * The auto-fetch on screen-load (see [loadDevice]) intentionally does NOT take this
+     * path — that's a passive read, not a user-initiated refresh.
+     */
+    fun refetchSdpServicesWithConnect() {
+        fetchSdpServices()
+        if (connectionStatus is ConnectionStatus.DISCONNECTED && isDeviceInRange()) {
+            establishConnection()
+        }
+    }
+
+    /**
+     * "Was this peer recently scannable from here?" — used to gate side-effects like the
+     * connection attempt that pairs with [refetchSdpServicesWithConnect]. We use
+     * [DeviceData.lastDetectTimeMs] (recency, not just last-batch presence) because BR/EDR
+     * devices appear at the slow 60s inquiry cadence; requiring last-batch membership would
+     * block legitimate re-fetches.
+     */
+    private fun isDeviceInRange(): Boolean {
+        val lastSeenMs = deviceState?.lastDetectTimeMs ?: return false
+        return System.currentTimeMillis() - lastSeenMs <= IN_RANGE_WINDOW_MS
+    }
+
     private suspend fun loadCachedGatt(address: String) {
         val cached = btidesRepository.cachedGattForDevice(address) ?: return
         val parsed = parseCachedServices(cached) ?: return
@@ -769,9 +808,9 @@ class DeviceDetailsViewModel(
 
     private suspend fun refreshLocationHistory(address: String, autotunePeriod: Boolean) {
         val fromTime = System.currentTimeMillis() - historyPeriod.periodMills
-        // Use the RSSI-aware query so the heatmap and best-fit marker have signal-strength
-        // data. Markers/path code only needs lat/lng/time, so we project the rows down to
-        // LocationModel for [pointsState] and keep RSSI in a sidecar map keyed by time.
+        // Use the RSSI-aware query so the best-fit marker has signal-strength data. Markers/
+        // path code only needs lat/lng/time, so we project the rows down to LocationModel
+        // for [pointsState] and keep RSSI in a sidecar map keyed by time.
         val fetchedRows = locationRepository.getRssiLocationsByAddress(address, fromTime = fromTime)
         val nextStep = historyPeriod.next()
 
@@ -783,10 +822,6 @@ class DeviceDetailsViewModel(
 
         if (fetchedRows.size > MAX_POINTS_FOR_MARKERS) {
             pointsStyle = PointsStyle.PATH
-        }
-
-        if (fetchedRows.size > MAX_POINTS_FOR_HEATMAP) {
-            useHeatmap = false
         }
 
         pointsState = fetchedRows.map { LocationModel(lat = it.lat, lng = it.lng, time = it.time) }
@@ -923,7 +958,10 @@ class DeviceDetailsViewModel(
         // for the host's GATT client to release the resource.
         private const val AUTO_RECONNECT_DELAY_MS = 750L
         private const val MAX_POINTS_FOR_MARKERS = 5_000
-        private const val MAX_POINTS_FOR_HEATMAP = 30_000
+        // Window for the "in range" gate on the [fetchSdpServices] auto-connect side-effect.
+        // Generous on purpose — covers one full BR/EDR inquiry cadence (60s) plus a grace
+        // window so that a peer caught one cycle ago still counts as nearby.
+        private const val IN_RANGE_WINDOW_MS = 90_000L
         private const val HISTORY_PERIOD_DAY = 24 * 60 * 60 * 1000L // 24 hours
         private const val HISTORY_PERIOD_WEEK = 7 * 24 * 60 * 60 * 1000L // 1 week
         private const val HISTORY_PERIOD_MONTH = 31 * 24 * 60 * 60 * 1000L // 1 month

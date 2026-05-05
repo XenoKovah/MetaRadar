@@ -204,6 +204,12 @@ object SettingsScreen {
                 onDismiss = { viewModel.onBtidalpoolStatusDialogDismiss() },
             )
         }
+        if (viewModel.btidalpoolCancelDialogVisible) {
+            CancelBtidalpoolUploadDialog(
+                onConfirm = { viewModel.onConfirmCancelBtidalpoolUpload() },
+                onDismiss = { viewModel.onDismissCancelBtidalpoolUpload() },
+            )
+        }
         RoundedBox {
             Text(text = stringResource(R.string.btidalpool_section_title), fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(4.dp))
@@ -287,7 +293,10 @@ object SettingsScreen {
                     .fillMaxSize()
                     .clip(RoundedCornerShape(percent = 50)),
                 onClick = onClick,
-                enabled = !inProgress && !viewModel.btidesInProgress,
+                // Stay clickable while in progress so a tap raises the cancel dialog
+                // (the click handler in the VM checks inProgress and routes appropriately).
+                // Only disable if a BTIDES local-export is hogging the pipeline.
+                enabled = !viewModel.btidesInProgress,
                 colors = ButtonDefaults.buttonColors(
                     disabledContainerColor = MaterialTheme.colorScheme.primary,
                     disabledContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -314,6 +323,37 @@ object SettingsScreen {
                 Text(text = label, color = MaterialTheme.colorScheme.onPrimary, fontSize = fontSize)
             }
             @Suppress("UNUSED_EXPRESSION") width
+        }
+    }
+
+    @Composable
+    private fun CancelBtidalpoolUploadDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+        // Same shape as [CancelBTIDESExportDialog]: confirm/cancel pair, observe-the-state
+        // hook so a tap-outside also clears the VM flag. "Yes" cancels the upload Job.
+        val dialogState = rememberMaterialDialogState(initialValue = true)
+        LaunchedEffect(dialogState.showing) {
+            if (!dialogState.showing) onDismiss()
+        }
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.confirm),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) {
+                    dialogState.hide()
+                    onConfirm()
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(text = stringResource(R.string.btidalpool_upload_cancel_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = stringResource(R.string.btidalpool_upload_cancel_subtitle))
+            }
         }
     }
 

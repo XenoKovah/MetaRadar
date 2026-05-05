@@ -109,10 +109,13 @@
     <string name="btidalpool_upload_log_auth_failed">%1$s — auth failed; sign in again</string>
     <string name="btidalpool_upload_log_empty">%1$s — empty, nothing to upload</string>
     <string name="btidalpool_upload_log_failed">%1$s — failed: %2$s</string>
+    <string name="btidalpool_upload_cancel_title">Cancel BTIDALPOOL upload?</string>
+    <string name="btidalpool_upload_cancel_subtitle">Stop the in-progress upload. Already-uploaded archives stay on the server; the rest will need a retry.</string>
+    <string name="btidalpool_upload_cancelled">BTIDALPOOL upload cancelled</string>
     <string name="btides_section_title">BTIDES export</string>
     <string name="btides_section_description">Save Bluetooth data captured while scanning to a JSON file using the BTIDES schema (https://github.com/darkmentorllc/BTIDES_Schema). Logs are rotated automatically per day, and again whenever you upload to BTIDALPOOL.</string>
-    <string name="btides_log_size">BTIDES log size: %s</string>
-    <string name="btides_export_to_file">Export BTIDES file…</string>
+    <string name="btides_log_size">All BTIDES logs size: %s</string>
+    <string name="btides_export_to_file">Export BTIDES file to specific filesystem location</string>
     <string name="btides_export_for_adb">Save BTIDES files for ADB pull</string>
     <string name="btides_export_cancel_title">Cancel BTIDES export?</string>
     <string name="btides_export_cancel_subtitle">Stop the in-progress export. The partially-written file will be deleted.</string>
@@ -196,6 +199,7 @@
 
     <!-- Filter chips -->
     <string name="filter_btc">BTC</string>
+    <string name="filter_dual">Dual</string>
 
     <!-- Address-tag tooltip text for BR/EDR addresses -->
     <string name="address_type_btc_tag" translatable="false">BTC</string>
@@ -309,7 +313,6 @@
     <string name="device_history_pint_style_markers">Markers</string>
     <string name="device_history_pint_style_path">Path</string>
     <string name="device_history_pint_style_hide_markers">Hide non-best-fit markers</string>
-    <string name="device_history_pint_style_heatmap">Range heatmap</string>
     <string name="time_ago">%s ago</string>
     <string name="lifetime_data_last_update">Max duration seen: %1$s | last update: %2$s ago</string>
     <string name="lifetime_data">Max duration seen: %1$s</string>
@@ -405,8 +408,8 @@
     <string name="background_location_request_button">Grant permission</string>
     <string name="osm_copyright" translatable="false">© OpenStreetMap</string>
 
-    <string name="bluetooth_status_paired">paired</string>
-    <string name="bluetooth_status_paired_description">Device is paired</string>
+    <string name="bluetooth_status_paired">Bonded</string>
+    <string name="bluetooth_status_paired_description">A link key for this device is stored on the phone (the BR/EDR or LE pairing was completed previously).</string>
 
     <string name="unlowful_usage_disclaimer">This project is developed solely for educational, security research, and personal investigative purposes. The author does not endorse or encourage any use of this software for unlawful or unethical activities. You are solely responsible for ensuring your use of this tool complies with all applicable laws and regulations.</string>
 

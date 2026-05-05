@@ -662,6 +662,35 @@ class BleScannerHelper(
         cancelScanning(ScanResultInternal.Canceled)
     }
 
+    /**
+     * Best-effort poke of the system BLE scanner state to clear any LE scan registrations
+     * tied to this UID that the OS didn't reclaim (e.g. after a force-kill or OOM of a
+     * prior process instance). On Qualcomm-based phones (moto g family observed) those
+     * leaked registrations silently block subsequent [BluetoothAdapter.startDiscovery]
+     * BR/EDR inquiry calls — startDiscovery returns true, but no ACTION_DISCOVERY_STARTED
+     * broadcast ever follows.
+     *
+     * Calling [BluetoothLeScanner.stopScan] against the singleton callback is a no-op when
+     * no scan is registered, but Android's BluetoothManagerService uses these calls as a
+     * trigger to walk its scanner-client list and prune entries whose IBinder is dead.
+     * In practice this restores BR/EDR inquiry on the very next cycle for the moto g case.
+     */
+    @SuppressLint("MissingPermission")
+    fun flushLeakedScans() {
+        if (bluetoothAdapter?.state != BluetoothAdapter.STATE_ON) return
+        try {
+            bluetoothScanner?.flushPendingScanResults(callback)
+        } catch (e: Throwable) {
+            Timber.tag(TAG).d(e, "flushPendingScanResults threw (no-op when not registered)")
+        }
+        try {
+            bluetoothScanner?.stopScan(callback)
+        } catch (e: Throwable) {
+            Timber.tag(TAG).d(e, "stopScan threw during flushLeakedScans (no-op when not registered)")
+        }
+        Timber.tag(TAG).d("flushLeakedScans: nudged the system scanner state machine")
+    }
+
     /** True if at least one GATT connection is currently held. Used by BgScanService to defer
      *  BR/EDR inquiry windows during in-flight enumeration. */
     fun hasOpenGattConnections(): Boolean = connections.isNotEmpty()
@@ -724,6 +753,14 @@ class BleScannerHelper(
     interface ScanListener {
         fun onSuccess(batch: List<BleScanDevice>)
         fun onFailure(exception: Exception)
+        /**
+         * Optional incremental callback fired the first time a device is seen during the current
+         * scan/inquiry window. Lets BR/EDR consumers surface devices in the UI as soon as
+         * ACTION_FOUND arrives rather than waiting up to ~13s for ACTION_DISCOVERY_FINISHED.
+         * Default no-op preserves LE-side behaviour, which already emits frequently via
+         * onSuccess batches.
+         */
+        fun onIncrementalDevice(device: BleScanDevice) {}
     }
 
     private sealed interface ScanResultInternal {

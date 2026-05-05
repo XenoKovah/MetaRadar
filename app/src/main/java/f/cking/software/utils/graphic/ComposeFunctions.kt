@@ -396,35 +396,25 @@ fun DeviceListItem(
 }
 
 @Composable
-fun DevicePairedIcon(isPaired: Boolean, extended: Boolean = false) {
+fun DevicePairedIcon(isPaired: Boolean) {
     if (isPaired) {
         val color = colorResource(R.color.blue_600)
         val infoDialog = infoDialog(
-            title = stringResource(id = R.string.bluetooth_status_paired_description),
-            content = null,
+            title = stringResource(id = R.string.bluetooth_status_paired),
+            content = stringResource(id = R.string.bluetooth_status_paired_description),
         )
         Row(
             modifier = Modifier
                 .background(color.copy(0.2f), RoundedCornerShape(20.dp))
-                .clickable { infoDialog.show() },
+                .clickable { infoDialog.show() }
+                .padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                painter = painterResource(R.drawable.ic_ble_paired),
-                contentDescription = stringResource(R.string.bluetooth_status_paired),
-                tint = color
+            Text(
+                text = stringResource(id = R.string.bluetooth_status_paired),
+                color = color,
+                fontWeight = FontWeight.Bold,
             )
-            if (extended) {
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = stringResource(id = R.string.bluetooth_status_paired),
-                    color = color,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.width(4.dp))
-            }
-            Spacer(Modifier.width(4.dp))
         }
     }
 }

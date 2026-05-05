@@ -25,9 +25,9 @@ interface LocationDao {
 
     /**
      * Per-detection rows joined to their location (lat/lng/time) plus the captured RSSI. Used
-     * by the RSSI-coloured heatmap and by the trilateration weighted-centroid in
-     * DeviceDetailsViewModel. Rows with NULL RSSI (older data, pre-migration-22) are still
-     * returned — the caller decides how to weight them.
+     * by the trilateration weighted-centroid (best-fit marker) in DeviceDetailsViewModel.
+     * Rows with NULL RSSI (older data, pre-migration-22) are still returned — the caller
+     * decides how to weight them.
      */
     @Query("""
         SELECT location.time AS time, location.lat AS lat, location.lng AS lng, dtl.rssi AS rssi

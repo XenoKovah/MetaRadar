@@ -108,6 +108,10 @@ class SettingsViewModel(
      * to know whether their data actually landed on the server.
      */
     var btidalpoolStatusDialogMessage: String? by mutableStateOf(null)
+    /** True while a "Cancel current BTIDALPOOL upload?" confirmation dialog is showing. */
+    var btidalpoolCancelDialogVisible: Boolean by mutableStateOf(false)
+    /** Job handle for the in-flight upload pass, so the cancel dialog can interrupt it. */
+    private var btidalpoolUploadJob: Job? = null
 
     val databaseInfo by getDatabaseInfoInteractor.execute().collectAsState(viewModelScope, null)
 
@@ -172,15 +176,34 @@ class SettingsViewModel(
     }
 
     fun onUploadCurrentBtidalpoolClick() {
+        // Tap-while-uploading raises a cancel-confirmation dialog instead of starting a
+        // second upload (matches the BTIDES ADB-export button's behaviour).
+        if (btidalpoolUploadInProgress) {
+            btidalpoolCancelDialogVisible = true
+            return
+        }
         runUpload { useTestDb, onProgress ->
             uploadToBtidalpoolInteractor.executeCurrent(useTestDb, onProgress)
         }
     }
 
     fun onUploadAllBtidalpoolClick() {
+        if (btidalpoolUploadInProgress) {
+            btidalpoolCancelDialogVisible = true
+            return
+        }
         runUpload { useTestDb, onProgress ->
             uploadToBtidalpoolInteractor.executeAll(useTestDb, onProgress)
         }
+    }
+
+    fun onConfirmCancelBtidalpoolUpload() {
+        btidalpoolCancelDialogVisible = false
+        btidalpoolUploadJob?.cancel()
+    }
+
+    fun onDismissCancelBtidalpoolUpload() {
+        btidalpoolCancelDialogVisible = false
     }
 
     private fun runUpload(
@@ -190,7 +213,7 @@ class SettingsViewModel(
         ) -> UploadToBtidalpoolInteractor.Outcome,
     ) {
         if (btidalpoolUploadInProgress) return
-        viewModelScope.launch {
+        btidalpoolUploadJob = viewModelScope.launch {
             btidalpoolUploadInProgress = true
             btidalpoolUploadProgress = 0f
             try {
@@ -201,6 +224,9 @@ class SettingsViewModel(
                 }
                 btidalpoolStatusDialogMessage = formatUploadOutcome(outcome)
                 refreshBTIDESLogSize()
+            } catch (ce: CancellationException) {
+                btidalpoolStatusDialogMessage = context.getString(R.string.btidalpool_upload_cancelled)
+                throw ce
             } catch (e: Throwable) {
                 reportError(e)
                 btidalpoolStatusDialogMessage = context.getString(
@@ -210,6 +236,7 @@ class SettingsViewModel(
             } finally {
                 btidalpoolUploadInProgress = false
                 btidalpoolUploadProgress = 0f
+                btidalpoolUploadJob = null
             }
         }
     }

@@ -259,8 +259,8 @@ abstract class AppDatabase : RoomDatabase() {
 
         // Per-detection RSSI on device_to_location. Older rows have NULL (we never recorded it
         // before this migration); new rows record the RSSI of the strongest sample in the
-        // batch. Used by: BTIDES export's "highest-RSSI lat/lng per device" enrichment, the
-        // RSSI-coloured heatmap, and the weighted-centroid best-fit marker.
+        // batch. Used by: BTIDES export's "highest-RSSI lat/lng per device" enrichment and
+        // the weighted-centroid best-fit marker.
         val MIGRATION_21_22 = migration(21, 22) {
             it.execSQL("ALTER TABLE device_to_location ADD COLUMN rssi INTEGER DEFAULT NULL;")
         }

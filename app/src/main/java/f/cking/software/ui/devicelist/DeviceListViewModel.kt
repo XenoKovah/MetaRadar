@@ -62,6 +62,7 @@ class DeviceListViewModel(
     var quickFilters: List<FilterHolder> by mutableStateOf(
         listOf(
             DefaultFilters.btc(context),
+            DefaultFilters.dual(context),
             DefaultFilters.gatt(context),
             DefaultFilters.notApple(context),
             DefaultFilters.notSamsung(context),
@@ -342,6 +343,22 @@ class DeviceListViewModel(
             filter = DeviceFilter.TransportFilter(
                 transportOrdinal = f.cking.software.domain.model.Transport.BREDR.ordinal,
                 includeDual = true,
+            ),
+        )
+
+        /**
+         * "Dual" quick-filter: only DUAL-classified devices (peers we've seen on BOTH the
+         * LE and BR/EDR radios). Useful to spot-check whether the BR/EDR ACTION_FOUND path
+         * is correctly upgrading LE-only entries to DUAL when they respond to inquiry.
+         * Implementation note: passing transportOrdinal=DUAL with includeDual=false matches
+         * exactly Transport.DUAL (the includeDual short-circuit only activates when the
+         * primary transport is BREDR — see the filter checker's `if` branch).
+         */
+        fun dual(context: Context) = FilterHolder(
+            displayName = context.getString(R.string.filter_dual),
+            filter = DeviceFilter.TransportFilter(
+                transportOrdinal = f.cking.software.domain.model.Transport.DUAL.ordinal,
+                includeDual = false,
             ),
         )
 

@@ -428,7 +428,7 @@ object DeviceListScreen {
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     mainAxisSpacing = 8.dp,
-                    crossAxisSpacing = 4.dp,
+                    crossAxisSpacing = 1.dp,
                 ) {
                     val allFilters = (viewModel.quickFilters + appliedFilter).toSet()
 
@@ -440,7 +440,13 @@ object DeviceListScreen {
                         val isCustom = viewModel.isCustomFilter(holder)
                         val customFilterName = stringResource(R.string.custom_filter)
 
+                        // Pin chip height below Material 3's 32.dp min so the row-to-row pitch
+                        // matches the user's "25% of current vertical distance" ask. The
+                        // crossAxisSpacing knob alone moved the inter-row gap by only a few
+                        // dp; the bigger contributor is the chip's own internal vertical
+                        // padding around its 32.dp min-height.
                         FilterChip(
+                            modifier = Modifier.height(24.dp),
                             // Quick filters (BTC / GATT / Not Apple / Not Samsung): tap toggles
                             // selection, showing a trash icon in the leading slot when active
                             // so the user knows another tap will remove it.
@@ -470,20 +476,26 @@ object DeviceListScreen {
                                     viewModel.onFilterClick(holder)
                                 }
                             },
-                            leadingIcon = {
-                                when {
-                                    isCustom -> Icon(
+                            // Pass null when the chip has no icon to draw, so FilterChip skips
+                            // the leading-icon slot entirely instead of reserving icon-slot
+                            // padding around an empty composable. Drops a few more dp from the
+                            // chip's footprint without changing visual semantics.
+                            leadingIcon = when {
+                                isCustom -> ({
+                                    Icon(
                                         Icons.Filled.Edit,
                                         contentDescription = stringResource(R.string.edit),
-                                        modifier = Modifier.size(20.dp),
+                                        modifier = Modifier.size(16.dp),
                                     )
-                                    isSelected -> Icon(
+                                })
+                                isSelected -> ({
+                                    Icon(
                                         Icons.Filled.Delete,
                                         contentDescription = stringResource(R.string.delete),
-                                        modifier = Modifier.size(24.dp),
+                                        modifier = Modifier.size(16.dp),
                                     )
-                                    else -> {}
-                                }
+                                })
+                                else -> null
                             },
                             selected = isSelected,
                             label = {
@@ -524,8 +536,9 @@ object DeviceListScreen {
         }
 
         SuggestionChip(
+            modifier = Modifier.height(24.dp),
             icon = {
-                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.delete), modifier = Modifier.size(24.dp))
+                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.delete), modifier = Modifier.size(16.dp))
             },
             onClick = { selectFilterDialog.show() },
             label = {
@@ -538,9 +551,10 @@ object DeviceListScreen {
     private fun SearchChip(viewModel: DeviceListViewModel) {
         val searchQuery by viewModel.searchQuery.collectAsState()
         FilterChip(
+            modifier = Modifier.height(24.dp),
             leadingIcon = {
                 val icon = if (viewModel.isSearchMode) Icons.Filled.Delete else Icons.Filled.Search
-                Icon(icon, contentDescription = stringResource(R.string.delete), modifier = Modifier.size(24.dp))
+                Icon(icon, contentDescription = stringResource(R.string.delete), modifier = Modifier.size(16.dp))
             },
             onClick = { viewModel.onOpenSearchClick() },
             selected = viewModel.isSearchMode,
@@ -581,6 +595,7 @@ object DeviceListScreen {
             }
         }
         SuggestionChip(
+            modifier = Modifier.height(24.dp),
             onClick = { dialogState.show() },
             colors = SuggestionChipDefaults.suggestionChipColors(
                 containerColor = MaterialTheme.colorScheme.errorContainer,
@@ -592,7 +607,7 @@ object DeviceListScreen {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = stringResource(R.string.clear),
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(14.dp),
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                 )
             },

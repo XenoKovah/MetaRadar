@@ -24,8 +24,8 @@ class LocationRepository(
     /**
      * Per-detection variant: each entry's value is the RSSI seen for that address in the same
      * batch as [location]. RSSI is what enables the highest-RSSI-lat-lng enrichment in BTIDES
-     * export and the per-pixel heatmap colouring. Null is allowed (row stays joined but has
-     * no RSSI).
+     * export and the trilateration weighted-centroid best-fit marker. Null is allowed (row
+     * stays joined but has no RSSI).
      */
     suspend fun saveLocation(location: LocationModel, detectionsByAddress: Map<String, Int?>) {
         withContext(Dispatchers.IO) {
@@ -60,8 +60,8 @@ class LocationRepository(
 
     /**
      * Returns lat/lng/RSSI for every detection of [deviceAddress] in [fromTime..toTime]. Rows
-     * with NULL RSSI (older data) are still returned. Used by the heatmap RSSI colouring and
-     * the trilateration weighted centroid.
+     * with NULL RSSI (older data) are still returned. Used by the trilateration weighted
+     * centroid (best-fit marker on the device-details map).
      */
     suspend fun getRssiLocationsByAddress(
         deviceAddress: String,

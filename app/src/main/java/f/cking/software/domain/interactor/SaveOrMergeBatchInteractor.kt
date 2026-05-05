@@ -65,7 +65,7 @@ class SaveOrMergeBatchInteractor(
             if (location != null && detectTime != null) {
                 // Per-detection RSSI: if the same address appears multiple times in the same
                 // batch (rare but possible), keep the strongest sample — that's what the
-                // RSSI-coloured heatmap and the trilateration weighted-centroid both want.
+                // trilateration weighted-centroid (best-fit marker) wants.
                 val rssiByAddress: Map<String, Int?> = batch
                     .groupBy { it.address }
                     .mapValues { (_, samples) -> samples.mapNotNull { it.rssi }.maxOrNull() }
