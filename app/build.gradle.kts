@@ -129,6 +129,21 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = libs.versions.compose.compiler.get()
     }
+
+    testOptions {
+        unitTests.all {
+            // mockk 1.13.2 bundles a ByteBuddy that officially supports up to Java 19; the
+            // build runs on Java 21. Without this flag, mockk fails to inline-mock final
+            // Kotlin classes (UploadToBtidalpoolInteractorExecuteAllTest's BtidalpoolAuthRepository
+            // mock is the canonical case) — it falls back to a non-transforming mock that
+            // delegates calls to the real method bodies, then NPEs because the constructor
+            // never ran. The flag tells ByteBuddy "yes, the class file format is newer than I
+            // know about, please proceed". Either remove this when bumping mockk past the
+            // version that natively supports Java 21, or keep it indefinitely — it's a no-op
+            // on older JDKs.
+            it.systemProperty("net.bytebuddy.experimental", "true")
+        }
+    }
 }
 
 repositories {

@@ -57,6 +57,13 @@ class BrEdrDiscoveryHelper(
     // LE scan registrations from a prior, force-killed process instance leak at the system
     // level — they aren't GC'd on linkToDeath as they should be, and they then block our
     // fresh BR/EDR inquiry. Reset to 0 on the next successful STARTED broadcast.
+    //
+    // No JVM unit-test coverage for the streak/recovery path: it's woven into the
+    // BroadcastReceiver lifecycle and a Handler-posted watchdog — both Android-native, and
+    // the streak field plus its reset live behind a private receiver instance, so
+    // exercising them without spinning up the system would require a sizeable extraction.
+    // Track regressions via an instrumented test on a real device (Connect All happy path
+    // already covers the recovery side; leak repro needs killing + relaunching the app).
     @Volatile private var consecutiveSilentFailures: Int = 0
     private var scanListener: BleScannerHelper.ScanListener? = null
     private var registeredReceiver: BroadcastReceiver? = null

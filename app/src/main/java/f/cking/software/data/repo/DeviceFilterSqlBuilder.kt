@@ -2,6 +2,7 @@ package f.cking.software.data.repo
 
 import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.ManufacturerInfo
+import f.cking.software.domain.model.Transport
 
 /**
  * Translates a [DeviceFilter] tree into a SQL `WHERE` fragment that can run inside the device-
@@ -46,19 +47,16 @@ object DeviceFilterSqlBuilder {
             )
 
         is DeviceFilter.TransportFilter -> {
-            // BREDR + DUAL when includeDual=true (the BTC chip's contract: anything seen on
-            // the Classic radio); strict equality otherwise. Read the ordinal off the enum
-            // rather than hardcoding it — migration 24→25 collapsed the old UNKNOWN=0 entry,
-            // so DUAL is currently 2, and any future reorder shouldn't silently break this.
-            val dualOrdinal = f.cking.software.domain.model.Transport.DUAL.ordinal
-            if (filter.includeDual && filter.transportOrdinal != dualOrdinal) {
-                Result.Pushable(
-                    "transport IN (?, ?)",
-                    listOf(filter.transportOrdinal, dualOrdinal),
-                )
+            // Delegates the "which ordinals satisfy this filter" decision to
+            // [Transport.matchingOrdinalsForFilter]; FilterCheckerImpl uses the same call so
+            // the SQL and in-memory paths can't drift on the BTC-chip-includes-DUAL contract.
+            val ordinals = Transport.matchingOrdinalsForFilter(filter.transportOrdinal, filter.includeDual)
+            val whereClause = if (ordinals.size == 1) {
+                "transport = ?"
             } else {
-                Result.Pushable("transport = ?", listOf(filter.transportOrdinal))
+                "transport IN (${ordinals.joinToString(", ") { "?" }})"
             }
+            Result.Pushable(whereClause, ordinals)
         }
 
         is DeviceFilter.Manufacturer -> {

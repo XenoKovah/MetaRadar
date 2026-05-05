@@ -9,6 +9,7 @@ import f.cking.software.domain.interactor.VendorIdentifier
 import f.cking.software.domain.model.DeviceData
 import f.cking.software.domain.model.DeviceFilter
 import f.cking.software.domain.model.ManufacturerInfo
+import f.cking.software.domain.model.Transport
 
 class FilterCheckerImpl(
     private val powerModeHelper: PowerModeHelper,
@@ -56,14 +57,9 @@ class FilterCheckerImpl(
         deviceTypeName in filter.typeNames
     }
     private val transportFilter = filterChecker<DeviceFilter.TransportFilter>(useCache = true) { device, filter ->
-        // Mirror DeviceFilterSqlBuilder's BREDR-includes-DUAL semantics: anything seen on the
-        // BR/EDR radio matches the BTC chip whether or not it also showed up on LE.
-        val deviceOrdinal = device.transport.ordinal
-        if (filter.includeDual && filter.transportOrdinal != f.cking.software.domain.model.Transport.DUAL.ordinal) {
-            deviceOrdinal == filter.transportOrdinal || deviceOrdinal == f.cking.software.domain.model.Transport.DUAL.ordinal
-        } else {
-            deviceOrdinal == filter.transportOrdinal
-        }
+        // Delegate to [Transport.matchingOrdinalsForFilter] so this path and the SQL pushdown
+        // in [DeviceFilterSqlBuilder] agree by construction on the BTC-includes-DUAL contract.
+        device.transport.ordinal in Transport.matchingOrdinalsForFilter(filter.transportOrdinal, filter.includeDual)
     }
     private val hasGatt = filterChecker<DeviceFilter.HasGatt>(useCache = true) { device, filter ->
         // 5s-cached set lookup; under typical load this hits the cache for an entire scan

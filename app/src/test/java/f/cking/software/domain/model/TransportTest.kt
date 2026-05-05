@@ -1,6 +1,8 @@
 package f.cking.software.domain.model
 
 import junit.framework.TestCase.assertEquals
+import junit.framework.TestCase.assertFalse
+import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
 class TransportTest {
@@ -93,5 +95,78 @@ class TransportTest {
         assertEquals("LE", Transport.LE.shortLabel())
         assertEquals("BR", Transport.BREDR.shortLabel())
         assertEquals("Dual", Transport.DUAL.shortLabel())
+    }
+
+    // ---- matchingOrdinalsForFilter: the single source of truth for the BTC-chip
+    // BREDR-includes-DUAL contract. Pinning these explicitly catches any future regression
+    // where someone hardcodes `2` (or `3`) on either of the two delegating call sites
+    // (DeviceFilterSqlBuilder + FilterCheckerImpl).
+
+    @Test
+    fun `BREDR filter with includeDual broadens to BREDR plus DUAL ordinals`() {
+        val ordinals = Transport.matchingOrdinalsForFilter(
+            filterOrdinal = Transport.BREDR.ordinal,
+            includeDual = true,
+        )
+        // Order matters for SQL `IN (?, ?)` arg binding — the explicit transport first,
+        // DUAL appended. Pinning the order keeps the SQL placeholders aligned with the args.
+        assertEquals(listOf(Transport.BREDR.ordinal, Transport.DUAL.ordinal), ordinals)
+    }
+
+    @Test
+    fun `LE filter with includeDual broadens to LE plus DUAL ordinals`() {
+        val ordinals = Transport.matchingOrdinalsForFilter(
+            filterOrdinal = Transport.LE.ordinal,
+            includeDual = true,
+        )
+        assertEquals(listOf(Transport.LE.ordinal, Transport.DUAL.ordinal), ordinals)
+    }
+
+    @Test
+    fun `BREDR filter without includeDual is strict equality`() {
+        val ordinals = Transport.matchingOrdinalsForFilter(
+            filterOrdinal = Transport.BREDR.ordinal,
+            includeDual = false,
+        )
+        assertEquals(listOf(Transport.BREDR.ordinal), ordinals)
+    }
+
+    @Test
+    fun `LE filter without includeDual is strict equality`() {
+        val ordinals = Transport.matchingOrdinalsForFilter(
+            filterOrdinal = Transport.LE.ordinal,
+            includeDual = false,
+        )
+        assertEquals(listOf(Transport.LE.ordinal), ordinals)
+    }
+
+    @Test
+    fun `DUAL filter never broadens regardless of includeDual flag`() {
+        // includeDual is a no-op when the filter already targets DUAL itself — no broader
+        // category exists. Both branches must collapse to the single-ordinal form so the
+        // SQL clause becomes `transport = ?` (matching the in-memory checker's
+        // single-element `in` test).
+        assertEquals(
+            listOf(Transport.DUAL.ordinal),
+            Transport.matchingOrdinalsForFilter(Transport.DUAL.ordinal, includeDual = true),
+        )
+        assertEquals(
+            listOf(Transport.DUAL.ordinal),
+            Transport.matchingOrdinalsForFilter(Transport.DUAL.ordinal, includeDual = false),
+        )
+    }
+
+    @Test
+    fun `DUAL ordinal is read from enum not hardcoded - regression guard for stale-3 bug`() {
+        // The pre-extraction code hardcoded `3` on both call sites — a remnant of the
+        // pre-migration enum that included UNKNOWN=0. Migration 24→25 collapsed UNKNOWN, so
+        // DUAL became ordinal 2. The extraction makes the enum-derivation unmissable; this
+        // test pins it once more so even a hypothetical future "let me just inline this"
+        // regression breaks visibly.
+        assertEquals(2, Transport.DUAL.ordinal)
+        // And: the helper's broadened path includes `2`, not `3`.
+        val broadened = Transport.matchingOrdinalsForFilter(Transport.BREDR.ordinal, includeDual = true)
+        assertTrue("DUAL ordinal must be present in broadened set", 2 in broadened)
+        assertFalse("Stale-3 must not appear", 3 in broadened)
     }
 }

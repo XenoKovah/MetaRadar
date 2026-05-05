@@ -102,17 +102,21 @@ class BulkEnumerateGattInteractor(
 
         // Initial snapshot: count vendor-pre-filtered devices for the Started progress event so
         // the user sees "(N pre-skipped)" up front. The same vendor filter is re-applied on each
-        // re-snapshot below.
+        // re-snapshot below. Selection logic lives in [BulkEnumerateCandidateSelection] so it
+        // can be JVM-unit-tested independently of this interactor's full dependency tree.
         val initialSnapshot = devicesRepository.observeLastBatch().first().toList()
         val initialConnectable = initialSnapshot.filter { it.isConnectable }
-        val initialAdvSkippedCount = initialConnectable.count { d ->
-            d.address.uppercase() !in normalizedSkip &&
-                vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)
-        }
-        val initialCandidateCount = initialConnectable.count { d ->
-            d.address.uppercase() !in normalizedSkip &&
-                !vendorIdentifier.shouldSkip(d, skipApple, skipSamsung)
-        }
+        val shouldSkipVendor: (DeviceData) -> Boolean = { vendorIdentifier.shouldSkip(it, skipApple, skipSamsung) }
+        val initialAdvSkippedCount = BulkEnumerateCandidateSelection.countAdvSkipped(
+            connectable = initialConnectable,
+            normalizedSkipAddresses = normalizedSkip,
+            shouldSkipVendor = shouldSkipVendor,
+        )
+        val initialCandidateCount = BulkEnumerateCandidateSelection.countCandidatesBeforeAttemptCap(
+            connectable = initialConnectable,
+            normalizedSkipAddresses = normalizedSkip,
+            shouldSkipVendor = shouldSkipVendor,
+        )
         // Note: Started.total is sent below after [frozenCandidates] is built, so it reflects
         // the actual attempt count (initialCandidateCount minus the per-pass max-retries cap).
 
@@ -142,11 +146,13 @@ class BulkEnumerateGattInteractor(
         // build it ONCE here and pop from it per worker; once empty, all workers exit and
         // the pass completes cleanly.
         val frozenCandidates: ArrayDeque<DeviceData> = ArrayDeque(
-            initialConnectable
-                .filter { it.address.uppercase() !in normalizedSkip }
-                .filter { (attemptCounts[it.address.uppercase()] ?: 0) < maxAttemptsPerDevice }
-                .filterNot { vendorIdentifier.shouldSkip(it, skipApple, skipSamsung) }
-                .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+            BulkEnumerateCandidateSelection.selectFrozenCandidates(
+                connectable = initialConnectable,
+                normalizedSkipAddresses = normalizedSkip,
+                attemptCounts = attemptCounts,
+                maxAttemptsPerDevice = maxAttemptsPerDevice,
+                shouldSkipVendor = shouldSkipVendor,
+            )
         )
         send(Progress.Started(total = frozenCandidates.size, skippedAdvFilter = initialAdvSkippedCount))
 

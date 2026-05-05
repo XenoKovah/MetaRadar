@@ -52,5 +52,26 @@ enum class Transport {
             // One is LE and the other is BREDR.
             else -> DUAL
         }
+
+        /**
+         * Ordinals that match a [DeviceFilter.TransportFilter]. Single source of truth for the
+         * BTC chip's "BREDR includes DUAL" semantics — both the SQL pushdown
+         * ([f.cking.software.data.repo.DeviceFilterSqlBuilder]) and the in-memory checker
+         * ([f.cking.software.domain.interactor.filterchecker.FilterCheckerImpl]) delegate here so
+         * the two paths can't drift. Reads [DUAL.ordinal] off the enum (not the literal `2`) so
+         * a future schema migration that reorders the enum can't silently corrupt either path.
+         *
+         * Returns one element when the filter targets DUAL itself (no broadening — DUAL ⊆ DUAL)
+         * or when [includeDual] is off; two elements when the filter targets LE or BREDR with
+         * DUAL inclusion enabled.
+         */
+        fun matchingOrdinalsForFilter(filterOrdinal: Int, includeDual: Boolean): List<Int> {
+            val dualOrdinal = DUAL.ordinal
+            return if (includeDual && filterOrdinal != dualOrdinal) {
+                listOf(filterOrdinal, dualOrdinal)
+            } else {
+                listOf(filterOrdinal)
+            }
+        }
     }
 }
