@@ -327,19 +327,10 @@ fun DeviceListItem(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            // Suppress the leading icon when CoD didn't classify the device — that's the
-            // overwhelming majority of LE-only rows (LE has no CoD), and the question-mark
-            // placeholder added rendering cost (Icon + tinted CircleShape background +
-            // painterResource lookup + colorByHash) without conveying any information. CoD-
-            // identified BR/EDR devices keep their meaningful icon.
-            if (device.resolvedDeviceClass !is DeviceClass.Unknown) {
-                DeviceTypeIcon(
-                    modifier = Modifier.size(64.dp),
-                    device = device,
-                )
-                Spacer(Modifier.width(16.dp))
-            }
-
+            // CoD circle-icon was removed (Devices view + Connect All) — the "AudioVideo from
+            // 0x180F advertised UUID" heuristic mis-classified BLE peripherals like UVP01,
+            // and the user found the icons distracting + low-information. The transport badge
+            // + manufacturer line carry the actually-useful identity bits.
             Column {
                 Row(verticalAlignment = Alignment.Top) {
                     if (device.isPaired) {
@@ -530,7 +521,9 @@ private enum class ExtendedAddressInfoChip(
     PUBLIC(
         titleRes = R.string.address_type_public_tag,
         descriptionRes = R.string.address_type_public_description,
-        bodyRes = R.string.address_private_disclamer,
+        // Public is permanent — surface the "trackable" disclaimer + Android <15 caveat
+        // rather than the privacy-rotation blurb that applies to the random variants.
+        bodyRes = R.string.address_trackable_disclaimer,
         color = { colorResource(R.color.address_tag_stp) },
     ),
     BTC(
@@ -544,7 +537,9 @@ private enum class ExtendedAddressInfoChip(
     RANDOM(
         titleRes = R.string.address_type_random_static_tag,
         descriptionRes = R.string.address_type_random_static_description,
-        bodyRes = R.string.address_private_disclamer,
+        // Random Static, like Public, is set once and never rotates — share the trackable
+        // disclaimer with the PUBLIC chip so the user gets the same warning text.
+        bodyRes = R.string.address_trackable_disclaimer,
         color = { colorResource(R.color.address_tag_rst) },
     ),
     NON_RESOLVABLE(

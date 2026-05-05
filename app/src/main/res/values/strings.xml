@@ -85,29 +85,58 @@
     <string name="database_was_restored">Database was restored from backup</string>
     <string name="backup_has_succeeded">Backup has succeeded</string>
     <string name="garbage_has_cleared">Cleared %s garbage devices</string>
+    <string name="btidalpool_section_title">BTIDALPOOL upload</string>
+    <string name="btidalpool_section_description">Share your captured BTIDES data with the BTIDALPOOL research server. SSO with any throwaway Google account to authenticate; uploads use the same merged BTIDES JSON as the ADB export.</string>
+    <string name="btidalpool_sign_in_button">Sign in with Google</string>
+    <string name="btidalpool_sign_out_button">Sign out</string>
+    <string name="btidalpool_signed_in_as">Signed in as %1$s</string>
+    <string name="btidalpool_signed_out">BTIDALPOOL signed out</string>
+    <string name="btidalpool_signin_failed">BTIDALPOOL sign-in failed</string>
+    <string name="btidalpool_paste_dialog_title">Paste BTIDALPOOL token</string>
+    <string name="btidalpool_paste_dialog_subtitle">Open the link in your browser, finish Google sign-in, then copy the JSON token shown on the redirect page and paste it here.</string>
+    <string name="btidalpool_paste_field_hint">{\"token\":\"…\",\"refresh_token\":\"…\"}</string>
+    <string name="btidalpool_paste_submit">Use token</string>
+    <string name="btidalpool_use_test_db_title">Use test database</string>
+    <string name="btidalpool_use_test_db_subtitle">Route uploads to the server\'s alternate bttest database instead of the production pool. Mirrors the BTIDES_to_BTIDALPOOL.py --use-test-db flag.</string>
+    <string name="btidalpool_upload_current_button">Upload current BTIDES log to BTIDALPOOL</string>
+    <string name="btidalpool_upload_all_button">Upload all BTIDES logs to BTIDALPOOL</string>
+    <string name="btidalpool_upload_failed_with_reason">BTIDALPOOL upload failed: %1$s</string>
+    <string name="btidalpool_status_dialog_title">BTIDALPOOL upload</string>
+    <string name="btidalpool_status_dialog_ok">OK</string>
+    <string name="btidalpool_not_signed_in">Sign in with Google before uploading.</string>
+    <string name="btidalpool_upload_log_succeeded">%1$s — uploaded (%2$d devices)</string>
+    <string name="btidalpool_upload_log_already_present">%1$s — already on server</string>
+    <string name="btidalpool_upload_log_auth_failed">%1$s — auth failed; sign in again</string>
+    <string name="btidalpool_upload_log_empty">%1$s — empty, nothing to upload</string>
+    <string name="btidalpool_upload_log_failed">%1$s — failed: %2$s</string>
     <string name="btides_section_title">BTIDES export</string>
-    <string name="btides_section_description">Save advertisement data captured while scanning to a JSON file using the BTIDES schema (https://github.com/darkmentorllc/BTIDES_Schema).</string>
+    <string name="btides_section_description">Save Bluetooth data captured while scanning to a JSON file using the BTIDES schema (https://github.com/darkmentorllc/BTIDES_Schema). Logs are rotated automatically per day, and again whenever you upload to BTIDALPOOL.</string>
     <string name="btides_log_size">BTIDES log size: %s</string>
     <string name="btides_export_to_file">Export BTIDES file…</string>
-    <string name="btides_export_for_adb">Save BTIDES file for ADB pull</string>
+    <string name="btides_export_for_adb">Save BTIDES files for ADB pull</string>
     <string name="btides_export_cancel_title">Cancel BTIDES export?</string>
     <string name="btides_export_cancel_subtitle">Stop the in-progress export. The partially-written file will be deleted.</string>
     <string name="btides_export_cancelled">BTIDES export cancelled</string>
-    <string name="btides_clear_log">Clear BTIDES log</string>
-    <string name="btides_clear_log_confirm_title">Delete BTIDES capture log?</string>
-    <string name="btides_clear_log_confirm_subtitle">All advertisements captured so far will be removed.</string>
+    <string name="btides_clear_current_log">Clear current BTIDES log</string>
+    <string name="btides_clear_all_logs">Clear all BTIDES logs</string>
+    <string name="btides_clear_current_log_confirm_title">Delete current BTIDES capture log?</string>
+    <string name="btides_clear_current_log_confirm_subtitle">Advertisements captured into the active log will be removed. Rotated archives are kept.</string>
+    <string name="btides_clear_all_logs_confirm_title">Delete all BTIDES capture logs?</string>
+    <string name="btides_clear_all_logs_confirm_subtitle">The active log AND every rotated archive (per-day and post-upload) will be removed.</string>
     <string name="btides_export_succeeded">BTIDES file written (%1$d devices)</string>
-    <string name="btides_export_for_adb_succeeded">BTIDES file ready at %1$s (%2$d devices)</string>
+    <string name="btides_export_for_adb_succeeded">Saved %1$d BTIDES files to %2$s (%3$d devices total)</string>
+    <string name="btides_export_for_adb_empty">No BTIDES logs to export.</string>
     <string name="btides_export_failed">BTIDES export failed. See report in the Error Logs</string>
-    <string name="btides_log_was_cleared">BTIDES capture log was cleared</string>
+    <string name="btides_current_log_was_cleared">Current BTIDES log was cleared</string>
+    <string name="btides_all_logs_were_cleared">All BTIDES logs were cleared</string>
     <string name="btides_export_dialog_title">Export BTIDES file?</string>
     <string name="btides_export_dialog_subtitle">A JSON file conforming to BTIDES_base.json will be written to the location you choose.</string>
     <string name="bulk_gatt_skip_apple_title">Skip Apple devices</string>
     <string name="bulk_gatt_skip_apple_subtitle">Skip devices identified by Apple MSD company ID, IEEE OUI, BT SIG member UUID, or CLUES UUID attribution.</string>
     <string name="bulk_gatt_skip_samsung_title">Skip Samsung devices</string>
-    <string name="bulk_gatt_skip_samsung_subtitle">Same matching rules as Apple, against Samsung allocations.</string>
+    <string name="bulk_gatt_skip_samsung_subtitle">Same matching rules as Apple, for Samsung.</string>
     <string name="bulk_gatt_retry_forever_title">Retry forever</string>
-    <string name="bulk_gatt_retry_forever_subtitle">After every pass, immediately start another. Devices that already gave us their full GATT are never retried.</string>
+    <string name="bulk_gatt_retry_forever_subtitle">After every pass, immediately start another. Devices that have already completed service enumeration are never retried.</string>
     <string name="connect_all_errors_none">No errors this pass.</string>
     <string name="connect_all_description">Connect to every visible connectable device in RSSI order (strongest first) and capture GATT enumeration into the BTIDES log. The vendor filters below are enforced both at advertisement time and mid-enumeration: any device whose service UUIDs match a filtered vendor is dropped from the log.</string>
     <string name="connect_all_start">Connect to all connectable devices</string>
@@ -174,6 +203,7 @@
 
     <!-- GATT services section header in DeviceDetails (BR/EDR-aware) -->
     <string name="device_details_gatt_services_header">GATT: %1$d Services / %2$d Characteristics discovered</string>
+    <string name="device_details_advertised_services_header">Advertised LE service UUIDs: %1$d</string>
 
     <!-- Select manufacturer -->
     <string name="select_manufacturer">Search manufacturer</string>
@@ -234,10 +264,11 @@
     <string name="address_type_resolvable_private_tag" translatable="false">RPA</string>
 
     <string name="address_type_public_description">Static public address (trackable)</string>
-    <string name="address_type_random_static_description">Random static address (tracking is limited)</string>
-    <string name="address_type_non_resolvable_description">Not resolvable private address (usually not trackable)</string>
-    <string name="address_type_resolvable_private_description">Resolvable private address (usually not trackable)</string>
-    <string name="address_private_disclamer">Some devices will rotate their addresses to keep them private and avoid tracking. This label is not very accurate, but might help to distinguish the privacy level.</string>
+    <string name="address_type_random_static_description">Random static address (trackable)</string>
+    <string name="address_type_non_resolvable_description">Not resolvable private address (potentially not trackable)</string>
+    <string name="address_type_resolvable_private_description">Resolvable private address (potentially not trackable)</string>
+    <string name="address_trackable_disclaimer">This type of address is not changed over time. Therefore it is trackable. Note: Android &lt; 15 did not have a proper way to distinguish the BLE \'Public\' type from the 3x BLE \'Random\' address types. Therefore this address type may not be accurate.</string>
+    <string name="address_private_disclamer">This address type is meant to be not trackable. However if there is some other unique and unchanging information such as a unique name, serial number, etc, then it still may be trackable based on that, rather than based on the address. Note: Android &lt; 15 did not have a proper way to distinguish the BLE \'Public\' type from the 3x BLE \'Random\' address types. Therefore this address type may not be accurate.</string>
 
     <!-- Devices List -->
     <string name="custom_filter">Custom filter</string>
@@ -247,13 +278,9 @@
     <string name="close_search">Close search</string>
     <string name="clear_search">Clear search</string>
     <string name="not_apple">Not Apple</string>
+    <string name="not_samsung">Not Samsung</string>
+    <string name="filter_gatt">GATT</string>
     <string name="uuid_name_unknown">Unknown</string>
-    <string name="enjoy_the_app_question">Do you like this app?</string>
-    <string name="enjoy_the_app_yes">Yes</string>
-    <string name="enjoy_the_app_not_really">Not really</string>
-    <string name="enjoy_the_app_ask_later">Ask me later</string>
-    <string name="rate_the_app">Glad to hear this, can you rate the app?</string>
-    <string name="rate_the_app_github" translatable="false">GitHub</string>
     <string name="report_the_problem">We are sorry to hear this. You can provide your feedback in the GitHub issues</string>
     <string name="current_batch_title">Devices around you</string>
     <string name="current_batch_empty">No devices have been found yet</string>
@@ -284,8 +311,8 @@
     <string name="device_history_pint_style_hide_markers">Hide non-best-fit markers</string>
     <string name="device_history_pint_style_heatmap">Range heatmap</string>
     <string name="time_ago">%s ago</string>
-    <string name="lifetime_data_last_update">lifetime: %1$s | last update: %2$s ago</string>
-    <string name="lifetime_data">lifetime: %1$s</string>
+    <string name="lifetime_data_last_update">Max duration seen: %1$s | last update: %2$s ago</string>
+    <string name="lifetime_data">Max duration seen: %1$s</string>
     <string name="device_list_placeholder">No data yet. To start scanning, click on the Scan button</string>
     <string name="silent_mode_is_enabled_disclaimer">The map is not available in the offline mode. To see the map disable the offline mode first.</string>
     <string name="rssi_value">%s dBm</string>

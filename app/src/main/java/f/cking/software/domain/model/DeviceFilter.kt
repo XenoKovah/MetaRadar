@@ -58,6 +58,16 @@ sealed class DeviceFilter(@Transient protected val checkDifficulty: Int = 0) {
     @SerialName("address_type")
     data class AddressType(val typeNames: List<String>) : DeviceFilter()
 
+    /**
+     * Match devices that have at least one GATT (services + characteristics) record captured
+     * in the BTIDES log. Used by the "GATT" quick-filter on the Devices tab to surface only
+     * devices Connect All has actually enumerated. Cannot be SQL-pushed — GATT data lives in
+     * the BTIDES sidecar index, not the Room schema — so the Kotlin filter chain handles it.
+     */
+    @Serializable
+    @SerialName("has_gatt")
+    data class HasGatt(val hasGatt: Boolean) : DeviceFilter(checkDifficulty = 1)
+
     @Serializable
     @SerialName("any")
     data class Any(val filters: List<DeviceFilter>) : DeviceFilter(checkDifficulty = 1) {

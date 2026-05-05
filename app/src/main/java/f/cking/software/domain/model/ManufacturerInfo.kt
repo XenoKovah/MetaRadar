@@ -15,5 +15,6 @@ data class ManufacturerInfo(
 
     companion object {
         const val APPLE_ID = 0x004C
+        const val SAMSUNG_ID = 0x0075
     }
 }

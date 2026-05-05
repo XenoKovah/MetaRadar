@@ -211,7 +211,14 @@ class BrEdrDiscoveryHelper(
             addressType = ADDRESS_TYPE_PUBLIC,
             deviceClass = cls?.deviceClass,
             isPaired = device.bondState == BluetoothDevice.BOND_BONDED,
-            serviceUuids = device.uuids?.map { it.uuid.toString() }.orEmpty(),
+            // Intentionally left empty. `device.uuids` here returns the system's cached SDP
+            // *service-class* UUIDs from a prior bond — but feeding them into BleScanDevice's
+            // `serviceUuids` field drops them into `DeviceData.servicesUuids`, which is the
+            // LE GATT advertised-services bucket. The DeviceDetails screen then displays
+            // them under the "GATT" section, where they very much do not belong (they're
+            // BR/EDR Audio Source / AVRCP / MAP / MFi iAP, not LE GATT services). The
+            // explicit SDP enumeration path persists these correctly into `sdp_uuids`.
+            serviceUuids = emptyList(),
             // BR/EDR devices that responded to inquiry ARE connectable in the only sense
             // Connect-All cares about — we can issue an SDP fetch (and possibly a GATT-over-
             // BR/EDR connect on dual-mode peers). The LE-flavoured "connectable advertisement"

@@ -129,6 +129,16 @@ class DeviceDetailsViewModel(
         val uuid: String,
         val characteristics: List<CharacteristicData>,
         val clues: CluesInfo? = null,
+        /**
+         * True when this entry came from an actual GATT enumeration (live `connectGatt` +
+         * `discoverServices`, or a cached BTIDES GATT record). False when it's just a UUID
+         * listed in the LE advertisement's Service-UUIDs field — Apple in particular
+         * advertises classic-style SDP UUIDs (Audio Source 0x110A, AVRCP 0x110E, MFi iAP)
+         * over LE which look identical to GATT services on the wire but were never actually
+         * GATT-enumerated. Splitting on this flag keeps the "GATT: N services discovered"
+         * header honest.
+         */
+        val wasEnumerated: Boolean = false,
     )
 
     /** One SDP service-class UUID resolved through CLUES for display. */
@@ -420,6 +430,8 @@ class DeviceDetailsViewModel(
             uuid = service.uuid.toString(),
             characteristics = service.characteristics.map { mapCharacteristic(it) },
             clues = lookupClues(service.uuid.toString()),
+            // Live `connectGatt` + `discoverServices` produced this — count it under GATT.
+            wasEnumerated = true,
         )
     }
 
@@ -708,6 +720,8 @@ class DeviceDetailsViewModel(
                 uuid = uuid,
                 characteristics = chars,
                 clues = lookupClues(uuid),
+                // BTIDES cache only stores rows from successful GATT enumerations — count it.
+                wasEnumerated = true,
             )
         }
         return out

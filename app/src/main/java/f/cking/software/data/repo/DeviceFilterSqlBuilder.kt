@@ -60,10 +60,13 @@ object DeviceFilterSqlBuilder {
         }
 
         is DeviceFilter.Manufacturer -> {
-            if (filter.manufacturerId == ManufacturerInfo.APPLE_ID) {
-                // The Apple case routes through VendorIdentifier so iBeacon-shaped MSDs from
-                // Tesla/Estimote etc. don't get classified as Apple. That decision needs the
-                // raw scan record bytes, which aren't usefully queryable from SQL.
+            if (filter.manufacturerId == ManufacturerInfo.APPLE_ID ||
+                filter.manufacturerId == ManufacturerInfo.SAMSUNG_ID
+            ) {
+                // Apple + Samsung route through VendorIdentifier so the broadened classification
+                // (iBeacon-shaped MSDs / OUI / advertised UUIDs) matches Connect All's
+                // Skip-Apple / Skip-Samsung toggles. That decision needs raw scan bytes, which
+                // aren't usefully queryable from SQL.
                 Result.NotPushable
             } else {
                 Result.Pushable("manufacturer_id = ?", listOf(filter.manufacturerId))
@@ -88,6 +91,9 @@ object DeviceFilterSqlBuilder {
         // hints (see BuildExtendedAddressInfoInteractor), not stored as its own column. The
         // in-Kotlin filter chain runs on the cached extendedAddressInfo() per device.
         is DeviceFilter.AddressType,
+        // GATT presence lives in the BTIDES sidecar index, not a Room column. The Kotlin
+        // filter path consults BTIDESRepository.addressesWithGatt() (5s-cached set lookup).
+        is DeviceFilter.HasGatt,
             -> Result.NotPushable
     }
 

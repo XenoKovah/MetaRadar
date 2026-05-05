@@ -143,12 +143,20 @@ object ParseBleAdRecord {
     }
 
     private fun parseUri(data: ByteArray): List<Field> {
-        if (data.size < 2) return emptyList()
-        val scheme = ((data[1].toInt() and 0xFF) shl 8) or (data[0].toInt() and 0xFF)
-        val uriBody = String(data.copyOfRange(2, data.size), Charsets.UTF_8)
+        if (data.isEmpty()) return emptyList()
+        // BT Core Spec § 1.10.27: AD type 0x24 (URI) is `<UTF-8 scheme code><UTF-8 URI body>`.
+        // The scheme code is the SIG-assigned single-byte index into URI_SCHEMES (the older
+        // implementation read it as a little-endian uint16, which both consumed an extra body
+        // byte and produced garbage scheme labels — e.g. a UVP-style "https://DarkMentor.com"
+        // payload was rendering with a bogus scheme + a body shifted by one byte).
+        val schemeCode = data[0].toInt() and 0xFF
+        val schemeName = URI_SCHEMES[schemeCode]
+        val body = String(data.copyOfRange(1, data.size), Charsets.UTF_8)
+        val schemeLabel = schemeName ?: "(unknown 0x${"%02X".format(schemeCode)})"
+        val fullUri = if (schemeName != null) schemeName + body else body
         return listOf(
-            Field("URI scheme", "0x${"%04X".format(scheme)}"),
-            Field("URI", uriBody),
+            Field("URI scheme", "0x${"%02X".format(schemeCode)} ($schemeLabel)"),
+            Field("URI", fullUri),
         )
     }
 
@@ -250,4 +258,101 @@ object ParseBleAdRecord {
     private const val IBEACON_LENGTH = 0x15
     // 2 bytes (subtype + length) + 16-byte UUID + 2-byte Major + 2-byte Minor + 1-byte TX power.
     private const val IBEACON_PAYLOAD_LEN = 23
+
+    /**
+     * Bluetooth SIG Assigned Numbers — URI scheme codes used by AD type 0x24 (URI). The full
+     * table from
+     * https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/uri_schemes/uri_scheme_name.yaml
+     * — most BLE devices in the wild advertise `https:` (0x16) with a body of `//hostname/…`
+     * which reconstitutes to `https://hostname/…`.
+     */
+    private val URI_SCHEMES: Map<Int, String> = mapOf(
+        0x01 to "aaa:",
+        0x02 to "aaas:",
+        0x03 to "about:",
+        0x04 to "acap:",
+        0x05 to "acct:",
+        0x06 to "cap:",
+        0x07 to "cid:",
+        0x08 to "coap:",
+        0x09 to "coaps:",
+        0x0A to "crid:",
+        0x0B to "data:",
+        0x0C to "dav:",
+        0x0D to "dict:",
+        0x0E to "dns:",
+        0x0F to "file:",
+        0x10 to "ftp:",
+        0x11 to "geo:",
+        0x12 to "go:",
+        0x13 to "gopher:",
+        0x14 to "h323:",
+        0x15 to "http:",
+        0x16 to "https:",
+        0x17 to "iax:",
+        0x18 to "icap:",
+        0x19 to "im:",
+        0x1A to "imap:",
+        0x1B to "info:",
+        0x1C to "ipp:",
+        0x1D to "ipps:",
+        0x1E to "iris:",
+        0x1F to "iris.beep:",
+        0x20 to "iris.xpc:",
+        0x21 to "iris.xpcs:",
+        0x22 to "iris.lwz:",
+        0x23 to "jabber:",
+        0x24 to "ldap:",
+        0x25 to "mailto:",
+        0x26 to "mid:",
+        0x27 to "msrp:",
+        0x28 to "msrps:",
+        0x29 to "mtqp:",
+        0x2A to "mupdate:",
+        0x2B to "news:",
+        0x2C to "nfs:",
+        0x2D to "ni:",
+        0x2E to "nih:",
+        0x2F to "nntp:",
+        0x30 to "opaquelocktoken:",
+        0x31 to "pop:",
+        0x32 to "pres:",
+        0x33 to "reload:",
+        0x34 to "rtsp:",
+        0x35 to "rtsps:",
+        0x36 to "rtspu:",
+        0x37 to "service:",
+        0x38 to "session:",
+        0x39 to "shttp:",
+        0x3A to "sieve:",
+        0x3B to "sip:",
+        0x3C to "sips:",
+        0x3D to "sms:",
+        0x3E to "snmp:",
+        0x3F to "soap.beep:",
+        0x40 to "soap.beeps:",
+        0x41 to "stun:",
+        0x42 to "stuns:",
+        0x43 to "tag:",
+        0x44 to "tel:",
+        0x45 to "telnet:",
+        0x46 to "tftp:",
+        0x47 to "thismessage:",
+        0x48 to "tn3270:",
+        0x49 to "tip:",
+        0x4A to "turn:",
+        0x4B to "turns:",
+        0x4C to "tv:",
+        0x4D to "urn:",
+        0x4E to "vemmi:",
+        0x4F to "ws:",
+        0x50 to "wss:",
+        0x51 to "xcon:",
+        0x52 to "xcon-userid:",
+        0x53 to "xmlrpc.beep:",
+        0x54 to "xmlrpc.beeps:",
+        0x55 to "xmpp:",
+        0x56 to "z39.50r:",
+        0x57 to "z39.50s:",
+    )
 }

@@ -1,6 +1,7 @@
 package f.cking.software.domain.interactor.filterchecker
 
 import f.cking.software.checkRegexSafe
+import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.helpers.PowerModeHelper
 import f.cking.software.domain.interactor.CheckDeviceLocationHistoryInteractor
 import f.cking.software.domain.interactor.CheckUserLocationHistoryInteractor
@@ -14,6 +15,7 @@ class FilterCheckerImpl(
     private val checkDeviceLocationHistoryInteractor: CheckDeviceLocationHistoryInteractor,
     private val checkUserLocationHistoryInteractor: CheckUserLocationHistoryInteractor,
     private val vendorIdentifier: VendorIdentifier,
+    private val btidesRepository: BTIDESRepository,
 ) : FilterChecker<DeviceFilter>(powerModeHelper) {
 
     private val internalFilters: MutableList<FilterChecker<*>> = mutableListOf()
@@ -34,13 +36,14 @@ class FilterCheckerImpl(
     }
     private val manufacturer = filterChecker<DeviceFilter.Manufacturer>(useCache = true) { device, filter ->
         // Apple's company id (0x004C) is also used by every iBeacon transmitter, including
-        // non-Apple vendors like Tesla and Estimote. Defer to VendorIdentifier so the "Not
-        // Apple" filter (and any user-built `Manufacturer(Apple)` filter) doesn't fold those
-        // beacons in. For every other vendor, the cheap stored-id comparison is fine.
-        if (filter.manufacturerId == ManufacturerInfo.APPLE_ID) {
-            vendorIdentifier.isApple(device)
-        } else {
-            device.manufacturerInfo?.id?.let { it == filter.manufacturerId } ?: false
+        // non-Apple vendors like Tesla and Estimote. Samsung gets a similar broadened check
+        // (OUI + advertised UUIDs) via VendorIdentifier so the "Not Samsung" quick-filter
+        // matches the same set Connect All's "Skip Samsung" toggle excludes. Other vendors
+        // use the cheap stored-id comparison.
+        when (filter.manufacturerId) {
+            ManufacturerInfo.APPLE_ID -> vendorIdentifier.isApple(device)
+            ManufacturerInfo.SAMSUNG_ID -> vendorIdentifier.isSamsung(device)
+            else -> device.manufacturerInfo?.id?.let { it == filter.manufacturerId } ?: false
         }
     }
     private val isPaired = filterChecker<DeviceFilter.IsPaired> { device, filter ->
@@ -61,6 +64,13 @@ class FilterCheckerImpl(
         } else {
             deviceOrdinal == filter.transportOrdinal
         }
+    }
+    private val hasGatt = filterChecker<DeviceFilter.HasGatt>(useCache = true) { device, filter ->
+        // 5s-cached set lookup; under typical load this hits the cache for an entire scan
+        // batch's worth of filter evaluations.
+        val gattAddrs = btidesRepository.addressesWithGatt()
+        val present = device.address.uppercase() in gattAddrs
+        present == filter.hasGatt
     }
     private val any = filterChecker<DeviceFilter.Any> { device, filter ->
         filter.filters
@@ -90,6 +100,7 @@ class FilterCheckerImpl(
             is DeviceFilter.IsPaired -> isPaired.check(deviceData, filter)
             is DeviceFilter.AddressType -> addressType.check(deviceData, filter)
             is DeviceFilter.TransportFilter -> transportFilter.check(deviceData, filter)
+            is DeviceFilter.HasGatt -> hasGatt.check(deviceData, filter)
             is DeviceFilter.Any -> any.check(deviceData, filter)
             is DeviceFilter.All -> all.check(deviceData, filter)
             is DeviceFilter.Not -> not.check(deviceData, filter)

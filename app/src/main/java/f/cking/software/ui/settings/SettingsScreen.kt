@@ -16,13 +16,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -66,6 +72,8 @@ object SettingsScreen {
             AppSettings(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             DatabaseBlock(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
+            BtidalpoolBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             BTIDESBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
@@ -182,6 +190,214 @@ object SettingsScreen {
     }
 
     @Composable
+    private fun BtidalpoolBlock(viewModel: SettingsViewModel) {
+        if (viewModel.btidalpoolPasteDialogVisible) {
+            BtidalpoolPasteTokenDialog(
+                inProgress = viewModel.btidalpoolSignInInProgress,
+                onSubmit = { viewModel.onBtidalpoolPasteSubmit(it) },
+                onDismiss = { viewModel.onBtidalpoolPasteDismiss() },
+            )
+        }
+        viewModel.btidalpoolStatusDialogMessage?.let { message ->
+            BtidalpoolStatusDialog(
+                message = message,
+                onDismiss = { viewModel.onBtidalpoolStatusDialogDismiss() },
+            )
+        }
+        RoundedBox {
+            Text(text = stringResource(R.string.btidalpool_section_title), fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = stringResource(R.string.btidalpool_section_description), fontWeight = FontWeight.Light)
+            Spacer(modifier = Modifier.height(8.dp))
+            val auth = viewModel.btidalpoolAuth
+            if (auth == null) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { viewModel.onBtidalpoolSignInClick() },
+                ) {
+                    Text(text = stringResource(R.string.btidalpool_sign_in_button), color = MaterialTheme.colorScheme.onPrimary)
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.btidalpool_signed_in_as, auth.email ?: "?"),
+                    fontWeight = FontWeight.Light,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Switcher(
+                    value = viewModel.btidalpoolUseTestDb,
+                    title = stringResource(R.string.btidalpool_use_test_db_title),
+                    subtitle = stringResource(R.string.btidalpool_use_test_db_subtitle),
+                    onClick = { viewModel.onToggleBtidalpoolUseTestDb() },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                UploadToBtidalpoolButton(
+                    viewModel = viewModel,
+                    label = stringResource(R.string.btidalpool_upload_current_button),
+                    onClick = { viewModel.onUploadCurrentBtidalpoolClick() },
+                    // Bumped to 16sp from the prior 14sp so the "current" label is bigger
+                    // than the default-sized "all" sibling — easier to spot at a glance for
+                    // the more common single-log upload.
+                    fontSize = 16.sp,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                UploadToBtidalpoolButton(
+                    viewModel = viewModel,
+                    label = stringResource(R.string.btidalpool_upload_all_button),
+                    onClick = { viewModel.onUploadAllBtidalpoolClick() },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { viewModel.onBtidalpoolSignOutClick() },
+                    enabled = !viewModel.btidalpoolUploadInProgress,
+                ) {
+                    Text(text = stringResource(R.string.btidalpool_sign_out_button), color = MaterialTheme.colorScheme.onPrimary)
+                }
+            }
+        }
+    }
+
+    /**
+     * Inline-progress upload button. Same fill-overlay pattern as [ExportBTIDESForADBButton]:
+     * while [SettingsViewModel.btidalpoolUploadInProgress] is true, a translucent overlay
+     * grows left-to-right tracking the export-then-network progress fraction. The flat
+     * disabled colour matches the enabled colour so the button doesn't dim during the work.
+     *
+     * Both Upload-current and Upload-all share this composable; only the label and click
+     * handler differ. The same VM progress state drives them — only one upload can run at a
+     * time, and both buttons reflect the same in-progress state.
+     */
+    @Composable
+    private fun UploadToBtidalpoolButton(
+        viewModel: SettingsViewModel,
+        label: String,
+        onClick: () -> Unit,
+        fontSize: androidx.compose.ui.unit.TextUnit = androidx.compose.ui.unit.TextUnit.Unspecified,
+    ) {
+        val inProgress = viewModel.btidalpoolUploadInProgress
+        val baseHeight = 40.dp
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(baseHeight),
+        ) {
+            val width = maxWidth
+            Button(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(percent = 50)),
+                onClick = onClick,
+                enabled = !inProgress && !viewModel.btidesInProgress,
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = MaterialTheme.colorScheme.primary,
+                    disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {}
+            if (inProgress) {
+                val animatedFraction by animateFloatAsState(
+                    targetValue = viewModel.btidalpoolUploadProgress.coerceIn(0f, 1f),
+                    animationSpec = tween(durationMillis = 200),
+                    label = "btidalpoolUploadFraction",
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(percent = 50))
+                        .fillMaxWidth(animatedFraction)
+                        .background(Color(0x554DB6AC)),
+                )
+            }
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                // Per-call-site font size: the "current" upload button passes 14sp explicitly
+                // for its longer label; the "all" button leaves it Unspecified to inherit the
+                // Compose Button default.
+                Text(text = label, color = MaterialTheme.colorScheme.onPrimary, fontSize = fontSize)
+            }
+            @Suppress("UNUSED_EXPRESSION") width
+        }
+    }
+
+    @Composable
+    private fun BtidalpoolStatusDialog(message: String, onDismiss: () -> Unit) {
+        // Modal acknowledgement: the only way out is the OK button. Uploads finish
+        // asynchronously and the user may have switched apps in the meantime, so a toast
+        // would be too easy to miss — especially on a duplicate / auth-failed result that
+        // changes whether they need to sign in again.
+        val dialogState = rememberMaterialDialogState(initialValue = true)
+        LaunchedEffect(dialogState.showing) {
+            if (!dialogState.showing) onDismiss()
+        }
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                positiveButton(
+                    text = stringResource(R.string.btidalpool_status_dialog_ok),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.btidalpool_status_dialog_title),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(text = message)
+            }
+        }
+    }
+
+    @Composable
+    private fun BtidalpoolPasteTokenDialog(
+        inProgress: Boolean,
+        onSubmit: (String) -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        val dialogState = rememberMaterialDialogState(initialValue = true)
+        LaunchedEffect(dialogState.showing) {
+            if (!dialogState.showing) onDismiss()
+        }
+        var pasted by remember { mutableStateOf("") }
+        ThemedDialog(
+            dialogState = dialogState,
+            buttons = {
+                negativeButton(
+                    text = stringResource(R.string.cancel),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) { dialogState.hide() }
+                positiveButton(
+                    text = stringResource(R.string.btidalpool_paste_submit),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) {
+                    onSubmit(pasted)
+                }
+            },
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.btidalpool_paste_dialog_title),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(text = stringResource(R.string.btidalpool_paste_dialog_subtitle))
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = pasted,
+                    onValueChange = { pasted = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !inProgress,
+                    placeholder = { Text(text = stringResource(R.string.btidalpool_paste_field_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                    singleLine = false,
+                    maxLines = 6,
+                )
+            }
+        }
+    }
+
+    @Composable
     private fun BTIDESBlock(viewModel: SettingsViewModel) {
         RoundedBox {
             Text(text = stringResource(R.string.btides_section_title), fontWeight = FontWeight.SemiBold)
@@ -200,7 +416,9 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(8.dp))
             ExportBTIDESButton(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
-            ClearBTIDESLogButton(viewModel = viewModel)
+            ClearCurrentBTIDESLogButton(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
+            ClearAllBTIDESLogsButton(viewModel = viewModel)
         }
     }
 
@@ -367,9 +585,41 @@ object SettingsScreen {
     }
 
     @Composable
-    private fun ClearBTIDESLogButton(viewModel: SettingsViewModel) {
-        val dialogState = rememberMaterialDialogState()
+    private fun ClearCurrentBTIDESLogButton(viewModel: SettingsViewModel) {
+        ConfirmingDestructiveBTIDESButton(
+            buttonLabel = stringResource(R.string.btides_clear_current_log),
+            confirmTitle = stringResource(R.string.btides_clear_current_log_confirm_title),
+            confirmSubtitle = stringResource(R.string.btides_clear_current_log_confirm_subtitle),
+            enabled = !viewModel.btidesInProgress,
+            onConfirm = { viewModel.onClearCurrentBTIDESLogClick() },
+        )
+    }
 
+    @Composable
+    private fun ClearAllBTIDESLogsButton(viewModel: SettingsViewModel) {
+        ConfirmingDestructiveBTIDESButton(
+            buttonLabel = stringResource(R.string.btides_clear_all_logs),
+            confirmTitle = stringResource(R.string.btides_clear_all_logs_confirm_title),
+            confirmSubtitle = stringResource(R.string.btides_clear_all_logs_confirm_subtitle),
+            enabled = !viewModel.btidesInProgress,
+            onConfirm = { viewModel.onClearAllBTIDESLogsClick() },
+        )
+    }
+
+    /**
+     * Shared scaffolding for the two destructive Clear buttons in the BTIDES block. Renders
+     * the same red-on-red [error/onError] palette as Clear Database and Clear Locations
+     * History elsewhere on the Settings screen, gated behind a confirm dialog.
+     */
+    @Composable
+    private fun ConfirmingDestructiveBTIDESButton(
+        buttonLabel: String,
+        confirmTitle: String,
+        confirmSubtitle: String,
+        enabled: Boolean,
+        onConfirm: () -> Unit,
+    ) {
+        val dialogState = rememberMaterialDialogState()
         ThemedDialog(
             dialogState = dialogState,
             buttons = {
@@ -377,31 +627,30 @@ object SettingsScreen {
                     text = stringResource(R.string.cancel),
                     textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)
                 ) { dialogState.hide() }
-                positiveButton(text = stringResource(R.string.confirm), textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface)) {
+                positiveButton(
+                    text = stringResource(R.string.confirm),
+                    textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                ) {
                     dialogState.hide()
-                    viewModel.onClearBTIDESLogClick()
+                    onConfirm()
                 }
             },
         ) {
             Column(Modifier.padding(16.dp)) {
-                Text(text = stringResource(R.string.btides_clear_log_confirm_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                Text(text = stringResource(R.string.btides_clear_log_confirm_subtitle))
+                Text(text = confirmTitle, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(text = confirmSubtitle)
             }
         }
-
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = { dialogState.show() },
-            enabled = !viewModel.btidesInProgress,
+            enabled = enabled,
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.error,
                 contentColor = MaterialTheme.colorScheme.onError,
             ),
         ) {
-            Text(
-                text = stringResource(R.string.btides_clear_log),
-                color = MaterialTheme.colorScheme.onError,
-            )
+            Text(text = buttonLabel, color = MaterialTheme.colorScheme.onError)
         }
     }
 

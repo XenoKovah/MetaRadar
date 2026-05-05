@@ -113,8 +113,13 @@
     <color name="red_600">#F4511E</color>
     <color name="blue_600">#1E88E5</color>
 
-    <color name="address_tag_stp">@color/green_600</color>
-    <color name="address_tag_rst">@color/yellow_600</color>
-    <color name="address_tag_nrp">@color/red_600</color>
-    <color name="address_tag_rpa">@color/red_600</color>
+    <!-- Address-type chip palette is privacy-coded: red = trackable across sessions, yellow =
+         trackable within a session, green = un-trackable. Public + Static are persistent IDs
+         (one BDADDR forever), so both are red. RPA rotates ~15 min so it stays trackable for
+         the duration of one session, hence yellow. NRPA is single-use so it's green. The BTC
+         chip reuses STP since BR/EDR public addresses share the same persistence concern. -->
+    <color name="address_tag_stp">@color/red_600</color>
+    <color name="address_tag_rst">@color/red_600</color>
+    <color name="address_tag_nrp">@color/green_600</color>
+    <color name="address_tag_rpa">@color/yellow_600</color>
 </resources>

@@ -1,0 +1,38 @@
+[
+  {
+    "bdaddr": "CA:FE:13:37:00:01",
+    "bdaddr_rand": 0,
+    "AdvChanArray": [
+      {
+        "std_optional_fields": {
+          "time": {
+            "unix_time_milli": 1714521600000,
+            "unix_time": 1714521600
+          },
+          "RSSI": -65
+        },
+        "type": 0,
+        "type_str": "ADV_IND",
+        "AdvDataArray": []
+      }
+    ]
+  },
+  {
+    "bdaddr": "CA:FE:13:37:00:02",
+    "bdaddr_rand": 1,
+    "AdvChanArray": [
+      {
+        "std_optional_fields": {
+          "time": {
+            "unix_time_milli": 1714521601000,
+            "unix_time": 1714521601
+          },
+          "RSSI": -72
+        },
+        "type": 3,
+        "type_str": "ADV_NONCONN_IND",
+        "AdvDataArray": []
+      }
+    ]
+  }
+]

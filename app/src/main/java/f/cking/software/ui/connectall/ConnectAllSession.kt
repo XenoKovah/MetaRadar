@@ -46,7 +46,16 @@ class ConnectAllSession(
     /** Snapshot of everything the Connect All pane renders — observed by the ViewModel. */
     data class State(
         val inProgress: Boolean = false,
+        /** Top-line headline ("Pass N — Starting on M devices…", "Done: …", etc.). */
         val statusLine: String = "",
+        /**
+         * Per-worker-slot in-flight status. Key = slot id (0..3 = LE workers, 4 = BR/EDR
+         * worker per [BulkEnumerateGattInteractor.BLE_PARALLELISM] / [BREDR_PARALLELISM]).
+         * Value = the "Connecting BDADDR Name…" line for that slot. Empty when the worker
+         * is between attempts or finished. The screen renders one Text per entry, sorted by
+         * slot id, so the user sees up to 4 LE + 1 BR/EDR connection lines simultaneously.
+         */
+        val inFlightBySlot: Map<Int, String> = emptyMap(),
         val lastDoneSummary: String = "",
         val connectedDevices: List<DeviceData> = emptyList(),
         val errorDetails: List<ErrorEntry> = emptyList(),
@@ -117,11 +126,13 @@ class ConnectAllSession(
                         _state.update { it.copy(statusLine = text) }
                     }
                     is BulkEnumerateGattInteractor.Progress.DeviceStarted -> {
+                        // Multi-line display: each worker slot owns its own line. Don't
+                        // overwrite [statusLine] (the headline for "Pass N starting…" /
+                        // "Done…"); the per-slot map is the parallelism-aware view.
+                        val slotLabel = "Connecting ${progress.index + 1}/${progress.total}: " +
+                                progress.device.buildDisplayName()
                         _state.update {
-                            it.copy(
-                                statusLine = "Connecting ${progress.index + 1}/${progress.total}: " +
-                                        progress.device.buildDisplayName()
-                            )
+                            it.copy(inFlightBySlot = it.inFlightBySlot + (progress.slotId to slotLabel))
                         }
                     }
                     is BulkEnumerateGattInteractor.Progress.DeviceFinished -> {
@@ -139,6 +150,8 @@ class ConnectAllSession(
                                     it.copy(
                                         statusLine = text,
                                         connectedDevices = it.connectedDevices + progress.device,
+                                        // Free the slot — picker will fill it on the next loop.
+                                        inFlightBySlot = it.inFlightBySlot - progress.slotId,
                                     )
                                 }
                             }
@@ -147,10 +160,20 @@ class ConnectAllSession(
                             BulkEnumerateGattInteractor.Outcome.SDP_TIMEOUT,
                             -> {
                                 passErrors += ErrorEntry(progress.device, progress.outcome, progress.errorMessage)
-                                _state.update { it.copy(statusLine = text) }
+                                _state.update {
+                                    it.copy(
+                                        statusLine = text,
+                                        inFlightBySlot = it.inFlightBySlot - progress.slotId,
+                                    )
+                                }
                             }
                             BulkEnumerateGattInteractor.Outcome.SKIPPED_VENDOR -> {
-                                _state.update { it.copy(statusLine = text) }
+                                _state.update {
+                                    it.copy(
+                                        statusLine = text,
+                                        inFlightBySlot = it.inFlightBySlot - progress.slotId,
+                                    )
+                                }
                             }
                         }
                     }
@@ -163,6 +186,11 @@ class ConnectAllSession(
                                 lastDoneSummary = summary,
                                 statusLine = summary,
                                 errorDetails = passErrors.toList(),
+                                // Pass complete; clear any straggler slots (paranoia — workers
+                                // emit DeviceFinished for everything they Started, but the
+                                // empty-set keeps the multi-line panel from showing stale rows
+                                // during the inter-pass delay under "Retry forever").
+                                inFlightBySlot = emptyMap(),
                             )
                         }
                     }

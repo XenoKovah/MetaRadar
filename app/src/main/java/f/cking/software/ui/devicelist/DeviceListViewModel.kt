@@ -8,7 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import f.cking.software.BuildConfig
 import f.cking.software.R
 import f.cking.software.checkRegexSafe
 import f.cking.software.collectAsState
@@ -16,9 +15,7 @@ import f.cking.software.data.helpers.IntentHelper
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.SettingsRepository
-import f.cking.software.domain.interactor.CheckNeedToShowEnjoyTheAppInteractor
 import f.cking.software.domain.interactor.ClearAllDevicesInteractor
-import f.cking.software.domain.interactor.EnjoyTheAppAskLaterInteractor
 import f.cking.software.domain.interactor.filterchecker.FilterCheckerImpl
 import f.cking.software.domain.model.DeviceClass
 import f.cking.software.domain.model.DeviceData
@@ -48,8 +45,6 @@ class DeviceListViewModel(
     private val filterCheckerImpl: FilterCheckerImpl,
     permissionHelper: PermissionHelper,
     val router: Router,
-    private val checkNeedToShowEnjoyTheAppInteractor: CheckNeedToShowEnjoyTheAppInteractor,
-    private val enjoyTheAppAskLaterInteractor: EnjoyTheAppAskLaterInteractor,
     private val settingsRepository: SettingsRepository,
     private val intentHelper: IntentHelper,
     private val clearAllDevicesInteractor: ClearAllDevicesInteractor,
@@ -66,11 +61,12 @@ class DeviceListViewModel(
     var isPaginationEnabled: Boolean by mutableStateOf(false)
     var quickFilters: List<FilterHolder> by mutableStateOf(
         listOf(
-            DefaultFilters.notApple(context),
             DefaultFilters.btc(context),
+            DefaultFilters.gatt(context),
+            DefaultFilters.notApple(context),
+            DefaultFilters.notSamsung(context),
         )
     )
-    var enjoyTheAppState: EnjoyTheAppState by mutableStateOf(EnjoyTheAppState.None)
     val showBackgroundPermissionWarning: Boolean by combine(
         permissionHelper.observeBackgroundLocationPermission(),
         settingsRepository.observeHideBackgroundLocationWarning(),
@@ -250,7 +246,6 @@ class DeviceListViewModel(
                                 // filters (Apple Manufacturer / Device or User location).
                                 .let { list -> if (sqlSnapshot != null) list else list.withFilters(filterHolders, query) }
                                 .let { list -> if (sqlSnapshot != null) list else list.sortedWith(GENERAL_COMPARATOR) }
-                                .apply { showEnjoyTheAppIfNeeded() }
                         }
                         emit(result)
                     }
@@ -287,58 +282,6 @@ class DeviceListViewModel(
         }
     }
 
-    private suspend fun showEnjoyTheAppIfNeeded() {
-        if (enjoyTheAppState is EnjoyTheAppState.None && checkNeedToShowEnjoyTheAppInteractor.execute()) {
-            enjoyTheAppState = EnjoyTheAppState.Question
-        }
-    }
-
-    fun onEnjoyTheAppAnswered(answer: EnjoyTheAppAnswer) {
-        enjoyTheAppState = when (answer) {
-            EnjoyTheAppAnswer.LIKE -> buildLikeTheAppState()
-            EnjoyTheAppAnswer.DISLIKE -> EnjoyTheAppState.Dislike
-            EnjoyTheAppAnswer.ASK_LATER -> {
-                enjoyTheAppAskLaterInteractor.execute()
-                EnjoyTheAppState.None
-            }
-        }
-    }
-
-    private fun buildLikeTheAppState(): EnjoyTheAppState.Like {
-        val actions = mutableListOf<EnjoyTheAppState.RateAppAction>()
-        if (BuildConfig.STORE_RATING_IS_APPLICABLE) {
-            actions.add(
-                EnjoyTheAppState.RateAppAction(
-                    title = BuildConfig.DISTRIBUTION,
-                    url = BuildConfig.STORE_PAGE_URL,
-                    saveAnswer = true,
-                )
-            )
-        }
-        actions.add(
-            EnjoyTheAppState.RateAppAction(
-                title = context.getString(R.string.rate_the_app_github),
-                url = BuildConfig.GITHUB_URL,
-                saveAnswer = !BuildConfig.STORE_RATING_IS_APPLICABLE,
-            )
-        )
-        return EnjoyTheAppState.Like(actions)
-    }
-
-    fun onRateButtonClick(rateAction: EnjoyTheAppState.RateAppAction) {
-        if (rateAction.saveAnswer) {
-            settingsRepository.setEnjoyTheAppAnswered(true)
-            enjoyTheAppState = EnjoyTheAppState.None
-        }
-        intentHelper.openUrl(rateAction.url)
-    }
-
-    fun onEnjoyTheAppReportClick() {
-        settingsRepository.setEnjoyTheAppAnswered(true)
-        enjoyTheAppState = EnjoyTheAppState.None
-        intentHelper.openUrl(BuildConfig.REPORT_ISSUE_URL)
-    }
-
     private fun filterQuery(device: DeviceData, query: String?): Boolean {
         return query?.takeIf { it.isNotBlank() }?.let { searchStr ->
             (device.resolvedName?.contains(searchStr, true) == true)
@@ -368,33 +311,24 @@ class DeviceListViewModel(
         val filter: DeviceFilter,
     )
 
-    sealed interface EnjoyTheAppState {
-        data object None : EnjoyTheAppState
-        data object Question : EnjoyTheAppState
-
-        data class Like(
-            val actions: List<RateAppAction>
-        ) : EnjoyTheAppState
-
-        data object Dislike : EnjoyTheAppState
-
-        data class RateAppAction(
-            val title: String,
-            val url: String,
-            val saveAnswer: Boolean,
-        )
-    }
-
-    enum class EnjoyTheAppAnswer {
-        LIKE, DISLIKE, ASK_LATER
-    }
-
     object DefaultFilters {
 
         fun notApple(context: Context) = FilterHolder(
             displayName = context.getString(R.string.not_apple),
             filter = DeviceFilter.Not(
                 filter = DeviceFilter.Manufacturer(ManufacturerInfo.APPLE_ID)
+            )
+        )
+
+        /**
+         * "Not Samsung" quick-filter: parallel to "Not Apple". Inverts the broadened Samsung
+         * classification (MSD company id + OUI + advertised UUIDs via VendorIdentifier),
+         * matching the same set Connect All's "Skip Samsung" toggle excludes.
+         */
+        fun notSamsung(context: Context) = FilterHolder(
+            displayName = context.getString(R.string.not_samsung),
+            filter = DeviceFilter.Not(
+                filter = DeviceFilter.Manufacturer(ManufacturerInfo.SAMSUNG_ID)
             )
         )
 
@@ -409,6 +343,16 @@ class DeviceListViewModel(
                 transportOrdinal = f.cking.software.domain.model.Transport.BREDR.ordinal,
                 includeDual = true,
             ),
+        )
+
+        /**
+         * "GATT" quick-filter: devices that have at least one captured GATT enumeration in
+         * the BTIDES log. Useful to narrow the list to devices Connect All has actually
+         * succeeded against. Backed by [DeviceFilter.HasGatt].
+         */
+        fun gatt(context: Context) = FilterHolder(
+            displayName = context.getString(R.string.filter_gatt),
+            filter = DeviceFilter.HasGatt(hasGatt = true),
         )
 
     }

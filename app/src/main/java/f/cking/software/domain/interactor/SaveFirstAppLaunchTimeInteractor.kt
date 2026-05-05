@@ -7,14 +7,8 @@ class SaveFirstAppLaunchTimeInteractor(
 ) {
 
     fun execute() {
-        val time = System.currentTimeMillis()
-
         if (settingsRepository.getFirstAppLaunchTime() == SettingsRepository.NO_APP_LAUNCH_TIME) {
-            settingsRepository.setFirstAppLaunchTime(time)
-        }
-
-        if (settingsRepository.getEnjoyTheAppStartingPoint() == SettingsRepository.NO_ENJOY_THE_APP_STARTING_POINT) {
-            settingsRepository.setEnjoyTheAppStartingPoint(time)
+            settingsRepository.setFirstAppLaunchTime(System.currentTimeMillis())
         }
     }
 }

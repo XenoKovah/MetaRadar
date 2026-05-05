@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import com.google.accompanist.flowlayout.FlowRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -147,18 +148,6 @@ object DeviceListScreen {
                 }
             }
 
-            item(contentType = ListContentType.ENJOY_THE_APP, key = "enjoy_the_app") {
-                Spacer(modifier = Modifier.height(8.dp))
-                AnimatedVisibility(
-                    modifier = Modifier.animateItem(),
-                    visible = viewModel.enjoyTheAppState != DeviceListViewModel.EnjoyTheAppState.None,
-                    enter = fadeIn(),
-                    exit = fadeOut(),
-                ) {
-                    EnjoyTheApp(viewModel, viewModel.enjoyTheAppState)
-                }
-            }
-
             item(contentType = ListContentType.CURRENT_BATCH, key = "current_batch") {
                 AnimatedVisibility(
                     modifier = Modifier.animateItem(),
@@ -211,7 +200,7 @@ object DeviceListScreen {
     }
 
     enum class ListContentType {
-        ENJOY_THE_APP, CURRENT_BATCH, DEVICE, PAGINATION_PROGRESS, BOTTOM_SPACER, BACKGROUND_PERMISSION_WARNING
+        CURRENT_BATCH, DEVICE, PAGINATION_PROGRESS, BOTTOM_SPACER, BACKGROUND_PERMISSION_WARNING
     }
 
     @Composable
@@ -420,77 +409,6 @@ object DeviceListScreen {
     }
 
     @Composable
-    private fun EnjoyTheApp(viewModel: DeviceListViewModel, enjoyTheAppState: DeviceListViewModel.EnjoyTheAppState) {
-        RoundedBox(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            when (enjoyTheAppState) {
-                is DeviceListViewModel.EnjoyTheAppState.Question -> EnjoyTheAppQuestion(viewModel)
-                is DeviceListViewModel.EnjoyTheAppState.Like -> EnjoyTheAppLike(enjoyTheAppState, viewModel)
-                is DeviceListViewModel.EnjoyTheAppState.Dislike -> EnjoyTheAppDislike(viewModel)
-                is DeviceListViewModel.EnjoyTheAppState.None -> {
-                    // nothing to draw
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun EnjoyTheAppQuestion(viewModel: DeviceListViewModel) {
-        Column {
-            Text(text = stringResource(R.string.enjoy_the_app_question), fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Row {
-                Button(modifier = Modifier.weight(1f), onClick = { viewModel.onEnjoyTheAppAnswered(DeviceListViewModel.EnjoyTheAppAnswer.LIKE) }) {
-                    Text(text = stringResource(R.string.enjoy_the_app_yes), color = MaterialTheme.colorScheme.onPrimary)
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(modifier = Modifier.weight(1f), onClick = { viewModel.onEnjoyTheAppAnswered(DeviceListViewModel.EnjoyTheAppAnswer.DISLIKE) }) {
-                    Text(text = stringResource(R.string.enjoy_the_app_not_really), color = MaterialTheme.colorScheme.onPrimary)
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = { viewModel.onEnjoyTheAppAnswered(DeviceListViewModel.EnjoyTheAppAnswer.ASK_LATER) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                )
-            ) {
-                Text(text = stringResource(R.string.enjoy_the_app_ask_later), color = MaterialTheme.colorScheme.onSurface)
-            }
-        }
-    }
-
-    @Composable
-    private fun EnjoyTheAppLike(state: DeviceListViewModel.EnjoyTheAppState.Like, viewModel: DeviceListViewModel) {
-        Column {
-            Text(text = stringResource(R.string.rate_the_app), fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Row {
-                state.actions.forEachIndexed { i, action ->
-                    Button(modifier = Modifier.weight(1f), onClick = { viewModel.onRateButtonClick(action) }) {
-                        Text(text = action.title, color = MaterialTheme.colorScheme.onPrimary)
-                    }
-                    if (i < state.actions.lastIndex) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun EnjoyTheAppDislike(viewModel: DeviceListViewModel) {
-        Column {
-            Text(text = stringResource(R.string.report_the_problem), fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onEnjoyTheAppReportClick() }) {
-                Text(text = stringResource(R.string.report), color = MaterialTheme.colorScheme.onPrimary)
-            }
-        }
-    }
-
-    @Composable
     private fun Filters(viewModel: DeviceListViewModel) {
         Surface(shadowElevation = 4.dp) {
             Column(
@@ -500,87 +418,81 @@ object DeviceListScreen {
             ) {
                 val appliedFilter by viewModel.appliedFilter.collectAsState()
 
-                LazyRow(
-                    modifier = Modifier.padding(vertical = 8.dp),
+                // FlowRow lets the chip set wrap onto multiple lines as it grows past one
+                // screen width, instead of scrolling horizontally off the side. With the four
+                // default quick filters (BTC / GATT / Not Apple / Not Samsung) plus Clear,
+                // Search, and the trailing add-custom-chip, this spans 2 rows out of the box;
+                // adding custom filters extends to 3+ as needed.
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    mainAxisSpacing = 8.dp,
+                    crossAxisSpacing = 4.dp,
                 ) {
                     val allFilters = (viewModel.quickFilters + appliedFilter).toSet()
 
-                    item { Spacer(modifier = Modifier.width(16.dp)) }
-
-                    item {
-                        ClearAllChip(viewModel)
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-
-                    item {
-                        SearchChip(viewModel)
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
+                    ClearAllChip(viewModel)
+                    SearchChip(viewModel)
 
                     allFilters.forEach { holder ->
-                        item {
-                            val isSelected = appliedFilter.contains(holder)
-                            val isCustom = viewModel.isCustomFilter(holder)
-                            val customFilterName = stringResource(R.string.custom_filter)
+                        val isSelected = appliedFilter.contains(holder)
+                        val isCustom = viewModel.isCustomFilter(holder)
+                        val customFilterName = stringResource(R.string.custom_filter)
 
-                            FilterChip(
-                                // Quick filters (Not Apple / BTC): tap toggles selection,
-                                // showing a trash icon in the leading slot when active so the
-                                // user knows another tap will remove it.
-                                // Custom filters: tap opens the editor with the existing
-                                // filter state, preserving the chip's position via
-                                // [replaceFilter]. Deletion lives in the editor's top-bar
-                                // trash icon ([removeFilter]) so click-to-delete and
-                                // click-to-edit don't compete for the same gesture.
-                                onClick = {
-                                    if (isCustom) {
-                                        viewModel.router.navigate(
-                                            ScreenNavigationCommands.OpenCreateFilterScreen(
-                                                initialFilterState = FilterUiMapper.mapToUi(holder.filter),
-                                                onConfirm = { edited ->
-                                                    viewModel.replaceFilter(
-                                                        old = holder,
-                                                        new = DeviceListViewModel.FilterHolder(
-                                                            displayName = customFilterName,
-                                                            filter = edited,
-                                                        ),
-                                                    )
-                                                },
-                                                onDelete = { viewModel.removeFilter(holder) },
-                                            )
+                        FilterChip(
+                            // Quick filters (BTC / GATT / Not Apple / Not Samsung): tap toggles
+                            // selection, showing a trash icon in the leading slot when active
+                            // so the user knows another tap will remove it.
+                            // Custom filters: tap opens the editor with the existing
+                            // filter state, preserving the chip's position via
+                            // [replaceFilter]. Deletion lives in the editor's top-bar
+                            // trash icon ([removeFilter]) so click-to-delete and
+                            // click-to-edit don't compete for the same gesture.
+                            onClick = {
+                                if (isCustom) {
+                                    viewModel.router.navigate(
+                                        ScreenNavigationCommands.OpenCreateFilterScreen(
+                                            initialFilterState = FilterUiMapper.mapToUi(holder.filter),
+                                            onConfirm = { edited ->
+                                                viewModel.replaceFilter(
+                                                    old = holder,
+                                                    new = DeviceListViewModel.FilterHolder(
+                                                        displayName = customFilterName,
+                                                        filter = edited,
+                                                    ),
+                                                )
+                                            },
+                                            onDelete = { viewModel.removeFilter(holder) },
                                         )
-                                    } else {
-                                        viewModel.onFilterClick(holder)
-                                    }
-                                },
-                                leadingIcon = {
-                                    when {
-                                        isCustom -> Icon(
-                                            Icons.Filled.Edit,
-                                            contentDescription = stringResource(R.string.edit),
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                        isSelected -> Icon(
-                                            Icons.Filled.Delete,
-                                            contentDescription = stringResource(R.string.delete),
-                                            modifier = Modifier.size(24.dp),
-                                        )
-                                        else -> {}
-                                    }
-                                },
-                                selected = isSelected,
-                                label = {
-                                    Text(text = holder.displayName)
+                                    )
+                                } else {
+                                    viewModel.onFilterClick(holder)
                                 }
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
+                            },
+                            leadingIcon = {
+                                when {
+                                    isCustom -> Icon(
+                                        Icons.Filled.Edit,
+                                        contentDescription = stringResource(R.string.edit),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    isSelected -> Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = stringResource(R.string.delete),
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                    else -> {}
+                                }
+                            },
+                            selected = isSelected,
+                            label = {
+                                Text(text = holder.displayName)
+                            }
+                        )
                     }
 
-                    item {
-                        AddFilterChip(viewModel)
-                        Spacer(modifier = Modifier.width(16.dp))
-                    }
+                    AddFilterChip(viewModel)
                 }
 
                 if (viewModel.isSearchMode) {

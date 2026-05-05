@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -42,8 +43,15 @@ class BulkEnumerateGattInteractor(
 
     sealed interface Progress {
         data class Started(val total: Int, val skippedAdvFilter: Int) : Progress
-        data class DeviceStarted(val index: Int, val total: Int, val device: DeviceData) : Progress
+        /**
+         * A specific worker slot ([slotId]) just acquired [device]. With concurrent workers
+         * (4 LE + 1 BR/EDR) the consumer needs the slot id to maintain a per-slot in-flight
+         * map for the multi-line UI; without it, two near-simultaneous DeviceStarted events
+         * would collapse into a single visible row.
+         */
+        data class DeviceStarted(val slotId: Int, val index: Int, val total: Int, val device: DeviceData) : Progress
         data class DeviceFinished(
+            val slotId: Int,
             val index: Int,
             val total: Int,
             val device: DeviceData,
@@ -107,15 +115,25 @@ class BulkEnumerateGattInteractor(
         }
         send(Progress.Started(total = initialCandidateCount, skippedAdvFilter = initialAdvSkippedCount))
 
-        var succeeded = 0
-        var skippedVendor = 0
-        var errors = 0
-        var attemptIndex = 0
-        // Addresses we've completed an attempt on this pass — even if not yet hitting the
-        // session-wide cap, we don't loop on the same device twice in one pass.
-        val attemptedThisPass = mutableSetOf<String>()
+        // Concurrent workers: BLE_PARALLELISM LE slots + BREDR_PARALLELISM BR/EDR slot. Each
+        // worker loops "pick next eligible device for my radio → enumerate → repeat" until
+        // there are no more candidates. The picker is serialised under [pickerLock] so two
+        // workers never grab the same device, but the actual enumeration runs in parallel —
+        // up to 5 simultaneous in-flight connections show up in the multi-line status display.
+        //
+        // The original single-worker "re-snapshot before every attempt + pick highest RSSI"
+        // semantics is approximated: each worker picks under the lock, so the pick still uses
+        // a fresh snapshot, but with N workers running concurrently we no longer guarantee
+        // strict highest-RSSI order across slots. For Connect All this trade-off is fine —
+        // throughput matters more than per-device ordering at the macro level.
+        val succeeded = java.util.concurrent.atomic.AtomicInteger(0)
+        val skippedVendor = java.util.concurrent.atomic.AtomicInteger(0)
+        val errors = java.util.concurrent.atomic.AtomicInteger(0)
+        val attemptIndex = java.util.concurrent.atomic.AtomicInteger(0)
+        val attemptedThisPass = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val pickerLock = kotlinx.coroutines.sync.Mutex()
 
-        while (true) {
+        suspend fun pickNext(forBrEdr: Boolean): DeviceData? = pickerLock.withLock {
             val snapshot = devicesRepository.observeLastBatch().first().toList()
             val candidates = snapshot
                 .asSequence()
@@ -124,39 +142,54 @@ class BulkEnumerateGattInteractor(
                 .filter { it.address.uppercase() !in attemptedThisPass }
                 .filter { (attemptCounts[it.address.uppercase()] ?: 0) < maxAttemptsPerDevice }
                 .filterNot { vendorIdentifier.shouldSkip(it, skipApple, skipSamsung) }
+                .filter { if (forBrEdr) it.transport == Transport.BREDR else it.transport != Transport.BREDR }
                 .toList()
-
-            if (candidates.isEmpty()) break
-
-            // Pick the highest-RSSI device that hasn't been attempted yet this pass — this is
-            // the "re-sort after every attempt" behaviour. Null RSSI sorts last.
-            val nextDevice = candidates.maxByOrNull { it.rssi ?: Int.MIN_VALUE } ?: break
-            val key = nextDevice.address.uppercase()
-
-            // Display total: max(initial, attempts_so_far + remaining_at_this_iter). Lets the
-            // UI keep counting up if extra devices appeared mid-pass.
-            val displayTotal = maxOf(initialCandidateCount, attemptIndex + candidates.size)
-            send(Progress.DeviceStarted(index = attemptIndex, total = displayTotal, device = nextDevice))
-
+            val pick = candidates.maxByOrNull { it.rssi ?: Int.MIN_VALUE } ?: return@withLock null
+            val key = pick.address.uppercase()
+            attemptedThisPass.add(key)
             attemptCounts[key] = (attemptCounts[key] ?: 0) + 1
-            attemptedThisPass += key
+            pick
+        }
 
-            val result = enumerateOne(nextDevice, skipApple, skipSamsung)
-            when (result.outcome) {
-                Outcome.SUCCESS, Outcome.SDP_SUCCESS -> succeeded++
-                Outcome.SKIPPED_VENDOR -> skippedVendor++
-                Outcome.SDP_TIMEOUT, Outcome.ERROR, Outcome.TIMEOUT -> errors++
+        suspend fun runWorker(slotId: Int, forBrEdr: Boolean) {
+            while (true) {
+                val device = pickNext(forBrEdr) ?: return
+                val idx = attemptIndex.getAndIncrement()
+                // Display total tracks "max we've ever seen" so the count keeps climbing even
+                // when devices appear mid-pass. Using attemptIndex.get() + 1 is a reasonable
+                // lower-bound proxy with parallelism.
+                val displayTotal = maxOf(initialCandidateCount, idx + 1)
+                send(Progress.DeviceStarted(slotId = slotId, index = idx, total = displayTotal, device = device))
+                val result = try {
+                    enumerateOne(device, skipApple, skipSamsung)
+                } catch (t: Throwable) {
+                    Timber.tag(TAG).w(t, "Worker slot %d crashed on %s", slotId, device.address)
+                    EnumResult(Outcome.ERROR, t.message ?: t::class.java.simpleName)
+                }
+                when (result.outcome) {
+                    Outcome.SUCCESS, Outcome.SDP_SUCCESS -> succeeded.incrementAndGet()
+                    Outcome.SKIPPED_VENDOR -> skippedVendor.incrementAndGet()
+                    Outcome.SDP_TIMEOUT, Outcome.ERROR, Outcome.TIMEOUT -> errors.incrementAndGet()
+                }
+                send(Progress.DeviceFinished(slotId, idx, displayTotal, device, result.outcome, result.errorMessage))
             }
-            send(Progress.DeviceFinished(attemptIndex, displayTotal, nextDevice, result.outcome, result.errorMessage))
-            attemptIndex++
+        }
+
+        coroutineScope {
+            val jobs = (0 until BLE_PARALLELISM).map { slot ->
+                launch { runWorker(slotId = slot, forBrEdr = false) }
+            } + (0 until BREDR_PARALLELISM).map { slot ->
+                launch { runWorker(slotId = BLE_PARALLELISM + slot, forBrEdr = true) }
+            }
+            jobs.forEach { it.join() }
         }
 
         send(
             Progress.Done(
-                total = attemptIndex,
-                succeeded = succeeded,
-                skippedVendor = skippedVendor,
-                errors = errors,
+                total = attemptIndex.get(),
+                succeeded = succeeded.get(),
+                skippedVendor = skippedVendor.get(),
+                errors = errors.get(),
                 advSkipped = initialAdvSkippedCount,
             )
         )
@@ -164,10 +197,17 @@ class BulkEnumerateGattInteractor(
 
     private suspend fun enumerateOne(device: DeviceData, skipApple: Boolean, skipSamsung: Boolean): EnumResult {
         // BR/EDR-only peer: the LE GATT path won't connect, so run SDP enumeration instead.
-        // DUAL devices keep the LE path — Android typically exposes GATT only over LE on those,
-        // so the LE branch is the right fit.
         if (device.transport == Transport.BREDR) {
             return enumerateBrEdrOne(device, skipApple, skipSamsung)
+        }
+        // DUAL peer: capture both transports' service data. SDP first (cheap, ~1s on a paired
+        // bonded peer; bounded by the inner timeout) so the BR/EDR-side ServiceClassIDList
+        // makes it into the BTIDES log + sdp_uuids column even if the LE GATT side
+        // subsequently times out or auth-cancels. We swallow SDP errors here — the LE GATT
+        // attempt is the source of truth for SUCCESS / SDP_TIMEOUT / ERROR outcomes.
+        if (device.transport == Transport.DUAL) {
+            runCatching { tryFetchSdpFor(device) }
+                .onFailure { Timber.tag(TAG).w(it, "Dual-mode SDP attempt failed for ${device.address} (continuing to LE GATT)") }
         }
         btidesRepository.beginGattSession(device.address)
         var vendorMatched = false
@@ -205,15 +245,42 @@ class BulkEnumerateGattInteractor(
                                     false
                                 }
                             }
-                            is BleScannerHelper.DeviceConnectResult.CharacteristicRead,
-                            is BleScannerHelper.DeviceConnectResult.FailedReadCharacteristic,
-                            -> {
+                            is BleScannerHelper.DeviceConnectResult.CharacteristicRead -> {
                                 pendingChars = pendingChars.drop(1)
                                 if (pendingChars.isEmpty()) {
                                     allCharsRead = true
                                     gattRef?.let { bleScannerHelper.disconnect(it) }
                                 } else {
                                     gattRef?.let { bleScannerHelper.readCharacteristic(it, pendingChars.first()) }
+                                }
+                                false
+                            }
+                            is BleScannerHelper.DeviceConnectResult.FailedReadCharacteristic -> {
+                                // Auth/authz/encryption errors mean the peer requires bonding to
+                                // read this characteristic. Android responds by triggering a
+                                // user-visible pairing prompt for *every* such char read in a
+                                // row — 12 characteristics × auth-required = 12 dialogs. Abort
+                                // the remaining reads as soon as we see the first auth-shaped
+                                // failure so the user only ever sees one prompt per device per
+                                // attempt. Plain transient failures (133, 8 = busy etc.) keep
+                                // advancing as before.
+                                val isAuthFailure = event.status in AUTH_FAILURE_STATUSES
+                                if (isAuthFailure) {
+                                    Timber.tag(TAG).i(
+                                        "Auth required (status=%d) on %s; aborting remaining %d char reads",
+                                        event.status, device.address, pendingChars.size,
+                                    )
+                                    pendingChars = emptyList()
+                                    allCharsRead = false
+                                    gattRef?.let { bleScannerHelper.disconnect(it) }
+                                } else {
+                                    pendingChars = pendingChars.drop(1)
+                                    if (pendingChars.isEmpty()) {
+                                        allCharsRead = true
+                                        gattRef?.let { bleScannerHelper.disconnect(it) }
+                                    } else {
+                                        gattRef?.let { bleScannerHelper.readCharacteristic(it, pendingChars.first()) }
+                                    }
                                 }
                                 false
                             }
@@ -261,6 +328,29 @@ class BulkEnumerateGattInteractor(
      * Most BR/EDR-only peers reject that connection; the failure is logged at INFO and does
      * NOT roll back the SDP capture.
      */
+    /**
+     * Fetch SDP UUIDs and persist them into the device row + BTIDES log. Used by both the
+     * dedicated BR/EDR path (where the result drives the [Outcome]) and the new Dual-device
+     * pre-pass (where any error is logged-and-swallowed because LE GATT is still going to
+     * run). Returns the canonical UUID list on success, empty on no-data, throws on hard
+     * errors so the caller can decide whether to convert to an EnumResult or log+continue.
+     */
+    private suspend fun tryFetchSdpFor(device: DeviceData): List<String> {
+        val timestampMs = System.currentTimeMillis()
+        val uuids = withTimeoutOrFallback(PER_DEVICE_TIMEOUT) {
+            sdpEnumerationHelper.enumerate(device.address)
+        }
+        val canonical = uuids.map { it.toString().lowercase() }
+        if (canonical.isEmpty()) {
+            Timber.tag(TAG).i("SDP returned no UUIDs for ${device.address}")
+            return canonical
+        }
+        devicesRepository.updateSdpUuids(device.address, canonical)
+        btidesRepository.appendSDPDiscovery(device.address, uuids, timestampMs)
+        Timber.tag(TAG).i("SDP captured ${canonical.size} UUIDs for ${device.address}: $canonical")
+        return canonical
+    }
+
     private suspend fun enumerateBrEdrOne(device: DeviceData, skipApple: Boolean, skipSamsung: Boolean): EnumResult {
         return try {
             val timestampMs = System.currentTimeMillis()
@@ -395,5 +485,19 @@ class BulkEnumerateGattInteractor(
         // Most BR/EDR-only peers reject the ATT-over-BR/EDR connection; fail fast so the bulk
         // pass keeps moving.
         private val BR_EDR_GATT_TIMEOUT = 8.seconds
+        // Concurrent worker counts. Android exposes 4 simultaneous BluetoothGatt connections
+        // by default (see BluetoothGatt's binder pool); going beyond starves earlier connects.
+        // BR/EDR runs a single SDP fetch at a time — there's only one inquiry-radio resource,
+        // and SdpEnumerationHelper itself caps at 4 parallel fetches but Connect All only
+        // generates one BR/EDR enumeration in flight from this orchestrator.
+        const val BLE_PARALLELISM = 4
+        const val BREDR_PARALLELISM = 1
+        const val TOTAL_PARALLELISM = BLE_PARALLELISM + BREDR_PARALLELISM
+        // BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION (5) /
+        // GATT_INSUFFICIENT_AUTHORIZATION (8) / GATT_INSUFFICIENT_ENCRYPTION (15). Any of
+        // these on a char read means the peer wants a bond to release the value; if the user
+        // cancels the prompt, retrying further reads on the same connection produces a fresh
+        // prompt per char.
+        private val AUTH_FAILURE_STATUSES = setOf(5, 8, 15)
     }
 }

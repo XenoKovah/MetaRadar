@@ -99,10 +99,12 @@ object FilterUiMapper {
                 this.radius = from.radiusMeters
                 this.defaultValueIfNoLocation = from.noLocationDefaultValue
             }
-            // TransportFilter is currently only constructed as a quick-filter chip (BTC), never
-            // edited through the FilterUiState builder. If a saved filter ever contains one,
-            // surface a placeholder Unknown state so the editor doesn't crash.
+            // TransportFilter (BTC chip) and HasGatt (GATT chip) are quick-filters with no
+            // editable parameters, never opened in the FilterUiState builder. Surface a
+            // placeholder Unknown state so the editor doesn't crash if a saved filter
+            // somehow contains one.
             is DeviceFilter.TransportFilter -> FilterUiState.Unknown()
+            is DeviceFilter.HasGatt -> FilterUiState.Unknown()
         }
     }
 

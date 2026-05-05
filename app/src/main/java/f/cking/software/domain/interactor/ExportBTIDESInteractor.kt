@@ -19,7 +19,7 @@ class ExportBTIDESInteractor(
     }
 
     /**
-     * Write the merged BTIDES JSON array to the user-selected SAF Uri.
+     * Write the merged BTIDES JSON array (active log only) to the user-selected SAF Uri.
      * Returns the number of unique BDADDRs included.
      */
     suspend fun execute(
@@ -28,12 +28,30 @@ class ExportBTIDESInteractor(
     ): Int = btidesRepository.exportTo(uri, strongestRssiLookup, onProgress)
 
     /**
-     * Write the merged BTIDES JSON array to the app's external files dir for ADB pull.
+     * Write each BTIDES log (active + every rotated archive) to its own file under the app's
+     * external files dir for ADB pull. Each file is named after the underlying log's
+     * timestamped basename, with the `.btides` extension. Returns one entry per file written.
      */
     suspend fun execute(
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
-    ): ExternalExport = btidesRepository.exportToExternalFilesDir(strongestRssiLookup, onProgress)
-        .let { (file, count) -> ExternalExport(file, count) }
+    ): List<ExternalExport> = btidesRepository.exportAllToExternalFilesDir(strongestRssiLookup, onProgress)
+        .map { ExternalExport(it.file, it.deviceCount, it.isActive) }
 
-    data class ExternalExport(val file: File, val deviceCount: Int)
+    /**
+     * Export a single specific log file to the given OutputStream-backed target. Used by the
+     * BTIDALPOOL upload pipeline so it can produce a merged BTIDES file from one log at a
+     * time (active OR a specific archive).
+     */
+    suspend fun executeForLog(
+        logFile: File,
+        target: File,
+        onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
+    ): Int {
+        target.parentFile?.mkdirs()
+        return target.outputStream().use {
+            btidesRepository.exportTo(it, strongestRssiLookup, onProgress, sourceFile = logFile)
+        }
+    }
+
+    data class ExternalExport(val file: File, val deviceCount: Int, val isActive: Boolean)
 }

@@ -2,6 +2,8 @@ package f.cking.software.data
 
 import android.content.Context
 import android.content.Context.MODE_PRIVATE
+import f.cking.software.data.btidalpool.BtidalpoolAuthRepository
+import f.cking.software.data.btidalpool.BtidalpoolClient
 import f.cking.software.data.btides.BTIDESRepository
 import f.cking.software.data.database.AppDatabase
 import f.cking.software.data.helpers.ActivityProvider
@@ -31,6 +33,8 @@ class DataModule(
     val module = module {
         single { globalScope }
         single { BTIDESRepository(get()) }
+        single { BtidalpoolClient(get()) }
+        single { BtidalpoolAuthRepository(get(), get()) }
         single { CluesRepository(get()) }
         single { OuiRepository(get()) }
         single { BleScannerHelper(get(), get(), get(), get(), get(), get()) }

@@ -39,8 +39,14 @@ class ConnectAllViewModel(
     var bulkSkipSamsung: Boolean by mutableStateOf(settingsRepository.getBulkSkipSamsung())
     var retryForever: Boolean by mutableStateOf(settingsRepository.getBulkRetryForever())
     var inProgress: Boolean by mutableStateOf(false)
-    /** Live one-line status of the in-flight pass — overwritten between events. */
+    /** Live one-line headline ("Pass N — Starting on M devices…", "Done…", etc.). */
     var statusLine: String by mutableStateOf("")
+    /**
+     * Per-worker-slot in-flight status. With 4 LE + 1 BR/EDR concurrent workers there can be up
+     * to 5 simultaneous "Connecting BDADDR Name…" lines. The screen renders these in slot-id
+     * order so the same slot's progress stays in the same visual row across attempts.
+     */
+    var inFlightLines: List<String> by mutableStateOf(emptyList())
     /**
      * "Done: X connected, Y skipped, Z errors" from the most recently completed pass. Held
      * across passes so the user can still inspect prior errors after a "Retry forever" loop has
@@ -91,6 +97,7 @@ class ConnectAllViewModel(
             connectAllSession.state.collect { s ->
                 inProgress = s.inProgress
                 statusLine = s.statusLine
+                inFlightLines = s.inFlightBySlot.toSortedMap().values.toList()
                 lastDoneSummary = s.lastDoneSummary
                 connectedDevices = s.connectedDevices
                 errorDetails = s.errorDetails.map { ErrorEntry(it.device, it.outcome, it.message) }

@@ -83,8 +83,32 @@ class BleScannerHelper(
 
     private var scanListener: ScanListener? = null
 
+    /**
+     * Snapshot of the system's bonded-device addresses, used by the BLE scan callback to
+     * determine `isPaired` *without* a synchronous IPC into the Bluetooth process. We've seen
+     * 8s+ ANRs on Android 14 + busy BT stacks where `BluetoothDevice.bondState` blocks the
+     * BLE scan thread (which is the main looper) waiting for the bluetooth-server to reply.
+     *
+     * Refreshed at scan start and on every `ACTION_BOND_STATE_CHANGED` broadcast. Bond state
+     * is a user-driven action (pair/unpair via OS UI) so the cache is naturally fresh enough.
+     */
+    @Volatile private var bondedAddresses: Set<String> = emptySet()
+    private val bondStateReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            refreshBondedAddresses()
+        }
+    }
+    private var bondReceiverRegistered: Boolean = false
+
     init {
         tryToInitBluetoothScanner()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun refreshBondedAddresses() {
+        bondedAddresses = runCatching {
+            bluetoothAdapter?.bondedDevices?.mapNotNull { it.address?.uppercase() }?.toSet().orEmpty()
+        }.getOrElse { emptySet() }
     }
 
     /**
@@ -217,7 +241,9 @@ class BleScannerHelper(
                 scanRecordRaw = scanRecord?.bytes,
                 rssi = result.rssi,
                 addressType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) device.addressType else null,
-                isPaired = device.bondState == BluetoothDevice.BOND_BONDED,
+                // Cached lookup — see [bondedAddresses]. Calling device.bondState here would
+                // ANR the BLE scan thread under load (8s+ blocking IPC into bluetooth-server).
+                isPaired = bondedAddresses.contains(device.address?.uppercase()),
                 deviceClass = device.bluetoothClass?.deviceClass,
                 serviceUuids = scanRecord?.serviceUuids?.map { it.uuid.toString() }.orEmpty(),
                 isConnectable = result.isConnectable,
@@ -320,7 +346,7 @@ class BleScannerHelper(
                         trySend(DeviceConnectResult.CharacteristicRead(gatt, characteristic, value.toBase64()))
                     } else {
                         Timber.tag(TAG_CONNECT).e("Error while reading characteristic ${characteristic.uuid}. Error code: $status")
-                        trySend(DeviceConnectResult.FailedReadCharacteristic(gatt, characteristic))
+                        trySend(DeviceConnectResult.FailedReadCharacteristic(gatt, characteristic, status))
                     }
                 }
 
@@ -536,7 +562,12 @@ class BleScannerHelper(
         data class CharacteristicRead(val gatt: BluetoothGatt, val characteristic: BluetoothGattCharacteristic, val valueEncoded64: String) :
             DeviceConnectResult
 
-        data class FailedReadCharacteristic(val gatt: BluetoothGatt, val characteristic: BluetoothGattCharacteristic) : DeviceConnectResult
+        data class FailedReadCharacteristic(
+            val gatt: BluetoothGatt,
+            val characteristic: BluetoothGattCharacteristic,
+            /** GATT error status (BluetoothGatt.GATT_*). 5=auth, 8=authz, 15=encryption. */
+            val status: Int,
+        ) : DeviceConnectResult
         data class DescriptorRead(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor, val valueEncoded64: String) : DeviceConnectResult
         data class FailedReadDescriptor(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor) : DeviceConnectResult
         data object Connecting : DeviceConnectResult
@@ -600,11 +631,31 @@ class BleScannerHelper(
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build()
 
+            // Refresh the bonded-addresses cache before each scan window starts. The
+            // [onScanResult] callback then does an O(1) Set lookup instead of an IPC into the
+            // Bluetooth process, avoiding a recurring 8s+ ANR on Android 14 when the BT stack
+            // is busy. We also subscribe to ACTION_BOND_STATE_CHANGED once so the cache stays
+            // current if the user pairs/unpairs while scanning.
+            refreshBondedAddresses()
+            ensureBondReceiverRegistered()
+
             withContext(Dispatchers.IO) {
                 requireScanner().startScan(scanFilters, scanSettings, callback)
                 handler.postDelayed({ cancelScanning(ScanResultInternal.Success) }, powerModeHelper.powerMode().scanDuration)
             }
         }
+    }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun ensureBondReceiverRegistered() {
+        if (bondReceiverRegistered) return
+        val filter = android.content.IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            appContext.registerReceiver(bondStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            appContext.registerReceiver(bondStateReceiver, filter)
+        }
+        bondReceiverRegistered = true
     }
 
     fun stopScanning() {

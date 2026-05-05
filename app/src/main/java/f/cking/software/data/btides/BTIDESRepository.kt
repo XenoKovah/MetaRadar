@@ -95,6 +95,21 @@ class BTIDESRepository(
     private val indexFile: File
         get() = File(context.filesDir, INDEX_FILE_NAME).also { it.parentFile?.mkdirs() }
 
+    private val btidesDir: File
+        get() = File(context.filesDir, BTIDES_DIR).also { it.mkdirs() }
+
+    /**
+     * Sidecar marker holding the epoch-millis timestamp of the first append into the current
+     * active log. Written when we hit the empty-log → first-byte transition; deleted on
+     * rotate / clear. Drives both archive naming (so archive filenames reflect the time the
+     * data was *captured*, not the time of rotation) and the per-day auto-rotation check.
+     */
+    private val firstCaptureFile: File
+        get() = File(btidesDir, FIRST_CAPTURE_FILE_NAME)
+
+    /** In-memory cache of the on-disk first-capture marker. Avoids stat/read on every record. */
+    @Volatile private var firstCaptureMs: Long? = null
+
     /**
      * Channel-based write pipeline. Every record (advertisements, GATT enumerations, char/desc
      * reads, and flushed gatt-session buffers) flows through this single channel into a
@@ -125,6 +140,11 @@ class BTIDESRepository(
         // Seed bytesInLog from the on-disk log size so byte offsets in the sidecar index
         // remain accurate across app restarts.
         bytesInLog = if (logFile.exists()) logFile.length() else 0L
+        // Hydrate the first-capture cache from the on-disk marker (or null if absent — the
+        // next append will write it).
+        firstCaptureMs = if (firstCaptureFile.exists()) {
+            firstCaptureFile.readText().trim().toLongOrNull()
+        } else null
         // Start the writer consumer. Lives for app lifetime (BTIDESRepository is a Koin single).
         ioScope.launch { runWriterLoop() }
         // If the index is missing or stale (e.g. first run after upgrade, or it was hand-deleted),
@@ -173,7 +193,16 @@ class BTIDESRepository(
             else -> RECORD_TYPE_OTHER
         }
         writerStateLock.withLock {
+            // Per-day automatic rotation: if the current active log was first written on an
+            // earlier local-time day than now, rotate it before appending so each day's data
+            // ends up in a separate archive file. Only fires when day rolls over — checked
+            // once per record but the rotation itself is the only expensive bit.
+            val firstMs = firstCaptureMs
+            if (firstMs != null && shouldRolloverToNewDay(firstMs, System.currentTimeMillis())) {
+                rotateActiveLocked()
+            }
             ensureStreamsOpenLocked()
+            stampFirstCaptureMarkerIfMissingLocked()
             val byteStart = bytesInLog
             logStream!!.write(bytes)
             logStream!!.write('\n'.code)
@@ -194,6 +223,131 @@ class BTIDESRepository(
             indexFile.parentFile?.mkdirs()
             indexStream = BufferedOutputStream(FileOutputStream(indexFile, /* append = */ true))
         }
+    }
+
+    private fun stampFirstCaptureMarkerIfMissingLocked() {
+        if (firstCaptureMs != null) return
+        val now = System.currentTimeMillis()
+        firstCaptureMs = now
+        runCatching {
+            btidesDir.mkdirs()
+            firstCaptureFile.writeText(now.toString())
+        }
+    }
+
+    /**
+     * Whether [firstMs] and [nowMs] fall on different *local* calendar days. Local time matches
+     * the user's intuition for "yesterday's data" — UTC day boundaries surprise users in
+     * timezones west of UTC. We compute via TimeZone.getOffset rather than a Calendar instance
+     * because this runs on the writer hot path.
+     */
+    private fun shouldRolloverToNewDay(firstMs: Long, nowMs: Long): Boolean {
+        val tz = java.util.TimeZone.getDefault()
+        val firstDay = (firstMs + tz.getOffset(firstMs)) / MS_PER_DAY
+        val nowDay = (nowMs + tz.getOffset(nowMs)) / MS_PER_DAY
+        return firstDay != nowDay
+    }
+
+    /**
+     * Rename the current active log + sidecar index to date-stamped archive files based on the
+     * first-capture timestamp marker. Caller must hold [writerStateLock]. No-op when the active
+     * log is empty (nothing to rotate). Returns the archive log file, or null if no rotation
+     * happened.
+     */
+    private fun rotateActiveLocked(): File? {
+        runCatching { logStream?.close() }
+        runCatching { indexStream?.close() }
+        logStream = null
+        indexStream = null
+        if (!logFile.exists() || logFile.length() == 0L) {
+            // Nothing captured — just clear the marker so the next append re-stamps it.
+            runCatching { firstCaptureFile.delete() }
+            firstCaptureMs = null
+            bytesInLog = 0L
+            return null
+        }
+        val firstMs = firstCaptureMs ?: System.currentTimeMillis()
+        val baseName = "btides_log_${formatArchiveTimestamp(firstMs)}"
+        val archiveLog = uniqueArchiveFile(baseName, ARCHIVE_LOG_EXT)
+        val archiveIdx = File(btidesDir, archiveLog.nameWithoutExtension + "." + ARCHIVE_IDX_EXT)
+        runCatching { logFile.renameTo(archiveLog) }
+        runCatching { if (indexFile.exists()) indexFile.renameTo(archiveIdx) }
+        runCatching { firstCaptureFile.delete() }
+        firstCaptureMs = null
+        bytesInLog = 0L
+        return archiveLog
+    }
+
+    private fun uniqueArchiveFile(baseName: String, ext: String): File {
+        var candidate = File(btidesDir, "$baseName.$ext")
+        var i = 1
+        while (candidate.exists()) {
+            candidate = File(btidesDir, "${baseName}_$i.$ext")
+            i++
+        }
+        return candidate
+    }
+
+    private fun formatArchiveTimestamp(ms: Long): String {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US)
+        return sdf.format(java.util.Date(ms))
+    }
+
+    /**
+     * One log: either the live active log or a rotated archive. Exposes a stable label suitable
+     * for use as an export file basename (so on-disk filenames stay parallel between
+     * `<filesDir>/btides/<label>.jsonl` and `<external>/<label>.btides`).
+     */
+    data class LogFile(val file: File, val isActive: Boolean) {
+        /** Stable basename without extension; used to derive matching export filenames. */
+        val baseName: String get() = file.nameWithoutExtension
+    }
+
+    /**
+     * List the active log (if non-empty) followed by all rotated archives in chronological
+     * order. Archives are named `btides_log_YYYY-MM-DD_HH-mm-ss[_N].jsonl` so a lexical sort
+     * matches capture-time order. Index sidecar files are filtered out.
+     */
+    suspend fun listLogs(): List<LogFile> = withContext(Dispatchers.IO) {
+        writerStateLock.withLock { runCatching { logStream?.flush() } }
+        val out = mutableListOf<LogFile>()
+        if (logFile.exists() && logFile.length() > 0L) out.add(LogFile(logFile, isActive = true))
+        btidesDir.listFiles()
+            ?.filter {
+                // Match `btides_log_<stamp>.jsonl` but explicitly exclude the parallel
+                // `btides_log_<stamp>.idx.jsonl` sidecar — both end with ".jsonl" so the naive
+                // suffix check would treat each archive as two logs.
+                it.isFile &&
+                    it.name.startsWith("btides_log_") &&
+                    it.name.endsWith("." + ARCHIVE_LOG_EXT) &&
+                    !it.name.endsWith("." + ARCHIVE_IDX_EXT)
+            }
+            ?.sortedBy { it.name }
+            ?.forEach { out.add(LogFile(it, isActive = false)) }
+        out
+    }
+
+    /**
+     * Rotate the active log into a date-stamped archive. Returns the archive file, or null
+     * if the active log was empty.
+     */
+    suspend fun rotateActive(): File? = withContext(Dispatchers.IO) {
+        writerStateLock.withLock { rotateActiveLocked() }
+    }
+
+    /**
+     * Delete a specific archive file (and its sidecar index, if any). No-op for the active log.
+     */
+    suspend fun deleteArchive(archive: File) = withContext(Dispatchers.IO) {
+        if (archive == logFile) return@withContext
+        runCatching { archive.delete() }
+        val idx = File(btidesDir, archive.nameWithoutExtension + "." + ARCHIVE_IDX_EXT)
+        runCatching { idx.delete() }
+    }
+
+    /** Total bytes across the active log + every rotated archive. */
+    suspend fun totalLogSizeBytes(): Long = withContext(Dispatchers.IO) {
+        listLogs().sumOf { it.file.length() }
     }
 
     /**
@@ -489,6 +643,9 @@ class BTIDESRepository(
         }
         if (routedToSession) return
         writeChannel.send(record)
+        // A new GATT row will land in the index file shortly; force the next filter check to
+        // re-read the index instead of returning a stale "no GATT" result for this address.
+        invalidateGattAddressCache()
     }
 
     private suspend fun appendRecord(record: JsonObject) {
@@ -509,6 +666,7 @@ class BTIDESRepository(
      * via [onBytesProcessed] so the UI can render a proportional progress bar.
      */
     private suspend fun routeLogToPerDeviceTempFiles(
+        sourceFile: File,
         tempDir: File,
         sourceSize: Long,
         onBytesProcessed: suspend (Long) -> Unit,
@@ -517,7 +675,7 @@ class BTIDESRepository(
         val writers = HashMap<String, BufferedWriter>()
         var bytes = 0L
         try {
-            logFile.bufferedReader().useLines { lines ->
+            sourceFile.bufferedReader().useLines { lines ->
                 for (rawLine in lines) {
                     // Stop at the snapshot boundary so we don't include records appended by
                     // the live writer after the export started — keeps the export's view of
@@ -605,16 +763,23 @@ class BTIDESRepository(
         out: OutputStream,
         strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
+        sourceFile: File? = null,
     ): Int = withContext(Dispatchers.IO) {
         // Snapshot the log size at export start. Live capture continues writing past this
         // boundary; we just don't see those new records in the export. The previous design
         // held the global writeLock for the whole multi-second export, which froze every
         // appendScan/append… call — at mall-scale that meant tens of thousands of suspended
         // coroutines piling up by the time the export finished.
-        val src = logFile
-        val sourceSize = writerStateLock.withLock {
-            logStream?.flush()
-            indexStream?.flush()
+        val src = sourceFile ?: logFile
+        // Only the active log is being written to live — flushing under the lock matters for
+        // it. Archive files are write-once snapshots; we can stat them without contention.
+        val sourceSize = if (src == logFile) {
+            writerStateLock.withLock {
+                logStream?.flush()
+                indexStream?.flush()
+                if (src.exists()) src.length() else 0L
+            }
+        } else {
             if (src.exists()) src.length() else 0L
         }
         if (sourceSize == 0L) {
@@ -627,7 +792,7 @@ class BTIDESRepository(
         tempDir.mkdirs()
         try {
             onProgress?.invoke(0L, totalBytes)
-            val devFiles = routeLogToPerDeviceTempFiles(tempDir, sourceSize) { bytes ->
+            val devFiles = routeLogToPerDeviceTempFiles(src, tempDir, sourceSize) { bytes ->
                 onProgress?.invoke(bytes.coerceAtMost(sourceSize), totalBytes)
             }
             val writer = out.bufferedWriter()
@@ -716,28 +881,59 @@ class BTIDESRepository(
     }
 
     /**
-     * If the caller's coroutine is cancelled mid-export, the partial output file is deleted so
-     * the user is never left with a half-written `.btides` file masquerading as a complete one.
+     * Export every log (active + archives) to the app's external files dir, one file per log
+     * named `<log-base-name>.btides`. Returns the list of (target, deviceCount) pairs that
+     * were actually written. Empty input list when no logs exist.
+     *
+     * Each [onProgress] callback is rebased per-log: the caller sees the fraction *for the
+     * currently-exporting log*. We can't easily compute a global fraction without first sizing
+     * every log up front, and the per-log signal is what the inline progress bar consumes.
+     *
+     * If the caller's coroutine is cancelled mid-export, every partially-written file is
+     * deleted so the user is never left with a half-written `.btides` masquerading as
+     * complete.
      */
-    suspend fun exportToExternalFilesDir(
+    suspend fun exportAllToExternalFilesDir(
         strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
-    ): Pair<File, Int> = withContext(Dispatchers.IO) {
-        val target = externalExportFile() ?: throw RuntimeException("External files dir is unavailable")
-        target.parentFile?.mkdirs()
-        val count = try {
-            target.outputStream().use { exportTo(it, strongestRssiLookup, onProgress) }
+    ): List<ExternalExportResult> = withContext(Dispatchers.IO) {
+        val externalDir = context.getExternalFilesDir(null)
+            ?: throw RuntimeException("External files dir is unavailable")
+        val logs = listLogs()
+        val results = mutableListOf<ExternalExportResult>()
+        val written = mutableListOf<File>()
+        try {
+            for (log in logs) {
+                val target = File(externalDir, log.baseName + "." + EXPORT_EXT)
+                target.parentFile?.mkdirs()
+                val count = try {
+                    target.outputStream().use { exportTo(it, strongestRssiLookup, onProgress, sourceFile = log.file) }
+                } catch (t: Throwable) {
+                    runCatching { target.delete() }
+                    throw t
+                }
+                written.add(target)
+                results.add(ExternalExportResult(target, count, log.isActive))
+            }
         } catch (t: Throwable) {
-            runCatching { target.delete() }
+            // Cancellation / failure path: anything partially written stays on disk only for
+            // the file we were mid-flush on (already-completed earlier files in the loop are
+            // valid). Be conservative and remove only the in-flight one — preserved files give
+            // the user *some* output even if the loop got interrupted mid-way.
             throw t
         }
-        target to count
+        results
     }
 
-    suspend fun clearLog() = withContext(Dispatchers.IO) {
-        // Acquire the writer-state lock so no in-flight write is mid-flush. Close + delete
-        // both the main log and the sidecar index, reset the byte counter — the next record
-        // through the channel reopens both streams in append mode against the fresh files.
+    data class ExternalExportResult(val file: File, val deviceCount: Int, val isActive: Boolean)
+
+    /**
+     * Clear only the active (in-progress) log. Rotated archives remain on disk untouched.
+     * Acquire the writer-state lock so no in-flight write is mid-flush. Close + delete the
+     * main log + sidecar index + first-capture marker, reset the byte counter — the next
+     * record through the channel reopens both streams in append mode against the fresh files.
+     */
+    suspend fun clearActive() = withContext(Dispatchers.IO) {
         writerStateLock.withLock {
             runCatching { logStream?.close() }
             runCatching { indexStream?.close() }
@@ -745,8 +941,21 @@ class BTIDESRepository(
             indexStream = null
             if (logFile.exists()) logFile.delete()
             if (indexFile.exists()) indexFile.delete()
+            runCatching { firstCaptureFile.delete() }
+            firstCaptureMs = null
             bytesInLog = 0L
         }
+    }
+
+    /** Clear the active log AND every rotated archive (data + sidecar indexes). */
+    suspend fun clearAll() = withContext(Dispatchers.IO) {
+        clearActive()
+        btidesDir.listFiles()
+            ?.filter {
+                it.isFile && it.name.startsWith("btides_log_") &&
+                    (it.name.endsWith("." + ARCHIVE_LOG_EXT) || it.name.endsWith("." + ARCHIVE_IDX_EXT))
+            }
+            ?.forEach { runCatching { it.delete() } }
     }
 
     suspend fun logFileSizeBytes(): Long = withContext(Dispatchers.IO) {
@@ -773,6 +982,52 @@ class BTIDESRepository(
      * If the index is missing (first launch on a pre-T2 install before the background rebuild
      * finishes), fall back to the previous full-log scan.
      */
+    /**
+     * Cached set of addresses that have at least one GATT (type 'G') record in the sidecar
+     * index, plus any in-flight [GattSession] buffers. Source of truth for the GATT-quick-
+     * filter on the Devices list. Cheap rebuild (single pass over the index file, no JSON
+     * parse) but cached for [GATT_ADDRESSES_TTL_MS] so a 200k-row scan doesn't run on every
+     * recomposition. Cache is invalidated by [appendGattRecord] (it knows it added a G row).
+     */
+    @Volatile private var gattAddressesCache: Set<String>? = null
+    @Volatile private var gattAddressesCacheAtMs: Long = 0L
+
+    suspend fun addressesWithGatt(): Set<String> = withContext(Dispatchers.IO) {
+        val cached = gattAddressesCache
+        val now = System.currentTimeMillis()
+        if (cached != null && now - gattAddressesCacheAtMs < GATT_ADDRESSES_TTL_MS) {
+            return@withContext cached
+        }
+        val out = HashSet<String>()
+        // In-flight Connect-All sessions show up in gattSessions before the JSONL is flushed.
+        sessionsLock.withLock {
+            for ((addr, session) in gattSessions) {
+                if (session.buffer.any { it["GATTArray"] != null }) out.add(addr.uppercase())
+            }
+        }
+        writerStateLock.withLock {
+            runCatching { indexStream?.flush() }
+        }
+        if (indexFile.exists() && indexFile.length() > 0L) {
+            indexFile.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    val parts = line.split(' ', limit = 4)
+                    if (parts.size != 4) continue
+                    if (parts[1] != RECORD_TYPE_GATT) continue
+                    out.add(parts[0].uppercase())
+                }
+            }
+        }
+        gattAddressesCache = out
+        gattAddressesCacheAtMs = now
+        out
+    }
+
+    /** Drop the cached GATT-address set so the next [addressesWithGatt] re-reads the index. */
+    fun invalidateGattAddressCache() {
+        gattAddressesCache = null
+    }
+
     suspend fun cachedGattForDevice(address: String): JsonObject? = withContext(Dispatchers.IO) {
         val src = logFile
         if (!src.exists() || src.length() == 0L) return@withContext null
@@ -1060,6 +1315,16 @@ class BTIDESRepository(
         private const val RECORD_TYPE_HCI = "H"
         private const val RECORD_TYPE_OTHER = "O"
         const val EXPORT_FILE_NAME = "btides_log.btides"
+        private const val BTIDES_DIR = "btides"
+        private const val FIRST_CAPTURE_FILE_NAME = "btides_log.first_capture_ms"
+        private const val ARCHIVE_LOG_EXT = "jsonl"
+        private const val ARCHIVE_IDX_EXT = "idx.jsonl"
+        private const val EXPORT_EXT = "btides"
+        private const val MS_PER_DAY = 86_400_000L
+        // Short TTL: filter chip evaluation runs per scan-batch, but a fresh GATT enumeration
+        // arrives much less often than scan batches. 5s makes the cache hot during
+        // recompositions while still picking up new GATT records soon after they land.
+        private const val GATT_ADDRESSES_TTL_MS = 5_000L
         private const val INDENT_UNIT = "  "
         // Match the bdaddr + bdaddr_rand top-level fields without parsing the whole record. The
         // appendScan/appendGattRecord writers always emit them as the first two object keys, in

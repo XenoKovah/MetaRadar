@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -337,8 +338,10 @@ object DeviceDetailsScreen {
                 ) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        DeviceTypeIcon(modifier = Modifier.size(42.dp), device = deviceData, paddingDp = 4.dp)
-                        Spacer(Modifier.width(8.dp))
+                        // CoD icon removed for parity with the list views — same heuristic
+                        // that mis-classified UVP01 as AudioVideo (battery-service UUID
+                        // resolves to AudioVideo.Uncategorised) was painting the wrong icon
+                        // here too.
                         Text(
                             text = deviceData.buildDisplayName(),
                             fontSize = 20.sp,
@@ -461,21 +464,42 @@ object DeviceDetailsScreen {
             canonical.startsWith("00001800-") || canonical.startsWith("00001801-") ||
                 canonical == "1800" || canonical == "1801"
         }
-        // For BR/EDR-only devices, hide the GATT section entirely unless we either captured
-        // services (cached GATT) or SDP claimed ATT support. Avoids the misleading
-        // "0 services / 0 characteristics discovered" line on every Classic peer.
-        val isBrEdrOnly = transport == Transport.BREDR
-        if (isBrEdrOnly && servicesUuids.isEmpty() && !sdpIndicatesGatt) return
+        // Split actual GATT-enumeration results from advertised-only UUIDs. Apple devices in
+        // particular advertise classic-style UUIDs (Audio Source 0x110A, AVRCP 0x110E, MFi
+        // iAP) over LE that look like SDP service classes — they should not be presented as
+        // GATT services because no GATT discovery has happened against them.
+        val enumerated = servicesUuids.filter { it.wasEnumerated }
+        val advertisedOnly = servicesUuids.filterNot { it.wasEnumerated }
 
-        val characteristicCount = servicesUuids.sumOf { it.characteristics.size }
-        val title = stringResource(
-            R.string.device_details_gatt_services_header,
-            servicesUuids.size,
-            characteristicCount,
-        )
-        ExpandableLine(title, initiallyExpanded = false) {
-            servicesUuids.forEach { service ->
-                ServiceDetails(service, viewModel)
+        // GATT block: only the enumerated set drives this header + the chip list. For
+        // BR/EDR-only devices, hide it entirely unless we either captured services or SDP
+        // claimed ATT support — avoids the misleading "0/0 discovered" line on every Classic
+        // peer.
+        val isBrEdrOnly = transport == Transport.BREDR
+        val showGattBlock = enumerated.isNotEmpty() || (!isBrEdrOnly) || sdpIndicatesGatt
+        if (showGattBlock) {
+            val characteristicCount = enumerated.sumOf { it.characteristics.size }
+            val title = stringResource(
+                R.string.device_details_gatt_services_header,
+                enumerated.size,
+                characteristicCount,
+            )
+            ExpandableLine(title, initiallyExpanded = false) {
+                enumerated.forEach { service ->
+                    ServiceDetails(service, viewModel)
+                }
+            }
+        }
+
+        // Advertised-only block: the LE adv-record's Service UUIDs field contents that have
+        // never been GATT-enumerated. Tappable lines retain their CLUES purpose dialog but
+        // skip the characteristic-tree pretence.
+        if (advertisedOnly.isNotEmpty()) {
+            val advTitle = stringResource(R.string.device_details_advertised_services_header, advertisedOnly.size)
+            ExpandableLine(advTitle, initiallyExpanded = false) {
+                advertisedOnly.forEach { service ->
+                    ServiceDetails(service, viewModel)
+                }
             }
         }
     }
@@ -495,23 +519,39 @@ object DeviceDetailsScreen {
         val name = service.name
         val clues = service.clues
         val hasPurpose = clues?.purpose != null
-        ExpandableLine(
-            title = { UuidTitle(uuid = serviceUuid, name = name, clues = clues) },
-            isExpandable = service.characteristics.isNotEmpty() || hasPurpose,
-            initiallyExpanded = service.characteristics.isNotEmpty(),
+        // Each Service is wrapped in its own black-outlined pill with a soft blue background;
+        // each child Characteristic is wrapped in its own black-outlined green pill. The
+        // colour pairing makes the GATT hierarchy visually obvious at a glance, mirroring an
+        // older prototype design the user wants restored.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(GATT_SERVICE_BG)
+                .border(width = 1.dp, color = Color.Black, shape = RoundedCornerShape(8.dp))
+                .padding(8.dp)
         ) {
-            Column {
-                if (hasPurpose) {
-                    CluesPurpose(clues!!.purpose!!)
-                    Spacer(Modifier.height(8.dp))
-                }
-                if (service.characteristics.isNotEmpty()) {
-                    Column(
-                        Modifier
-                            .border(width = 1.dp, color = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        service.characteristics.forEach { characteristic ->
+            ExpandableLine(
+                title = { UuidTitle(uuid = serviceUuid, name = name, clues = clues) },
+                isExpandable = service.characteristics.isNotEmpty() || hasPurpose,
+                initiallyExpanded = service.characteristics.isNotEmpty(),
+            ) {
+                Column {
+                    if (hasPurpose) {
+                        CluesPurpose(clues!!.purpose!!)
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    service.characteristics.forEach { characteristic ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(GATT_CHARACTERISTIC_BG)
+                                .border(width = 1.dp, color = Color.Black, shape = RoundedCornerShape(8.dp))
+                                .padding(8.dp)
+                        ) {
                             CharacteristicDetails(service.uuid, characteristic, viewModel)
                         }
                     }
@@ -1126,6 +1166,15 @@ object DeviceDetailsScreen {
     private class BestFitMarker(map: MapView) : Marker(map)
 
     private val BEST_FIT_MARKER_TITLE = "Best-fit (RSSI-weighted)"
+
+    /**
+     * Pastel tints for the GATT hierarchy: each Service is rendered on a soft blue card and
+     * each Characteristic on a soft green card, both behind a 1dp black outline. Material 3
+     * "100"-step swatches — light enough to read on the white surface but distinct enough that
+     * the Service / Characteristic boundary pops without a separator line.
+     */
+    private val GATT_SERVICE_BG = Color(0xFFB3E5FC) // Material Light Blue 200
+    private val GATT_CHARACTERISTIC_BG = Color(0xFFC8E6C9) // Material Light Green 200
 
     private fun initMapState(map: MapView, colorScheme: ColorScheme) {
         map.setMultiTouchControls(true)

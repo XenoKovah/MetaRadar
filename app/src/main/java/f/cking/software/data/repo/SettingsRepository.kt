@@ -69,14 +69,6 @@ class SettingsRepository(
         sharedPreferences.edit().putLong(KEY_FIRST_APP_LAUNCH_TIME, value).apply()
     }
 
-    fun getEnjoyTheAppAnswered(): Boolean {
-        return sharedPreferences.getBoolean(KEY_ENJOY_THE_APP_ANSWERED, false)
-    }
-
-    fun setEnjoyTheAppAnswered(value: Boolean) {
-        sharedPreferences.edit().putBoolean(KEY_ENJOY_THE_APP_ANSWERED, value).apply()
-    }
-
     fun setHideBackgroundLocationWarning(value: Long) {
         sharedPreferences.edit { putLong(KEY_HIDE_BACKGROUND_LOCATION_WARNING, value) }
         hideBackgroundLocationWarning.tryEmit(value)
@@ -88,14 +80,6 @@ class SettingsRepository(
 
     fun observeHideBackgroundLocationWarning(): Flow<Long> {
         return hideBackgroundLocationWarning
-    }
-
-    fun getEnjoyTheAppStartingPoint(): Long {
-        return sharedPreferences.getLong(KEY_ENJOY_THE_APP_STARTING_POINT, NO_ENJOY_THE_APP_STARTING_POINT)
-    }
-
-    fun setEnjoyTheAppStartingPoint(value: Long) {
-        sharedPreferences.edit { putLong(KEY_ENJOY_THE_APP_STARTING_POINT, value) }
     }
 
     fun setSilentMode(enabled: Boolean) {
@@ -178,6 +162,16 @@ class SettingsRepository(
     }
 
     /**
+     * Mirrors the BTIDES_to_BTIDALPOOL.py `--use-test-db` flag. When true, uploads route to
+     * the BTIDALPOOL server's alternate `bttest` database instead of the production pool —
+     * useful while iterating without polluting the public dataset.
+     */
+    fun getBtidalpoolUseTestDb(): Boolean = sharedPreferences.getBoolean(KEY_BTIDALPOOL_USE_TEST_DB, false)
+    fun setBtidalpoolUseTestDb(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_BTIDALPOOL_USE_TEST_DB, value) }
+    }
+
+    /**
      * Tracks who started the currently-running BgScanService:
      *   - NONE: service is not running, or was started before this concept existed.
      *   - USER_EXPLICIT: user tapped Scan FAB / kept-on toggle / boot-on. Survives app restarts.
@@ -203,8 +197,6 @@ class SettingsRepository(
         private const val KEY_RUN_ON_STARTUP = "key_run_on_startup"
         private const val KEY_RUN_CONNECT_ALL_ON_STARTUP = "key_run_connect_all_on_startup"
         private const val KEY_FIRST_APP_LAUNCH_TIME = "key_first_app_launch_time"
-        private const val KEY_ENJOY_THE_APP_ANSWERED = "key_enjoy_the_app_answered_v1"
-        private const val KEY_ENJOY_THE_APP_STARTING_POINT = "key_enjoy_the_app_starting_point"
         private const val KEY_SILENT_NETWORK_MODE = "silent_network_mode"
         private const val KEY_CURRENT_BATCH_SORTING_STRATEGY_ID = "key_current_batch_sorting_strategy_id"
         private const val KEY_HIDE_BACKGROUND_LOCATION_WARNING = "key_hide_background_location_warning"
@@ -217,8 +209,8 @@ class SettingsRepository(
         private const val KEY_SCAN_START_MODE = "key_scan_start_mode"
         private const val KEY_DISCOVER_LE_ENABLED = "key_discover_le_enabled"
         private const val KEY_DISCOVER_BR_EDR_ENABLED = "key_discover_br_edr_enabled"
+        private const val KEY_BTIDALPOOL_USE_TEST_DB = "key_btidalpool_use_test_db"
 
         const val NO_APP_LAUNCH_TIME = -1L
-        const val NO_ENJOY_THE_APP_STARTING_POINT = -1L
     }
 }

@@ -124,21 +124,34 @@ object ConnectAllScreen {
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
             }
-            // Status line: while a pass is running this shows "Connecting X/Y …". Once the user
-            // hits Stop (or before any run) it reverts to the live "N potentially connectable
-            // devices visible" count, re-polled every 10 s by the VM and on every scan batch.
+            // Status block:
+            //   - In-progress: a short headline ("Pass N — Starting…", or the latest finish
+            //     line) followed by one line per active worker slot (4 LE + 1 BR/EDR, up to
+            //     5 simultaneous "Connecting BDADDR Name…" rows).
+            //   - Idle: the live "N potentially connectable devices visible" count, re-polled
+            //     every 10 s by the VM and on every scan batch.
             // The persistent Done summary below captures the prior pass's outcome separately.
             Spacer(modifier = Modifier.height(8.dp))
-            val statusOrCandidates = if (viewModel.inProgress) {
-                viewModel.statusLine
+            if (viewModel.inProgress) {
+                Text(text = viewModel.statusLine, fontWeight = FontWeight.Light)
+                viewModel.inFlightLines.forEach { line ->
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "• $line",
+                        fontWeight = FontWeight.Light,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             } else {
-                stringResource(
-                    R.string.connect_all_candidates_count,
-                    viewModel.candidateDevices.size,
-                    viewModel.candidateVendorFiltered,
+                Text(
+                    text = stringResource(
+                        R.string.connect_all_candidates_count,
+                        viewModel.candidateDevices.size,
+                        viewModel.candidateVendorFiltered,
+                    ),
+                    fontWeight = FontWeight.Light,
                 )
             }
-            Text(text = statusOrCandidates, fontWeight = FontWeight.Light)
             if (viewModel.lastDoneSummary.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 ExpandableDoneSummary(viewModel)

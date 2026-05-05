@@ -6,7 +6,7 @@ import org.koin.dsl.module
 object InteractorsModule {
 
     val module = module {
-        single { FilterCheckerImpl(get(), get(), get(), get()) }
+        single { FilterCheckerImpl(get(), get(), get(), get(), get()) }
 
         factory { ClearGarbageInteractor(get(), get(), get(), get()) }
         factory { ClearAllDevicesInteractor(get()) }
@@ -24,14 +24,13 @@ object InteractorsModule {
         factory { CreateBTIDESFileInteractor(get(), get()) }
         factory { ExportBTIDESInteractor(get(), get()) }
         factory { ClearBTIDESLogInteractor(get()) }
+        factory { UploadToBtidalpoolInteractor(get(), get(), get(), get(), get()) }
         single { VendorIdentifier(get()) }
         factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get(), get()) }
         factory { CheckDeviceLocationHistoryInteractor(get()) }
         factory { CheckUserLocationHistoryInteractor(get()) }
         factory { GetAppUsageDaysInteractor(get()) }
         factory { SaveFirstAppLaunchTimeInteractor(get()) }
-        factory { CheckNeedToShowEnjoyTheAppInteractor(get(), get()) }
-        factory { EnjoyTheAppAskLaterInteractor(get()) }
         factory { SaveOrMergeBatchInteractor(get(), get(), get(), get(), get()) }
         factory { GetDatabaseInfoInteractor(get(), get()) }
     }
