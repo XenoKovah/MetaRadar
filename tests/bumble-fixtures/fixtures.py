@@ -89,6 +89,52 @@ FIXTURES = {
             ],
         },
     },
+    # ------------------------------------------------------------------
+    # BR/EDR fixtures
+    # ------------------------------------------------------------------
+    # `kind = "classic"` switches the harness from LE advertising to
+    # BR/EDR discoverable + connectable. There is no `adv_data` (LE-only
+    # concept); the fixture instead specifies a Class of Device and
+    # relies on the controller's hardware-assigned public BD_ADDR.
+    #
+    # The matching Kotlin test filters its scan by *local name* rather
+    # than BD_ADDR so it stays portable across dongles — the bumble
+    # `Device.with_hci(name=..., address=...)` argument we pass is
+    # ignored for the BR/EDR public address (the controller assigns
+    # that), but `name` controls the value bumble writes via
+    # `HCI_Write_Local_Name_Command`.
+    "T13": {
+        "kind": "classic",
+        "description": "BR/EDR-discoverable device with known local name + Class of Device (Phone / Smart phone)",
+        # bumble's Device.with_hci still requires *some* Address argument
+        # but it's only used for LE; BR/EDR inquiry responders to the
+        # phone with the controller's public BD_ADDR. We pass a
+        # placeholder so the constructor doesn't choke; the Kotlin
+        # assertion side filters by name instead of MAC.
+        "address": "F0:F1:F2:F3:F4:13",
+        "local_name": "DMBT-T13",
+        # 0x00020C = Major device class 0x02 (Phone, bits 12..8 = 2) +
+        # minor device class 0x03 (Smart phone, bits 7..2 = 3) + format
+        # 00 + no service classes. Decoded:
+        #   bits 23..13 (service classes)   = 0       — none set
+        #   bits 12..8  (major device class)= 0b00010 = 2  → Phone
+        #   bits 7..2   (minor device class)= 0b000011 = 3 → Smart phone
+        #   bits 1..0   (format)            = 00
+        # Matches Android's BluetoothClass.Device.PHONE_SMART = 0x020C
+        # (which is Android's `getDeviceClass()` view = bits 12..2),
+        # so the test can pin `getMajorDeviceClass() == PHONE` (0x0200)
+        # without depending on minor-class detail. Distinct from any
+        # default an empty-CoD controller might emit (0 = Miscellaneous).
+        "class_of_device": 0x00020C,
+        "expected": {
+            "name": "DMBT-T13",
+            # Android's BluetoothDevice.DEVICE_TYPE_CLASSIC. Some
+            # dual-mode dongles report DEVICE_TYPE_DUAL=3 even though
+            # the LE radio isn't advertising — the test accepts either.
+            "device_type_classic_or_dual": True,
+            "major_device_class": 0x0200,  # PHONE
+        },
+    },
 }
 
 
