@@ -23,10 +23,12 @@ import f.cking.software.data.repo.JournalRepository
 import f.cking.software.data.repo.LocationRepository
 import f.cking.software.data.repo.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 class DataModule(
     private val sharedPreferencesName: String,
+    private val btidalpoolAuthPreferencesName: String,
     private val appDatabaseName: String,
     private val globalScope: CoroutineScope,
 ) {
@@ -34,7 +36,16 @@ class DataModule(
         single { globalScope }
         single { BTIDESRepository(get()) }
         single { BtidalpoolClient(get()) }
-        single { BtidalpoolAuthRepository(get(), get()) }
+        // Qualified inject: pull the BTIDALPOOL-only SharedPreferences (excluded from backup) for
+        // token storage; pull the default app prefs as `legacyPrefs` so a one-shot migration
+        // can move tokens out of the backed-up file on first run after upgrade.
+        single {
+            BtidalpoolAuthRepository(
+                sharedPreferences = get(named(BTIDALPOOL_AUTH_PREF_QUALIFIER)),
+                client = get(),
+                legacyPrefs = get(),
+            )
+        }
         single { CluesRepository(get()) }
         single { OuiRepository(get()) }
         single { BleScannerHelper(get(), get(), get(), get(), get(), get()) }
@@ -42,6 +53,9 @@ class DataModule(
         single { SdpEnumerationHelper(get()) }
         single { BleFiltersProvider(get()) }
         single { get<Context>().getSharedPreferences(sharedPreferencesName, MODE_PRIVATE) }
+        single(named(BTIDALPOOL_AUTH_PREF_QUALIFIER)) {
+            get<Context>().getSharedPreferences(btidalpoolAuthPreferencesName, MODE_PRIVATE)
+        }
         single { SettingsRepository(get()) }
         single { AppDatabase.build(get(), appDatabaseName) }
         single { DevicesRepository(get()) }
@@ -53,5 +67,9 @@ class DataModule(
         single { JournalRepository(get()) }
         single { NotificationsHelper(get(), get(), get()) }
         single { PowerModeHelper(get(), get(), get()) }
+    }
+
+    companion object {
+        const val BTIDALPOOL_AUTH_PREF_QUALIFIER = "btidalpool-auth-prefs"
     }
 }

@@ -51,7 +51,7 @@ class TheApp : Application() {
         startKoin {
             androidContext(this@TheApp)
             modules(
-                DataModule(SHARED_PREF_NAME, DATABASE_NAME, applicationScope).module,
+                DataModule(SHARED_PREF_NAME, BTIDALPOOL_AUTH_PREF_NAME, DATABASE_NAME, applicationScope).module,
                 InteractorsModule.module,
                 UiModule.module,
                 module { single { this@TheApp } }
@@ -67,6 +67,11 @@ class TheApp : Application() {
 
     companion object {
         const val SHARED_PREF_NAME = "app-prefs"
+        // BTIDALPOOL OAuth tokens live in their own SharedPreferences file so backup_rules.xml /
+        // data_extraction_rules.xml can <exclude> *only* the auth file from cloud-backup and
+        // device-transfer without losing user settings on restore. The file name (`.xml` is
+        // appended automatically) is what the backup-rules path attribute matches against.
+        const val BTIDALPOOL_AUTH_PREF_NAME = "btidalpool-auth"
         const val DATABASE_NAME = "app-database"
     }
 }

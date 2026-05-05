@@ -3,6 +3,7 @@ package f.cking.software.data.btidalpool
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import f.cking.software.TheApp
 import junit.framework.AssertionFailedError
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -20,10 +21,11 @@ import java.security.MessageDigest
  * is small enough that the test always completes within a few seconds.
  *
  * Auth flow: this test reuses *cached* credentials written to the production app's
- * `app-prefs.xml` by [BtidalpoolAuthRepository] — the user must have signed in via the
- * Settings screen at least once before running this. When no cached token is found, the test
- * is skipped via [assumeNotNull] rather than failing, so CI pipelines without bundled creds
- * stay green.
+ * `btidalpool-auth.xml` by [BtidalpoolAuthRepository] — the user must have signed in via the
+ * Settings screen at least once before running this. (Tokens used to live in `app-prefs.xml`;
+ * the repository's init-block migration moves them to the dedicated, backup-excluded file the
+ * first time the new build runs.) When no cached token is found, the test is skipped via
+ * [assumeNotNull] rather than failing, so CI pipelines without bundled creds stay green.
  *
  * Test-DB only: every request sets `use_test_db = true` so we never write to the public
  * pool. The server's bttest database accepts the same schema and applies the same hash dedup,
@@ -51,8 +53,11 @@ class BtidalpoolUploadInstrumentedTest {
     fun upload_test_fixture_to_test_db_succeeds_or_dedups() = runBlocking {
         // Reuse the auth state the user established via the Settings screen. If empty we skip
         // (no creds → no test). Don't try to fall back to a hard-coded fixture: tokens expire.
-        val sharedPrefs = targetContext.getSharedPreferences("app-prefs", Context.MODE_PRIVATE)
-        val authRepo = BtidalpoolAuthRepository(sharedPrefs, BtidalpoolClient(targetContext))
+        // Mirror the production wiring: tokens live in `btidalpool-auth.xml` and the repo runs
+        // a one-shot migration from the legacy `app-prefs.xml` on construction.
+        val authPrefs = targetContext.getSharedPreferences(TheApp.BTIDALPOOL_AUTH_PREF_NAME, Context.MODE_PRIVATE)
+        val legacyPrefs = targetContext.getSharedPreferences(TheApp.SHARED_PREF_NAME, Context.MODE_PRIVATE)
+        val authRepo = BtidalpoolAuthRepository(authPrefs, BtidalpoolClient(targetContext), legacyPrefs)
         val cached = authRepo.current()
         assumeNotNull("BTIDALPOOL test skipped — sign in via Settings first", cached)
         val auth = cached!!

@@ -27,6 +27,7 @@ import timber.log.Timber
 class BtidalpoolAuthRepository(
     private val sharedPreferences: SharedPreferences,
     private val client: BtidalpoolClient,
+    legacyPrefs: SharedPreferences,
 ) {
 
     /**
@@ -38,6 +39,15 @@ class BtidalpoolAuthRepository(
         val refreshToken: String,
         val email: String?,
     )
+
+    init {
+        // One-shot migration: tokens used to live in the default `app-prefs` file, which is
+        // covered by Android's cloud auto-backup. They now live in their own prefs file that
+        // backup_rules.xml / data_extraction_rules.xml explicitly <exclude>. On the first run
+        // after upgrade, copy any existing tokens out of the legacy file and delete them
+        // there. Runs before [state] is initialized so [load] sees the migrated values.
+        migrateFromLegacyPrefs(legacyPrefs)
+    }
 
     private val state = MutableStateFlow(load())
 
@@ -161,6 +171,24 @@ class BtidalpoolAuthRepository(
         val refresh = sharedPreferences.getString(KEY_REFRESH_TOKEN, null) ?: return null
         val email = sharedPreferences.getString(KEY_EMAIL, null)
         return AuthState(token, refresh, email)
+    }
+
+    private fun migrateFromLegacyPrefs(legacyPrefs: SharedPreferences) {
+        // Already migrated (or never had legacy entries) — nothing to do.
+        if (sharedPreferences.contains(KEY_TOKEN)) return
+        val token = legacyPrefs.getString(KEY_TOKEN, null) ?: return
+        val refresh = legacyPrefs.getString(KEY_REFRESH_TOKEN, null)
+        val email = legacyPrefs.getString(KEY_EMAIL, null)
+        sharedPreferences.edit {
+            putString(KEY_TOKEN, token)
+            if (refresh != null) putString(KEY_REFRESH_TOKEN, refresh)
+            if (email != null) putString(KEY_EMAIL, email)
+        }
+        legacyPrefs.edit {
+            remove(KEY_TOKEN)
+            remove(KEY_REFRESH_TOKEN)
+            remove(KEY_EMAIL)
+        }
     }
 
     companion object {
