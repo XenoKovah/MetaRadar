@@ -205,6 +205,7 @@
     <!-- Filter chips -->
     <string name="filter_btc">BTC</string>
     <string name="filter_dual">Dual</string>
+    <string name="filter_connectable">Connectable</string>
 
     <!-- Address-tag tooltip text for BR/EDR addresses -->
     <string name="address_type_btc_tag" translatable="false">BTC</string>
@@ -305,6 +306,8 @@
     <string name="device_details_detect_count">Detect count: </string>
     <string name="device_details_first_detection">First detection</string>
     <string name="device_details_last_detection">Last detection</string>
+    <string name="device_details_most_recent_rssi">Most recent RSSI</string>
+    <string name="device_details_rssi_dbm">%1$d dBm</string>
     <string name="device_details_dialog_time_period_selected">%s (selected)</string>
     <string name="change_history_period_dialog">Change location history period</string>
     <string name="device_details_history_period">"History period: %s"</string>
@@ -330,7 +333,7 @@
     <string name="sort_by_title">Sort by</string>
     <string name="sort_type_standart">Default</string>
     <string name="sort_type_by_distance">Distance</string>
-    <string name="sort_type_by_device_type">Device type</string>
+    <string name="sort_type_by_manufacturer">Manufacturer</string>
     <string name="active_mode_show_all">Show all %s online devices</string>
     <string name="active_mode_capped">Showing %1$d of %2$d — use search/filter chips above to narrow further.</string>
     <string name="device_is_online">Online</string>

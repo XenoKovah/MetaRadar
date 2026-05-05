@@ -48,6 +48,17 @@ sealed class DeviceFilter(@Transient protected val checkDifficulty: Int = 0) {
     data class IsPaired(val isPaired: Boolean) : DeviceFilter()
 
     /**
+     * Match devices whose latest scan observation marked them as connectable (LE
+     * connectable-advertisement bit set, or BR/EDR inquiry-respondent which we always treat
+     * as connectable). Stored on `device.is_connectable` so it pushes into SQL — the SQL
+     * fast-path returns only the matching subset of the M=200k+ row table directly to the
+     * Devices tab list.
+     */
+    @Serializable
+    @SerialName("is_connectable")
+    data class IsConnectable(val isConnectable: Boolean) : DeviceFilter()
+
+    /**
      * Match devices whose resolved [ExtendedAddressInfo.BleAddressType] is in [types]. Carries
      * an enum-name list so the filter is fully serialisable. The address-type classification
      * is computed on the fly by [BuildExtendedAddressInfoInteractor] (using the address bytes

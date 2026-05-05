@@ -417,7 +417,13 @@ class DeviceDetailsViewModel(
         value: ByteArray? = null,
         description: ByteArray? = null
     ): CharacteristicData {
-        val valueStr = value?.decodeToString()
+        // Prefer a UUID-aware structured decode (e.g. PnP ID = 0x2A50, which is a 7-byte
+        // packed struct, not a UTF-8 string) over the generic decodeToString() — for binary
+        // chars the latter prints garbage. Falls back to UTF-8 when no formatter exists.
+        val structured = value?.let {
+            f.cking.software.domain.interactor.GattValueFormatter.format(characteristic.uuid, it)
+        }
+        val valueStr = structured ?: value?.decodeToString()
         val valueHex = value?.toHexString()?.uppercase()?.let { "0x$it" }
         return CharacteristicData(
             name = description?.decodeToString() ?: getCharacteristicNameIfKnown(characteristic),

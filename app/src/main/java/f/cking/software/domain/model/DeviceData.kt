@@ -24,6 +24,11 @@ data class DeviceData(
     val isConnectable: Boolean,
     val transport: Transport = Transport.LE,
     val sdpUuids: List<String> = emptyList(),
+    // GATT 0x2A29 (Manufacturer Name String) — peer-self-reported via Generic Access service.
+    // Used as a 2nd-tier fallback for [resolvedManufacturerName] when the device has no MSD-
+    // derived manufacturer info; preferred over IEEE OUI lookup because it's an explicit
+    // peer claim rather than an inference from address bytes.
+    val gattManufacturerName: String? = null,
 ) {
 
     val resolvedDeviceClass: DeviceClass by lazy {
@@ -43,6 +48,7 @@ data class DeviceData(
      */
     val resolvedManufacturerName: String? by lazy {
         manufacturerInfo?.name?.takeIf { it.isNotBlank() }
+            ?: gattManufacturerName?.takeIf { it.isNotBlank() }
             ?: run {
                 if (cachedExtendedAddressInfo.type != ExtendedAddressInfo.BleAddressType.PUBLIC) return@run null
                 val koin = org.koin.core.context.GlobalContext.get()
@@ -121,7 +127,13 @@ data class DeviceData(
         return this.copy(
             detectCount = detectCount + 1,
             lastDetectTimeMs = new.lastDetectTimeMs,
-            name = new.name,
+            // Preserve any name we already have when the fresh scan didn't carry one. This
+            // matters for peers whose advertised Local Name only appears intermittently AND
+            // for names sourced from the GATT 0x2A00 fallback (see
+            // BulkEnumerateGattInteractor's CharacteristicRead handler) — without this guard,
+            // a later name-less scan would null out the captured Device Name on every
+            // re-detection, defeating the fallback.
+            name = new.name ?: this.name,
             manufacturerInfo = new.manufacturerInfo,
             rssi = new.rssi,
             systemAddressType = new.systemAddressType,
@@ -135,6 +147,10 @@ data class DeviceData(
             // observations don't include SDP results, only the SDP enumeration path does.
             transport = Transport.merge(transport, new.transport),
             sdpUuids = if (new.sdpUuids.isNotEmpty()) new.sdpUuids else sdpUuids,
+            // GATT-captured manufacturer name only ever arrives via [DevicesRepository.
+            // setGattManufacturerNameIfMissing], not through scan-based detections. A fresh
+            // detection has it null; preserve whatever we already captured.
+            gattManufacturerName = new.gattManufacturerName ?: gattManufacturerName,
         )
     }
 }

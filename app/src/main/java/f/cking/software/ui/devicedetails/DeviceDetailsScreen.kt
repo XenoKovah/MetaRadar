@@ -388,6 +388,20 @@ object DeviceDetailsScreen {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(text = stringResource(R.string.device_details_last_detection), fontWeight = FontWeight.Bold)
                     Text(text = deviceData.lastDetectionExactTime(LocalContext.current, formatStyle = FormatStyle.MEDIUM))
+
+                    // Most-recent RSSI: prefer the live value off the active scan batch (via
+                    // viewModel.onlineStatusData) when the peer is currently in range; fall
+                    // back to the persisted DeviceData.rssi (last observed during any prior
+                    // detection) so devices that aren't in range right now still show their
+                    // last-known signal strength. Hidden when both are null (e.g. a brand-
+                    // new row that has only ever been seen via BR/EDR inquiry without an
+                    // RSSI sample).
+                    val mostRecentRssi = viewModel.onlineStatusData?.signalStrength ?: deviceData.rssi
+                    if (mostRecentRssi != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(text = stringResource(R.string.device_details_most_recent_rssi), fontWeight = FontWeight.Bold)
+                        Text(text = stringResource(R.string.device_details_rssi_dbm, mostRecentRssi))
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
             }

@@ -57,6 +57,7 @@ fun DeviceEntity.toDomain(appleAirDrop: AppleAirDrop? = null): DeviceData {
         // range falls back to LE (the same default new rows get).
         transport = Transport.entries.getOrElse(transport) { Transport.LE },
         sdpUuids = sdpUuids,
+        gattManufacturerName = gattManufacturerName,
     )
 }
 
@@ -80,6 +81,7 @@ fun DeviceData.toData(): DeviceEntity {
         isConnectable = isConnectable,
         transport = transport.ordinal,
         sdpUuids = sdpUuids,
+        gattManufacturerName = gattManufacturerName,
     )
 }
 

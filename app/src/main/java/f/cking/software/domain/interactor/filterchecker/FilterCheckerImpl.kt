@@ -50,6 +50,9 @@ class FilterCheckerImpl(
     private val isPaired = filterChecker<DeviceFilter.IsPaired> { device, filter ->
         device.isPaired == filter.isPaired
     }
+    private val isConnectable = filterChecker<DeviceFilter.IsConnectable> { device, filter ->
+        device.isConnectable == filter.isConnectable
+    }
     private val addressType = filterChecker<DeviceFilter.AddressType>(useCache = true) { device, filter ->
         // The cached `extendedAddressInfo()` does the heavy classification work once per
         // DeviceData instance; filter rows by enum-name match against the user's selection.
@@ -94,6 +97,7 @@ class FilterCheckerImpl(
             is DeviceFilter.Address -> address.check(deviceData, filter)
             is DeviceFilter.Manufacturer -> manufacturer.check(deviceData, filter)
             is DeviceFilter.IsPaired -> isPaired.check(deviceData, filter)
+            is DeviceFilter.IsConnectable -> isConnectable.check(deviceData, filter)
             is DeviceFilter.AddressType -> addressType.check(deviceData, filter)
             is DeviceFilter.TransportFilter -> transportFilter.check(deviceData, filter)
             is DeviceFilter.HasGatt -> hasGatt.check(deviceData, filter)

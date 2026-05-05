@@ -541,12 +541,33 @@ class BleScannerHelper(
         Timber.tag(tag).i("Hard close all connections done. ${stillConnected.size} connections left")
     }
 
+    /**
+     * Initiate a GATT char read. Returns `true` if the read was queued (the result will arrive
+     * via the [BluetoothGattCallback.onCharacteristicRead] path → `CharacteristicRead` /
+     * `FailedReadCharacteristic` flow events). Returns `false` when the read could NOT be
+     * initiated — either because [BluetoothGatt.readCharacteristic] returned false (busy /
+     * unsupported / wrong state) or because the system threw a [SecurityException] (a few
+     * GATT chars are gated behind `BLUETOOTH_PRIVILEGED`, e.g. 0x2B3A "Server Supported
+     * Features"; observed in dense Connect-All passes).
+     *
+     * The Boolean lets the caller advance to the next characteristic instead of waiting for
+     * a callback that will never arrive — without this signal, the bulk enumerator's
+     * collectUntil hangs until the 20s per-device timeout. The earlier `void` signature also
+     * let SecurityException escape into the connect flow, which the bulk pipeline's outer
+     * `catch (Throwable)` swept up as a fatal device-level ERROR.
+     */
     @SuppressLint("MissingPermission")
-    fun readCharacteristic(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+    fun readCharacteristic(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean {
         Timber.tag(TAG_CONNECT).d("Reading characteristic ${characteristic.uuid}")
-        val isSuccess = gatt.readCharacteristic(characteristic)
-        if (!isSuccess) {
-            Timber.tag(TAG_CONNECT).e("Error while reading characteristic ${characteristic.uuid}")
+        return try {
+            val initiated = gatt.readCharacteristic(characteristic)
+            if (!initiated) {
+                Timber.tag(TAG_CONNECT).w("readCharacteristic refused for ${characteristic.uuid} (busy / unsupported)")
+            }
+            initiated
+        } catch (e: SecurityException) {
+            Timber.tag(TAG_CONNECT).w("BLUETOOTH_PRIVILEGED denied for ${characteristic.uuid}; skipping")
+            false
         }
     }
 

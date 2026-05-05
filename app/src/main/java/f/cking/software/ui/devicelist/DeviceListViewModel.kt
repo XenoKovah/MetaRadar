@@ -64,6 +64,7 @@ class DeviceListViewModel(
             DefaultFilters.btc(context),
             DefaultFilters.dual(context),
             DefaultFilters.gatt(context),
+            DefaultFilters.connectable(context),
             DefaultFilters.notApple(context),
             DefaultFilters.notSamsung(context),
         )
@@ -372,29 +373,57 @@ class DeviceListViewModel(
             filter = DeviceFilter.HasGatt(hasGatt = true),
         )
 
+        /**
+         * "Connectable" quick-filter: any device whose latest scan observation marked it as
+         * connectable (LE connectable-advertisement bit set, or BR/EDR inquiry-respondent
+         * which we always treat as connectable). Pushes to SQL via the `is_connectable`
+         * column so the Devices tab gets a fast narrowed result set.
+         */
+        fun connectable(context: Context) = FilterHolder(
+            displayName = context.getString(R.string.filter_connectable),
+            filter = DeviceFilter.IsConnectable(isConnectable = true),
+        )
+
     }
 
+    /**
+     * Sort options for the "Devices around you" header. Single-select via the radio-button
+     * dialog; default is [BY_DISTANCE] so the user immediately sees the closest peers at the
+     * top. The legacy [GENERAL] option (lastDetectTimeMs desc + name + rssi + manufacturer
+     * tiebreakers) is retained because it's what the rest of the device list (paginated) uses
+     * as its underlying ordering, and some users prefer "most-recently-seen first".
+     *
+     * The previous BY_TYPE option was removed (low signal — DeviceClass is largely "Unknown"
+     * for the bulk of LE peers), and BY_MANUFACTURER takes its slot since that's a more
+     * useful axis once a Connect All pass has populated the GATT-derived manufacturer
+     * fallback.
+     */
     enum class CurrentBatchSortingStrategy(
         val comparator: Comparator<DeviceData>,
         @StringRes val displayNameRes: Int,
     ) {
-        GENERAL(GENERAL_COMPARATOR, R.string.sort_type_standart),
         BY_DISTANCE(Comparator { second, first ->
             when {
                 first.distance() != second.distance() -> second.distance()?.compareTo(first.distance() ?: return@Comparator 1) ?: -1
                 else -> GENERAL_COMPARATOR.compare(first, second)
             }
         }, R.string.sort_type_by_distance),
-        BY_TYPE(Comparator { first, second ->
-            val firstType = first.resolvedDeviceClass
-            val secondType = second.resolvedDeviceClass
+        GENERAL(GENERAL_COMPARATOR, R.string.sort_type_standart),
+        BY_MANUFACTURER(Comparator { first, second ->
+            // Sort by resolvedManufacturerName (MSD → GATT 0x2A29 → IEEE OUI fallback chain),
+            // null-last so unidentified devices sink to the bottom. Within a manufacturer
+            // group, fall back to the GENERAL ordering so the user gets a stable secondary
+            // sort by recency + name.
+            val firstName = first.resolvedManufacturerName
+            val secondName = second.resolvedManufacturerName
             when {
-                firstType !is DeviceClass.Unknown && secondType is DeviceClass.Unknown -> -1
-                firstType is DeviceClass.Unknown && secondType !is DeviceClass.Unknown -> 1
-                firstType != secondType -> firstType::class.getFullName().compareTo(secondType::class.getFullName())
+                firstName == null && secondName != null -> 1
+                firstName != null && secondName == null -> -1
+                firstName != null && secondName != null && firstName != secondName ->
+                    firstName.compareTo(secondName, ignoreCase = true)
                 else -> GENERAL_COMPARATOR.compare(first, second)
             }
-        }, R.string.sort_type_by_device_type)
+        }, R.string.sort_type_by_manufacturer),
     }
 
     enum class ActiveScannerExpandedState {

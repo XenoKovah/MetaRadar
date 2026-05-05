@@ -39,4 +39,8 @@ data class DeviceEntity(
     // SDP service-class UUIDs returned by BluetoothDevice.fetchUuidsWithSdp(); same
     // serialization shape as `service_uuids`.
     @ColumnInfo(name = "sdp_uuids", defaultValue = "") val sdpUuids: List<String> = emptyList(),
+    // Captured from GATT 0x2A29 (Manufacturer Name String) during Connect All / device-details
+    // GATT enumeration. Display fallback under "Manufacturer" when no MSD-derived name is
+    // available — see DeviceData.resolvedManufacturerName.
+    @ColumnInfo(name = "gatt_manufacturer_name") val gattManufacturerName: String? = null,
 )

@@ -39,7 +39,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 25,
+    version = 26,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -133,6 +133,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_22_23,
                     MIGRATION_23_24,
                     MIGRATION_24_25,
+                    MIGRATION_25_26,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -335,6 +336,14 @@ abstract class AppDatabase : RoomDatabase() {
                 "UPDATE device SET transport = " +
                     "CASE WHEN transport = 0 THEN 0 ELSE transport - 1 END;"
             )
+        }
+
+        // Adds the GATT-derived manufacturer-name column. Populated via the GATT 0x2A29
+        // (Manufacturer Name String) characteristic captured during Connect All — surfaces
+        // as a last-resort fallback under the "Manufacturer" line on Device Details when no
+        // MSD-derived name is available.
+        val MIGRATION_25_26 = migration(25, 26) {
+            it.execSQL("ALTER TABLE device ADD COLUMN gatt_manufacturer_name TEXT DEFAULT NULL;")
         }
 
         private fun migration(

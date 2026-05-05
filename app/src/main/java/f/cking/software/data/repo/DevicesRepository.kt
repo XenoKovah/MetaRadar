@@ -143,6 +143,43 @@ class DevicesRepository(
         }
     }
 
+    /**
+     * Promote a GATT-Device-Name (0x2A00 char read) into the row's [DeviceEntity.name] column
+     * IFF nothing else has populated it yet. The advertisement-side scan path is the primary
+     * source of `name`; this is the fallback for peers that don't advertise a Local Name but
+     * do expose Generic Access → Device Name. We refuse to overwrite an existing name so a
+     * later genuine advertisement (or a manual customName edit) always wins.
+     *
+     * Skipping blank/empty inputs guards against the not-uncommon case where a peer ACKs the
+     * read but returns a zero-length value.
+     */
+    suspend fun setNameIfMissing(address: String, name: String) {
+        if (name.isBlank()) return
+        withContext(Dispatchers.IO) {
+            val existing = deviceDao.findByAddress(address) ?: return@withContext
+            if (!existing.name.isNullOrBlank()) return@withContext
+            deviceDao.insert(existing.copy(name = name))
+            notifyLastBatchListener()
+        }
+    }
+
+    /**
+     * Promote a GATT-Manufacturer-Name (0x2A29 char read) into the row's
+     * [DeviceEntity.gattManufacturerName] column IFF nothing is there yet. Surfaces under the
+     * "Manufacturer" line on Device Details as a fallback for peers that don't advertise an
+     * MSD company id but do expose Generic Access → Manufacturer Name String. Refuses to
+     * overwrite a prior capture so a single transient bad read doesn't corrupt the row.
+     */
+    suspend fun setGattManufacturerNameIfMissing(address: String, name: String) {
+        if (name.isBlank()) return
+        withContext(Dispatchers.IO) {
+            val existing = deviceDao.findByAddress(address) ?: return@withContext
+            if (!existing.gattManufacturerName.isNullOrBlank()) return@withContext
+            deviceDao.insert(existing.copy(gattManufacturerName = name))
+            notifyLastBatchListener()
+        }
+    }
+
     suspend fun deleteAllByAddress(addresses: List<String>) {
         withContext(Dispatchers.IO) {
             addresses.splitToBatches(DatabaseUtils.getMaxSQLVariablesNumber()).forEach { addressesBatch ->

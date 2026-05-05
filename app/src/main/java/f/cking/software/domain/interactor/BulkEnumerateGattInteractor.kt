@@ -299,6 +299,21 @@ class BulkEnumerateGattInteractor(
         var gattRef: BluetoothGatt? = null
         var connected = false
 
+        // Drive forward through `pendingChars` until either a read is successfully initiated
+        // (the GATT callback will advance us via CharacteristicRead/FailedReadCharacteristic)
+        // or the list is exhausted (we disconnect). A char that can't be initiated — busy /
+        // unsupported / BLUETOOTH_PRIVILEGED-gated like 0x2B3A — is skipped silently, NOT
+        // waited on. Without this loop, an un-initiable read produced no callback and the
+        // bulk worker stalled until PER_DEVICE_TIMEOUT.
+        fun startNextReadOrDisconnect(gatt: BluetoothGatt) {
+            while (pendingChars.isNotEmpty()) {
+                if (bleScannerHelper.readCharacteristic(gatt, pendingChars.first())) return
+                pendingChars = pendingChars.drop(1)
+            }
+            allCharsRead = true
+            bleScannerHelper.disconnect(gatt)
+        }
+
         return try {
             withTimeoutOrFallback(PER_DEVICE_TIMEOUT) {
                 bleScannerHelper.connectToDevice(device.address)
@@ -320,22 +335,50 @@ class BulkEnumerateGattInteractor(
                                     false
                                 } else {
                                     pendingChars = pickReadableCharacteristics(event.services)
-                                    if (pendingChars.isEmpty()) {
-                                        bleScannerHelper.disconnect(event.gatt)
-                                    } else {
-                                        bleScannerHelper.readCharacteristic(event.gatt, pendingChars.first())
-                                    }
+                                    startNextReadOrDisconnect(event.gatt)
                                     false
                                 }
                             }
                             is BleScannerHelper.DeviceConnectResult.CharacteristicRead -> {
-                                pendingChars = pendingChars.drop(1)
-                                if (pendingChars.isEmpty()) {
-                                    allCharsRead = true
-                                    gattRef?.let { bleScannerHelper.disconnect(it) }
-                                } else {
-                                    gattRef?.let { bleScannerHelper.readCharacteristic(it, pendingChars.first()) }
+                                // GATT 0x2A00 ("Device Name", part of Generic Access service): when a peer
+                                // doesn't advertise a Local Name but exposes the GAP Device Name
+                                // characteristic, decode it and promote it into the device row's `name`
+                                // column. This becomes the display name everywhere — see
+                                // DeviceData.buildDisplayName(), which falls back to `address` when
+                                // both customName and name are null. setNameIfMissing() refuses to
+                                // overwrite an existing name, so a later genuine advertisement still
+                                // wins.
+                                if (event.characteristic.uuid == GAP_DEVICE_NAME_UUID) {
+                                    runCatching {
+                                        val bytes = android.util.Base64.decode(event.valueEncoded64, android.util.Base64.NO_WRAP)
+                                        // Trim NULs that some peers append, then decode as UTF-8.
+                                        val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
+                                        if (name.isNotEmpty()) {
+                                            devicesRepository.setNameIfMissing(device.address, name)
+                                        }
+                                    }.onFailure {
+                                        Timber.tag(TAG).w(it, "Failed to decode 0x2A00 value for ${device.address}")
+                                    }
                                 }
+                                // GATT 0x2A29 ("Manufacturer Name String", Device Information service):
+                                // peer-self-reported vendor name. Surfaces under "Manufacturer" on
+                                // Device Details when no MSD-derived vendor is available; preferred
+                                // over IEEE OUI inference because the peer explicitly claims it.
+                                // setGattManufacturerNameIfMissing refuses to overwrite a prior
+                                // capture, so a single bad read can't corrupt the row.
+                                if (event.characteristic.uuid == DIS_MANUFACTURER_NAME_UUID) {
+                                    runCatching {
+                                        val bytes = android.util.Base64.decode(event.valueEncoded64, android.util.Base64.NO_WRAP)
+                                        val mfg = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
+                                        if (mfg.isNotEmpty()) {
+                                            devicesRepository.setGattManufacturerNameIfMissing(device.address, mfg)
+                                        }
+                                    }.onFailure {
+                                        Timber.tag(TAG).w(it, "Failed to decode 0x2A29 value for ${device.address}")
+                                    }
+                                }
+                                pendingChars = pendingChars.drop(1)
+                                gattRef?.let { startNextReadOrDisconnect(it) }
                                 false
                             }
                             is BleScannerHelper.DeviceConnectResult.FailedReadCharacteristic -> {
@@ -358,12 +401,7 @@ class BulkEnumerateGattInteractor(
                                     gattRef?.let { bleScannerHelper.disconnect(it) }
                                 } else {
                                     pendingChars = pendingChars.drop(1)
-                                    if (pendingChars.isEmpty()) {
-                                        allCharsRead = true
-                                        gattRef?.let { bleScannerHelper.disconnect(it) }
-                                    } else {
-                                        gattRef?.let { bleScannerHelper.readCharacteristic(it, pendingChars.first()) }
-                                    }
+                                    gattRef?.let { startNextReadOrDisconnect(it) }
                                 }
                                 false
                             }
@@ -586,5 +624,15 @@ class BulkEnumerateGattInteractor(
         // cancels the prompt, retrying further reads on the same connection produces a fresh
         // prompt per char.
         private val AUTH_FAILURE_STATUSES = setOf(5, 8, 15)
+        // GAP "Device Name" characteristic — used as the display-name fallback when no
+        // advertised Local Name is captured. UUID per BT SIG: 16-bit 0x2A00 expanded onto
+        // the SIG base UUID 0000xxxx-0000-1000-8000-00805f9b34fb.
+        private val GAP_DEVICE_NAME_UUID: java.util.UUID =
+            java.util.UUID.fromString("00002a00-0000-1000-8000-00805f9b34fb")
+        // Device Information service (0x180A) → "Manufacturer Name String" characteristic.
+        // 16-bit GATT UUID 0x2A29 expanded onto the SIG base UUID. Used as the vendor-name
+        // fallback when no MSD-derived ManufacturerInfo is available.
+        private val DIS_MANUFACTURER_NAME_UUID: java.util.UUID =
+            java.util.UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
     }
 }

@@ -32,8 +32,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -279,7 +279,11 @@ object DeviceListScreen {
                                 .padding(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Checkbox(checked = viewModel.currentBatchSortingStrategy == strategy, onCheckedChange = { selectStrategy() })
+                            // RadioButton (single-select) instead of Checkbox: only one sort
+                            // strategy can be active at a time, so the multi-select affordance
+                            // was misleading — users would tick a second box and the first
+                            // would silently un-tick.
+                            RadioButton(selected = viewModel.currentBatchSortingStrategy == strategy, onClick = { selectStrategy() })
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(text = stringResource(id = strategy.displayNameRes), color = MaterialTheme.colorScheme.onSurface)
                         }

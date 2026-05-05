@@ -28,6 +28,9 @@ object DeviceFilterSqlBuilder {
         is DeviceFilter.IsPaired ->
             Result.Pushable("is_paired = ?", listOf(if (filter.isPaired) 1 else 0))
 
+        is DeviceFilter.IsConnectable ->
+            Result.Pushable("is_connectable = ?", listOf(if (filter.isConnectable) 1 else 0))
+
         is DeviceFilter.Address ->
             Result.Pushable("address = ?", listOf(filter.address))
 
