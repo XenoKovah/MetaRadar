@@ -145,19 +145,23 @@ class DevicesRepository(
 
     /**
      * Promote a GATT-Device-Name (0x2A00 char read) into the row's [DeviceEntity.name] column
-     * IFF nothing else has populated it yet. The advertisement-side scan path is the primary
-     * source of `name`; this is the fallback for peers that don't advertise a Local Name but
-     * do expose Generic Access → Device Name. We refuse to overwrite an existing name so a
-     * later genuine advertisement (or a manual customName edit) always wins.
+     * if it carries strictly more information than what's already there. "More information"
+     * means a strictly longer string — many peers advertise a truncated Local Name (limited
+     * by the 31-byte AD payload budget) but expose the full long name on 0x2A00, e.g.
+     * "HP" advertised vs "HP OfficeJet Pro 8020 series" on the GATT char.
+     *
+     * Equal-length writes are no-ops to avoid churn when the same value comes back twice.
+     * customName edits live on a separate column and aren't touched here.
      *
      * Skipping blank/empty inputs guards against the not-uncommon case where a peer ACKs the
      * read but returns a zero-length value.
      */
-    suspend fun setNameIfMissing(address: String, name: String) {
+    suspend fun setNameIfBetter(address: String, name: String) {
         if (name.isBlank()) return
         withContext(Dispatchers.IO) {
             val existing = deviceDao.findByAddress(address) ?: return@withContext
-            if (!existing.name.isNullOrBlank()) return@withContext
+            val current = existing.name
+            if (current != null && current.length >= name.length) return@withContext
             deviceDao.insert(existing.copy(name = name))
             notifyLastBatchListener()
         }

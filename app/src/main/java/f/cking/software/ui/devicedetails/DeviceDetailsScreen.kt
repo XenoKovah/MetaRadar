@@ -293,6 +293,15 @@ object DeviceDetailsScreen {
                     }
 
                     is DeviceDetailsViewModel.ConnectionStatus.CONNECTED -> {
+                        // Re-read sits to the LEFT of Disconnect so the destructive action
+                        // (Disconnect) stays in the "primary trailing position" the user
+                        // already knows. Re-read kicks a fresh discoverServices + auto-reads
+                        // pass on the same live connection — useful when the previous pass
+                        // was partial (peer dropped early, pairing-prompt cancelled).
+                        Button(onClick = { viewModel.reReadAllGatt() }) {
+                            Text(text = stringResource(R.string.device_details_reread_all_gatt), color = MaterialTheme.colorScheme.onPrimary)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Button(onClick = { viewModel.disconnect(status.gatt) }) {
                             Text(text = stringResource(R.string.device_details_disconnect), color = MaterialTheme.colorScheme.onPrimary)
                         }
@@ -499,7 +508,12 @@ object DeviceDetailsScreen {
                 enumerated.size,
                 characteristicCount,
             )
-            ExpandableLine(title, initiallyExpanded = false) {
+            // Default-expand the GATT block AND auto-expand every nested service + char on
+            // first appearance — most users open Device Details specifically to inspect the
+            // GATT tree, and forcing a click-cascade through every collapsed pill is wasted
+            // effort. Subsequent collapses still stick (ExpandableLine retains user-toggled
+            // state via its remembered MutableState).
+            ExpandableLine(title, initiallyExpanded = true) {
                 enumerated.forEach { service ->
                     ServiceDetails(service, viewModel)
                 }
@@ -550,7 +564,9 @@ object DeviceDetailsScreen {
             ExpandableLine(
                 title = { UuidTitle(uuid = serviceUuid, name = name, clues = clues) },
                 isExpandable = service.characteristics.isNotEmpty() || hasPurpose,
-                initiallyExpanded = service.characteristics.isNotEmpty(),
+                // Default-expand to surface characteristics without an extra tap — see the
+                // outer GATT block's comment on why the whole tree opens by default.
+                initiallyExpanded = true,
             ) {
                 Column {
                     if (hasPurpose) {
@@ -589,11 +605,17 @@ object DeviceDetailsScreen {
         val name = characteristic.name
         val value = characteristic.value
         val valueHex = characteristic.valueHex
-        val hasCachedValue = value != null && valueHex != null
+        // Hex alone is sufficient to call this "cached" — value-text may be intentionally
+        // suppressed by displayTextOrNull() when the raw bytes are binary garbage that
+        // would render as control-char garbage in a Text composable.
+        val hasCachedValue = valueHex != null
 
         ExpandableLine(
             title = { UuidTitle(uuid = characteristicUuid, name = name, clues = clues) },
             isExpandable = isReadable || hasPurpose || hasCachedValue,
+            // Default-expand so cached values, hex, and the Read/Re-read button are
+            // visible without a tap — see the outer GATT block's rationale.
+            initiallyExpanded = true,
         ) {
             Column {
                 if (hasPurpose) {
@@ -602,7 +624,7 @@ object DeviceDetailsScreen {
                 }
                 if (isReadable || hasCachedValue) {
                     if (hasCachedValue) {
-                        Text(value!!)
+                        if (value != null) Text(value)
                         Text(valueHex!!)
                         if (isConnected && isReadable) Spacer(Modifier.height(4.dp))
                     }

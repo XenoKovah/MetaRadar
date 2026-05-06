@@ -423,7 +423,7 @@ class DeviceDetailsViewModel(
         val structured = value?.let {
             f.cking.software.domain.interactor.GattValueFormatter.format(characteristic.uuid, it)
         }
-        val valueStr = structured ?: value?.decodeToString()
+        val valueStr = displayTextOrNull(structured, value)
         val valueHex = value?.toHexString()?.uppercase()?.let { "0x$it" }
         return CharacteristicData(
             name = description?.decodeToString() ?: getCharacteristicNameIfKnown(characteristic),
@@ -521,6 +521,35 @@ class DeviceDetailsViewModel(
                 bleScannerHelper.discoverServices(gatt)
             } catch (e: Exception) {
                 Timber.e(e)
+            }
+        }
+    }
+
+    /**
+     * User-initiated full re-enumeration: re-runs `discoverServices()` against the live
+     * connection AND clears + re-enqueues every readable characteristic / known descriptor.
+     * Useful when the prior pass was cut short (peer disconnected mid-discovery, user
+     * disconnected before reads completed, transient pairing prompt blocked one read, etc.)
+     * and the cached cards on screen reflect a partial enumeration. Cheap to call repeatedly
+     * — Android caches the GATT db client-side, so a fresh `discoverServices` typically
+     * reuses the existing tree without a full DB hash check unless the peer's ServiceChanged
+     * indication has fired in the interim.
+     */
+    fun reReadAllGatt() {
+        val gatt = (connectionStatus as? ConnectionStatus.CONNECTED)?.gatt ?: return
+        // Drop any in-flight queue so the new discovery's enqueueAutoReads doesn't append to
+        // a stale list. Recent read failures are also cleared so the per-characteristic
+        // "read failed" badges don't linger past the user's "try again" intent.
+        resetGattQueue()
+        recentReadFailures = emptySet()
+        viewModelScope.launch {
+            try {
+                bleScannerHelper.discoverServices(gatt)
+                // discoverServices is fire-and-forget here; the AvailableServices callback
+                // will land in handleBleConnectResult and trigger enqueueAutoReads, which
+                // refills the read queue from the just-discovered tree.
+            } catch (e: Exception) {
+                Timber.e(e, "reReadAllGatt failed")
             }
         }
     }
@@ -749,10 +778,23 @@ class DeviceDetailsViewModel(
                     ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
                     ?.contentOrNull
                 val valueBytes = latestHex?.takeIf { it.isNotEmpty() }?.let { hexToBytes(it) }
+                // Cached BTIDES records previously skipped GattValueFormatter and stored
+                // raw decodeToString() in `value` — that's why a cached 0x2A01 Appearance
+                // showed only its hex while a live read of the same characteristic produced
+                // "Category: ... / Sub-category: ...". The formatter is the single source
+                // of truth for structured rendering, so route the cached bytes through it
+                // first; fall back to UTF-8 decode only when no formatter exists for this
+                // characteristic's UUID. Cached UUIDs come from BTIDES in short form
+                // ("2A01") and the formatter keys on full UUIDs, so we expand here.
+                val fullCharUuid = expandToFullUuid(charUuid)
+                val structured = valueBytes?.let {
+                    runCatching { f.cking.software.domain.interactor.GattValueFormatter.format(fullCharUuid, it) }
+                        .getOrNull()
+                }
                 chars += CharacteristicData(
                     name = GetCharacteristicNameFromUUID.execute(charUuid),
                     uuid = charUuid,
-                    value = valueBytes?.decodeToString(),
+                    value = displayTextOrNull(structured, valueBytes),
                     valueHex = valueBytes?.toHexString()?.uppercase()?.let { "0x$it" },
                     encodedValue = valueBytes?.toBase64(),
                     gatt = null,
@@ -770,6 +812,47 @@ class DeviceDetailsViewModel(
             )
         }
         return out
+    }
+
+    /**
+     * BTIDES stores SIG-defined GATT UUIDs in their short 16- or 32-bit hex form (e.g. "2A01"
+     * for Appearance) while [GattValueFormatter] keys on the canonical 128-bit form. This
+     * helper widens short UUIDs into the SIG base UUID `0000XXXX-0000-1000-8000-00805f9b34fb`
+     * and passes through anything that already looks like a full 128-bit string.
+     */
+    private fun expandToFullUuid(uuid: String): java.util.UUID {
+        val trimmed = uuid.trim()
+        if (trimmed.length == 36 && trimmed.contains('-')) {
+            return java.util.UUID.fromString(trimmed)
+        }
+        // Short form: 4 hex chars (16-bit) or 8 (32-bit) per BT Core Spec Vol 3 Part B § 2.5.1.
+        val short = trimmed.removePrefix("0x").removePrefix("0X")
+        if (short.length == 4 || short.length == 8) {
+            val padded = short.padStart(8, '0')
+            return java.util.UUID.fromString("$padded-0000-1000-8000-00805f9b34fb")
+        }
+        // Anything else (vendor 128-bit without dashes, or malformed): try fromString and let
+        // it throw — the caller wraps in runCatching so a malformed cache entry can't break
+        // the whole device-details render.
+        return java.util.UUID.fromString(trimmed)
+    }
+
+    /**
+     * Pick the value-text to surface alongside a characteristic's hex view. Prefers the
+     * structured formatter output when present; otherwise falls back to UTF-8 decode IF the
+     * raw bytes look plausibly textual. For binary payloads (any byte < 0x20 that isn't
+     * tab/CR/LF), returns null so the UI can suppress the garbled decodeToString line and
+     * show only the hex — matches the user's complaint about PnP ID rendering as "(P◇◇◇⊠Y..."
+     * when the peer returned non-spec-conformant 19 bytes instead of the expected 7.
+     */
+    private fun displayTextOrNull(structured: String?, bytes: ByteArray?): String? {
+        if (structured != null) return structured
+        if (bytes == null || bytes.isEmpty()) return null
+        val hasBinary = bytes.any { b ->
+            val v = b.toInt() and 0xFF
+            v < 0x20 && v != 0x09 && v != 0x0A && v != 0x0D
+        }
+        return if (hasBinary) null else bytes.decodeToString()
     }
 
     private fun hexToBytes(hex: String): ByteArray {

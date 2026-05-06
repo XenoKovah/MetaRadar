@@ -90,6 +90,21 @@ class SettingsViewModel(
     var discoverLeEnabled: Boolean by mutableStateOf(settingsRepository.getDiscoverLeEnabled())
     var discoverBrEdrEnabled: Boolean by mutableStateOf(settingsRepository.getDiscoverBrEdrEnabled())
 
+    /**
+     * In-app toggle for the [AutoPairAccessibilityService][f.cking.software.service.AutoPairAccessibilityService].
+     * Independent from [autoPairServiceEnabledOs]: even with the OS-level Accessibility
+     * permission granted, this gate decides whether the service actually performs clicks.
+     */
+    var autoPairToggleEnabled: Boolean by mutableStateOf(settingsRepository.getAutoPairEnabled())
+
+    /**
+     * Live read of Android's [Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES] for our service.
+     * Refreshed by [refreshAutoPairOsState] on every entry into the Settings screen — Android
+     * doesn't fire a broadcast when the user enables/disables an accessibility service, so
+     * polling on screen entry is the practical way to keep the status text accurate.
+     */
+    var autoPairServiceEnabledOs: Boolean by mutableStateOf(false)
+
     /** Cached SSO state. Null when no token is stored. */
     var btidalpoolAuth: BtidalpoolAuthRepository.AuthState? by mutableStateOf(btidalpoolAuthRepository.current())
     /** True while the paste-token dialog is showing. */
@@ -567,6 +582,101 @@ class SettingsViewModel(
         val newValue = !settingsRepository.getDiscoverBrEdrEnabled()
         settingsRepository.setDiscoverBrEdrEnabled(newValue)
         discoverBrEdrEnabled = newValue
+    }
+
+    /**
+     * In-app gate flip. Independent from the OS Accessibility permission — toggling this off
+     * leaves the service bound but makes it short-circuit; toggling on without the OS-level
+     * permission is a no-op (the service never gets bound until the user grants it via the
+     * Accessibility settings page reachable from [openAccessibilitySettings]).
+     */
+    fun toggleAutoPair() {
+        val newValue = !settingsRepository.getAutoPairEnabled()
+        settingsRepository.setAutoPairEnabled(newValue)
+        autoPairToggleEnabled = newValue
+    }
+
+    /**
+     * Refresh [autoPairServiceEnabledOs] from `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`.
+     * Android doesn't broadcast accessibility-service enable/disable changes, so callers
+     * (typically the Settings screen on entry/return-from-Accessibility-settings) invoke this
+     * to keep the displayed status text in sync.
+     */
+    fun refreshAutoPairOsState() {
+        autoPairServiceEnabledOs = isAutoPairAccessibilityServiceEnabled()
+    }
+
+    private fun isAutoPairAccessibilityServiceEnabled(): Boolean {
+        val enabled = android.provider.Settings.Secure.getString(
+            context.contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ).orEmpty()
+        // Format is "pkg/cls:pkg/cls:..." — match by ComponentName flat string. We construct
+        // ours rather than hard-coding so a future package rename doesn't silently break this.
+        val component = android.content.ComponentName(
+            context,
+            f.cking.software.service.AutoPairAccessibilityService::class.java,
+        ).flattenToString()
+        return enabled.split(':').any { it.equals(component, ignoreCase = true) }
+    }
+
+    fun openAccessibilitySettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+            .onFailure { Timber.tag("SettingsVM").w(it, "Failed to open Accessibility settings") }
+    }
+
+    /**
+     * Deep-link into Android's App Info page for our package — that's where the user can tap
+     * the ⋮ menu to flip "Allow restricted settings", which Android 13+ requires for
+     * sideloaded apps' accessibility services to actually bind. Android exposes no direct
+     * intent for the restricted-settings flip itself; App Info is the closest the OS allows
+     * a third-party app to deep-link.
+     */
+    fun openAppInfoForRestrictedSettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", context.packageName, null)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+            .onFailure { Timber.tag("SettingsVM").w(it, "Failed to open App Info") }
+    }
+
+    /**
+     * Deep-link to Android's Battery Saver settings page. Battery Saver downgrades the LE
+     * scan duty cycle to ~12% and stretches BR/EDR inquiry to every 15 min — which
+     * dramatically slows new-candidate discovery during long Connect All sessions. Surface
+     * the toggle next to "Keep screen on while scanning" so the user can switch both
+     * power-related controls in one place.
+     */
+    fun openBatterySaverSettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_BATTERY_SAVER_SETTINGS).apply {
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+            .onFailure { Timber.tag("SettingsVM").w(it, "Failed to open Battery Saver settings") }
+    }
+
+    /**
+     * Per-app battery optimization deep-link. On TCL devices the vendor's `AppBootManager`
+     * kills our process on every screen-on transition (logged as Reason[screen_on]), creating
+     * a 1-3s window where the AccessibilityService isn't bound and pairing prompts get
+     * missed. Setting this app's battery state to Unrestricted is the standard Android
+     * opt-out from those kills. We use [Settings.ACTION_APPLICATION_DETAILS_SETTINGS] —
+     * `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` would technically work too but pops up a
+     * confirmation dialog, while landing on App Info → Battery lets the user pick the right
+     * state directly and is also where TCL/Motorola/Samsung surface their vendor-specific
+     * "Allow background activity" toggles.
+     */
+    fun openAppBatterySettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", context.packageName, null)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+            .onFailure { Timber.tag("SettingsVM").w(it, "Failed to open App Info for battery optimization") }
     }
 
     fun onReportIssueClick() {

@@ -172,6 +172,18 @@ class SettingsRepository(
     }
 
     /**
+     * In-app gate for [AutoPairAccessibilityService][f.cking.software.service.AutoPairAccessibilityService].
+     * When false, the service short-circuits every event so the user can pause auto-clicks
+     * without revoking the OS-level Accessibility permission (which Android forces them
+     * through a multi-step Settings flow to grant). Default off — the user must explicitly
+     * opt in, since this turns off the human-confirmation step on system pairing prompts.
+     */
+    fun getAutoPairEnabled(): Boolean = sharedPreferences.getBoolean(KEY_AUTO_PAIR_ENABLED, false)
+    fun setAutoPairEnabled(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_AUTO_PAIR_ENABLED, value) }
+    }
+
+    /**
      * Tracks who started the currently-running BgScanService:
      *   - NONE: service is not running, or was started before this concept existed.
      *   - USER_EXPLICIT: user tapped Scan FAB / kept-on toggle / boot-on. Survives app restarts.
@@ -210,6 +222,7 @@ class SettingsRepository(
         private const val KEY_DISCOVER_LE_ENABLED = "key_discover_le_enabled"
         private const val KEY_DISCOVER_BR_EDR_ENABLED = "key_discover_br_edr_enabled"
         private const val KEY_BTIDALPOOL_USE_TEST_DB = "key_btidalpool_use_test_db"
+        private const val KEY_AUTO_PAIR_ENABLED = "key_auto_pair_enabled"
 
         const val NO_APP_LAUNCH_TIME = -1L
     }

@@ -85,6 +85,26 @@
             android:name="f.cking.software.service.BgScanService"
             android:foregroundServiceType="location|connectedDevice" />
 
+        <!--
+            Auto-accept the system Bluetooth pairing dialog on behalf of unattended Connect-All
+            sessions (researcher use case). Disabled by default; the user opts in via the
+            Settings toggle, which deep-links to Android's Accessibility settings page where
+            BIND_ACCESSIBILITY_SERVICE is granted. The service's behaviour is further gated by
+            SettingsRepository.getAutoPairEnabled() so the user can pause auto-clicks without
+            revoking the OS-level permission.
+        -->
+        <service
+            android:name="f.cking.software.service.AutoPairAccessibilityService"
+            android:exported="true"
+            android:label="@string/auto_pair_accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_pair_accessibility_config" /></service>
+
         <receiver
             android:name=".service.BootBroadcastReceiver"
             android:enabled="true"

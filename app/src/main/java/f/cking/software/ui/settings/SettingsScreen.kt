@@ -880,7 +880,93 @@ object SettingsScreen {
                     viewModel.toggleWakeUpOnScreen()
                 }
             )
+            // Sit immediately under the keep-screen-on switch — both controls are about
+            // keeping Connect All running fast across long unattended sessions, and Battery
+            // Saver is the silent gate that downgrades the LE scan duty cycle when the user
+            // would otherwise expect full speed.
+            Text(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                text = stringResource(R.string.battery_saver_hint),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Button(onClick = { viewModel.openBatterySaverSettings() }) {
+                    Text(text = stringResource(R.string.open_battery_saver_settings))
+                }
+            }
+            // Per-app battery state — distinct from the system-wide Battery Saver above.
+            // Specifically targets TCL's AppBootManager and similar vendor optimizations
+            // that survive the system-wide Battery Saver toggle.
+            Text(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                text = stringResource(R.string.app_battery_hint),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Button(onClick = { viewModel.openAppBatterySettings() }) {
+                    Text(text = stringResource(R.string.open_app_battery_settings))
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            AutoPairBlock(viewModel)
         }
+    }
+
+    /**
+     * Auto-accept system Bluetooth pairing prompts. Two-layer gate: an in-app Switcher
+     * (cheap toggle, doesn't trip Android's permission flow), plus an OS-level Accessibility
+     * permission that the user grants via the Android Settings deep-link below. Status line
+     * tells the user which layer is the gating one — so "I flipped the toggle but pair
+     * prompts still show up" is self-debuggable without checking logs.
+     */
+    @Composable
+    private fun AutoPairBlock(viewModel: SettingsViewModel) {
+        // The OS-level state can change while the user is in Android Settings; refresh on
+        // every recomposition. Cheap: a single Settings.Secure string read.
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            viewModel.refreshAutoPairOsState()
+        }
+        Switcher(
+            value = viewModel.autoPairToggleEnabled,
+            title = stringResource(R.string.auto_pair_setting_title),
+            subtitle = stringResource(R.string.auto_pair_setting_subtitle),
+            onClick = { viewModel.toggleAutoPair() },
+        )
+        // Status text below the switcher: differentiates "you forgot to grant the OS
+        // permission" from "you have everything granted but the toggle is off". Keep the OS
+        // grant link visible in either case so re-granting after a system OS upgrade
+        // (Android occasionally drops accessibility services for security review) is one tap.
+        val statusRes = when {
+            !viewModel.autoPairServiceEnabledOs -> R.string.auto_pair_status_permission_missing
+            !viewModel.autoPairToggleEnabled -> R.string.auto_pair_status_disabled
+            else -> R.string.auto_pair_status_enabled
+        }
+        Text(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            text = stringResource(statusRes),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            text = stringResource(R.string.auto_pair_setup_steps),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        // Step 1 button: deep-links to App Info, where the user toggles Allow Restricted
+        // Settings via the ⋮ menu (Android exposes no direct intent for that flip).
+        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Button(onClick = { viewModel.openAppInfoForRestrictedSettings() }) {
+                Text(text = stringResource(R.string.auto_pair_open_app_info))
+            }
+        }
+        // Step 2 button: deep-links to the Accessibility settings list, where the user
+        // enables our service. This step is gated by step 1 on Android 13+ — the toggle
+        // appears active without restricted settings allowed but the service never binds.
+        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Button(onClick = { viewModel.openAccessibilitySettings() }) {
+                Text(text = stringResource(R.string.auto_pair_open_settings))
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
     }
 
     @Composable

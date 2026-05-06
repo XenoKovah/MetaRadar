@@ -123,17 +123,25 @@ data class DeviceData(
 
     fun distance(): Float? = cachedDistance
 
+    private fun pickLongerName(a: String?, b: String?): String? = when {
+        a == null -> b
+        b == null -> a
+        a.length >= b.length -> a
+        else -> b
+    }
+
     fun mergeWithNewDetected(new: DeviceData): DeviceData {
         return this.copy(
             detectCount = detectCount + 1,
             lastDetectTimeMs = new.lastDetectTimeMs,
-            // Preserve any name we already have when the fresh scan didn't carry one. This
-            // matters for peers whose advertised Local Name only appears intermittently AND
-            // for names sourced from the GATT 0x2A00 fallback (see
-            // BulkEnumerateGattInteractor's CharacteristicRead handler) — without this guard,
-            // a later name-less scan would null out the captured Device Name on every
-            // re-detection, defeating the fallback.
-            name = new.name ?: this.name,
+            // Pick the longer of the two names. Peers often advertise a truncated Local Name
+            // (the AD payload is capped at 31 bytes) and expose the full long name on GATT
+            // 0x2A00 — e.g. "HP" advertised vs "HP OfficeJet Pro 8020 series" on the
+            // characteristic. We want display to always show the most informative variant,
+            // so a fresh scan with a SHORTER local name doesn't silently overwrite the
+            // longer GATT-sourced name (or vice versa). When the new scan doesn't carry a
+            // name at all, keep the existing one.
+            name = pickLongerName(new.name, this.name),
             manufacturerInfo = new.manufacturerInfo,
             rssi = new.rssi,
             systemAddressType = new.systemAddressType,

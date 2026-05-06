@@ -146,7 +146,7 @@
     <string name="connect_all_category_connected_empty">No devices have completed service discovery yet.</string>
     <string name="connect_all_category_errors_empty">No connection errors yet.</string>
     <string name="connect_all_category_too_many_attempts_empty">No devices have hit the retry cap yet.</string>
-    <string name="connect_all_description">Connect to every visible connectable device in RSSI order (strongest first) and capture GATT enumeration into the BTIDES log. The vendor filters below are enforced both at advertisement time and mid-enumeration: any device whose service UUIDs match a filtered vendor is dropped from the log.</string>
+    <string name="connect_all_description">Connect to every visible connectable device in RSSI order (strongest first) and perform GATT/SDP enumeration, storing in the BTIDES log. The vendor filters below are enforced both at advertisement time and mid-enumeration: any device whose service UUIDs match a filtered vendor is dropped from the log.</string>
     <string name="connect_all_start">Connect to all connectable devices</string>
     <string name="connect_all_stop">Stop</string>
     <string name="connect_all_empty">No devices have completed service discovery yet.</string>
@@ -206,6 +206,22 @@
     <string name="filter_btc">BTC</string>
     <string name="filter_dual">Dual</string>
     <string name="filter_connectable">Connectable</string>
+
+    <!-- AutoPair AccessibilityService -->
+    <string name="auto_pair_accessibility_label">DM BT auto-pair</string>
+    <string name="auto_pair_accessibility_description">Auto-clicks the system Bluetooth pairing dialog so unattended Connect All sessions don\'t stall on confirmation prompts. Used only by researchers running this app.</string>
+    <string name="auto_pair_setting_title">Auto-accept pairing prompts</string>
+    <string name="auto_pair_setting_subtitle">Automatically taps the system "Pair" button so a phone running Connect All without supervision (e.g. mounted in a vehicle) doesn\'t stall on every BR/EDR pair confirmation. Requires granting Accessibility access — Android does not allow third-party apps to confirm pairing programmatically without it.</string>
+    <string name="auto_pair_open_settings">Open Accessibility settings</string>
+    <string name="auto_pair_open_app_info">Open App Info → Allow restricted settings</string>
+    <string name="open_battery_saver_settings">Open Battery Saver settings</string>
+    <string name="battery_saver_hint">Battery Saver throttles LE scans to ~12%% duty and BR/EDR inquiry to every 15 min. Turn it OFF for long Connect All sessions.</string>
+    <string name="open_app_battery_settings">Open App Info → Battery → Unrestricted</string>
+    <string name="app_battery_hint">On vendor builds (TCL, Xiaomi, etc.) the system kills our process on screen-on, leaving a gap where pair prompts can be missed. Set Battery to \"Unrestricted\" for DM BT, and on TCL also enable \"Allow background activity\" in PhoneManager.</string>
+    <string name="auto_pair_setup_steps">On Android 13+, sideloaded apps\' accessibility services are silently blocked from binding until the user grants \"Allow restricted settings\". Order:\n1. Tap \"Open App Info\" below → ⋮ (top-right) → enable \"Allow restricted settings\".\n2. Tap \"Open Accessibility settings\" → DM BT auto-pair → toggle on.\n3. Flip the in-app switch above on.</string>
+    <string name="auto_pair_status_enabled">Service enabled — auto-clicks active</string>
+    <string name="auto_pair_status_permission_missing">Permission not granted — tap Open Accessibility settings to enable</string>
+    <string name="auto_pair_status_disabled">Toggle off — pair prompts must be confirmed manually</string>
 
     <!-- Address-tag tooltip text for BR/EDR addresses -->
     <string name="address_type_btc_tag" translatable="false">BTC</string>
@@ -350,6 +366,7 @@
     <string name="device_details_status_disconnected">Disconnected</string>
     <string name="device_details_connect">Connect</string>
     <string name="device_details_disconnect">Disconnect</string>
+    <string name="device_details_reread_all_gatt">Re-read all GATT</string>
     <string name="read">Read</string>
     <string name="re_read">Re-Read</string>
     <string name="read_failed">Read failed</string>

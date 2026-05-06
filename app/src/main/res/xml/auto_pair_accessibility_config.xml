@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AccessibilityServiceInfo for AutoPairAccessibilityService.
+
+    Targets the system Bluetooth Pairing dialog (which lives in `com.android.settings`
+    on stock Android and on the OEM builds we've tested — Motorola moto g, BLU View 5,
+    TCL T434D). We restrict packageNames to the few system UIs that actually surface
+    pairing prompts so the service is invoked as little as possible — the user grants a
+    powerful permission, but it only ever activates around BluetoothPairingDialog.
+
+    Event types: WINDOW_STATE_CHANGED catches the prompt opening; WINDOW_CONTENT_CHANGED
+    catches re-renders (some OEMs animate the button enable-disable cycle, so the click
+    target only becomes clickable on a content-changed tick).
+
+    canRetrieveWindowContent is required to read the Pair button's label; canPerformGestures
+    is NOT requested — we use a plain ACTION_CLICK on the button node, no synthetic touch.
+
+    Researcher-targeted use case (per user request): operates only on system pairing dialogs;
+    no app data is read; no other accessibility events are processed.
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeNotificationStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="true"
+    android:packageNames="com.android.settings,com.android.systemui,com.google.android.permissioncontroller"
+    android:description="@string/auto_pair_accessibility_description" />

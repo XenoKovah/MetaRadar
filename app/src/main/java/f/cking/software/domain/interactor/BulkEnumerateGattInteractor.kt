@@ -239,7 +239,21 @@ class BulkEnumerateGattInteractor(
                     Outcome.SKIPPED_VENDOR -> skippedVendor.incrementAndGet()
                     Outcome.SDP_TIMEOUT, Outcome.ERROR, Outcome.TIMEOUT -> errors.incrementAndGet()
                 }
-                send(Progress.DeviceFinished(slotId, idx, displayTotal, device, result.outcome, result.errorMessage))
+                // Re-fetch the device row on a successful enumeration. enumerateOne may have
+                // promoted a freshly-read GATT 0x2A00 ("Device Name") and 0x2A29
+                // ("Manufacturer Name String") into the row via setNameIfMissing /
+                // setGattManufacturerNameIfMissing — but `device` here is the snapshot taken at
+                // pop time, before either column was written. Without this refresh the
+                // ConnectAllSession's `connected` list shows the stale "N/A" / address-only
+                // display name even after the user can see the real name on the Device Details
+                // screen (which queries the live row). Failure path: keep the original
+                // snapshot; the row hasn't been mutated by enumerateOne for those outcomes.
+                val finishedDevice = if (result.outcome == Outcome.SUCCESS || result.outcome == Outcome.SDP_SUCCESS) {
+                    devicesRepository.getDeviceByAddress(device.address) ?: device
+                } else {
+                    device
+                }
+                send(Progress.DeviceFinished(slotId, idx, displayTotal, finishedDevice, result.outcome, result.errorMessage))
             }
         }
 
@@ -354,7 +368,7 @@ class BulkEnumerateGattInteractor(
                                         // Trim NULs that some peers append, then decode as UTF-8.
                                         val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
                                         if (name.isNotEmpty()) {
-                                            devicesRepository.setNameIfMissing(device.address, name)
+                                            devicesRepository.setNameIfBetter(device.address, name)
                                         }
                                     }.onFailure {
                                         Timber.tag(TAG).w(it, "Failed to decode 0x2A00 value for ${device.address}")
