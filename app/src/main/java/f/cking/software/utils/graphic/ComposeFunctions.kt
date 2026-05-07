@@ -94,6 +94,30 @@ import java.time.LocalTime
 import kotlin.math.abs
 import kotlin.random.Random
 
+/**
+ * Shared "what minute is it" pulse used by row composables to invalidate cached time-since
+ * strings ("5 min ago"). Updates once a minute, NOT once a frame — combined with a
+ * remember(...) keyed on this state's value, downstream composables re-format their human-
+ * readable durations only when the clock actually ticks past a minute boundary instead of
+ * on every recomposition. One ticker per process; cheap.
+ *
+ * Implementation note: rememberSaveable + LaunchedEffect both honour Compose lifecycle, so
+ * the ticker auto-stops when no composable observes the state.
+ */
+@Composable
+fun minuteBucketState(): androidx.compose.runtime.State<Long> {
+    val state = remember { mutableStateOf(System.currentTimeMillis() / 60_000L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val now = System.currentTimeMillis()
+            val msToNextMinute = 60_000L - (now % 60_000L)
+            delay(msToNextMinute)
+            state.value = System.currentTimeMillis() / 60_000L
+        }
+    }
+    return state
+}
+
 @Composable
 fun rememberDateDialog(
     initialDate: LocalDate = LocalDate.now(),
@@ -374,17 +398,34 @@ fun DeviceListItem(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
 
-                val updateStr = if (showLastUpdate) {
-                    stringResource(
-                        R.string.lifetime_data_last_update,
-                        device.firstDetectionPeriod(LocalContext.current),
-                        device.lastDetectionPeriod(LocalContext.current),
-                    )
-                } else {
-                    stringResource(
-                        R.string.lifetime_data,
-                        device.firstDetectionPeriod(LocalContext.current),
-                    )
+                // Cache the formatted "first/last detection period" string per visible row
+                // and only invalidate when (a) the underlying timestamp changes or (b) the
+                // current minute-bucket flips. Without this, every recomposition (filter
+                // chip toggles, scroll state writes, sibling row updates) re-allocated two
+                // fresh getTimePeriodStr() strings per row — at ~1000 rows on screen during
+                // a fast filter change, that was several MB/s of throwaway String + Locale
+                // formatter allocations on the main thread.
+                val context = LocalContext.current
+                val str_lifetime = R.string.lifetime_data
+                val str_lifetime_with_update = R.string.lifetime_data_last_update
+                val updateStr = remember(
+                    device.firstDetectTimeMs,
+                    device.lastDetectTimeMs,
+                    showLastUpdate,
+                    minuteBucketState().value,
+                ) {
+                    if (showLastUpdate) {
+                        context.getString(
+                            str_lifetime_with_update,
+                            device.firstDetectionPeriod(context),
+                            device.lastDetectionPeriod(context),
+                        )
+                    } else {
+                        context.getString(
+                            str_lifetime,
+                            device.firstDetectionPeriod(context),
+                        )
+                    }
                 }
                 Text(
                     text = updateStr,

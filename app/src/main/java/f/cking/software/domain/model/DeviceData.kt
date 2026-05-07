@@ -35,7 +35,11 @@ data class DeviceData(
         BuildDeviceClassFromSystemInfo.execute(this)
     }
 
-    val resolvedName: String? by lazy { name }
+    // Direct property — formerly `by lazy { name }`, which wrapped a one-line getter in a
+    // synchronized Lazy holder. At ~1000 fresh DeviceData per snapshot replacement, the lazy
+    // delegate's allocation + sync overhead added up; the property is just an alias for
+    // [name] so a plain getter is strictly cheaper.
+    val resolvedName: String? get() = name
 
     /**
      * Manufacturer name with an IEEE OUI fallback. Precedence:
@@ -51,9 +55,11 @@ data class DeviceData(
             ?: gattManufacturerName?.takeIf { it.isNotBlank() }
             ?: run {
                 if (cachedExtendedAddressInfo.type != ExtendedAddressInfo.BleAddressType.PUBLIC) return@run null
-                val koin = org.koin.core.context.GlobalContext.get()
-                val ouiRepo = koin.get<f.cking.software.data.helpers.OuiRepository>()
-                ouiRepo.lookupByAddress(address)
+                // Use the process-wide cached OuiRepository reference instead of re-resolving
+                // the Koin graph per-device. Each fresh snapshot can produce ~1000 DeviceData
+                // and many of them hit this fallback (random addresses with no MSD); the
+                // GlobalContext.get() + reflection-y get<T>() lookup adds up at that scale.
+                ouiRepoLazy.lookupByAddress(address)
             }
     }
 
@@ -160,5 +166,18 @@ data class DeviceData(
             // detection has it null; preserve whatever we already captured.
             gattManufacturerName = new.gattManufacturerName ?: gattManufacturerName,
         )
+    }
+
+    companion object {
+        // Process-wide single resolution of OuiRepository — Koin's GlobalContext.get() and
+        // the subsequent reflection-y get<T>() lookup are NOT free at the per-device-snapshot
+        // scale (1000 fresh DeviceData × every refresh, each computing
+        // resolvedManufacturerName the first time it's read). Caching the ref in a top-level
+        // lazy means the lookup happens exactly once per process; the OuiRepository itself
+        // is a singleton so semantics are unchanged.
+        private val ouiRepoLazy: f.cking.software.data.helpers.OuiRepository by lazy {
+            org.koin.core.context.GlobalContext.get()
+                .get<f.cking.software.data.helpers.OuiRepository>()
+        }
     }
 }

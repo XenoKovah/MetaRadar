@@ -252,14 +252,31 @@ class ConnectAllSession(
     /**
      * Prepend [entry] to [list] after removing any prior entry whose [keyOf] matches. Used by
      * each category bucket to maintain the most-recent-first invariant while keeping at most
-     * one entry per device address.
+     * one entry per device address. Result is capped at [MAX_ENTRIES_PER_CATEGORY] — older
+     * entries fall off the tail rather than letting the list grow without bound, which
+     * matters for very long retry-forever sessions where each category could otherwise
+     * accumulate thousands of entries (each of which gets copy-emitted on every state
+     * update, turning emit cost into O(N²) over the session).
      */
     private inline fun <T> prepend(list: List<T>, entry: T, keyOf: (T) -> String): List<T> {
         val key = keyOf(entry)
-        return listOf(entry) + list.filterNot { keyOf(it) == key }
+        // Build the new list by hand so we only walk `list` once instead of allocating an
+        // intermediate filterNot result.
+        val out = ArrayList<T>(minOf(list.size + 1, MAX_ENTRIES_PER_CATEGORY))
+        out.add(entry)
+        for (existing in list) {
+            if (out.size >= MAX_ENTRIES_PER_CATEGORY) break
+            if (keyOf(existing) != key) out.add(existing)
+        }
+        return out
     }
 
     companion object {
         private const val TAG = "ConnectAllSession"
+        // Per-category cap on the most-recent-first lists. The expandable Connect All UI
+        // shows the head of each list; capturing more than ~200 entries past the tail
+        // doesn't add user-visible information and forces every state-emit to copy a long
+        // List<*> through the StateFlow.
+        private const val MAX_ENTRIES_PER_CATEGORY = 200
     }
 }

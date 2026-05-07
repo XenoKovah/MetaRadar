@@ -83,6 +83,12 @@ class DevicesRepository(
     suspend fun snapshotFilteredDevices(
         filters: List<DeviceFilter>,
         searchQuery: String?,
+        // Caller-supplied limit lets the VM stage a fast first paint at a small N (typical
+        // ~200 rows for the visible viewport + a small over-fetch buffer) and follow up with
+        // the full DEVICE_LIST_LIMIT in a second emission. Defaults to the full cap so prior
+        // call sites stay unchanged. Hard-clamped at DEVICE_LIST_LIMIT — the SQL ORDER BY +
+        // LIMIT bound stays the actual ceiling regardless of what the caller asks for.
+        limit: Int = DEVICE_LIST_LIMIT,
     ): List<DeviceData>? = withContext(Dispatchers.IO) {
         val whereClauses = mutableListOf<String>()
         val args = mutableListOf<Any?>()
@@ -102,7 +108,8 @@ class DevicesRepository(
             args.add(pattern)
         }
         val where = if (whereClauses.isEmpty()) "" else " WHERE " + whereClauses.joinToString(" AND ")
-        val sql = "SELECT * FROM device$where ORDER BY last_detect_time_ms DESC LIMIT $DEVICE_LIST_LIMIT"
+        val effectiveLimit = limit.coerceIn(1, DEVICE_LIST_LIMIT)
+        val sql = "SELECT * FROM device$where ORDER BY last_detect_time_ms DESC LIMIT $effectiveLimit"
         val query = SimpleSQLiteQuery(sql, args.toTypedArray())
         deviceDao.queryFiltered(query).map { it.toDomain() }
     }

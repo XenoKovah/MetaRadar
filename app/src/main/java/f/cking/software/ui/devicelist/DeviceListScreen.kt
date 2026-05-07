@@ -123,16 +123,16 @@ object DeviceListScreen {
             state = state,
         ) {
             stickyHeader {
-                Box() {
+                // Filters is the expensive part of the sticky header (chip layout + flow
+                // arrangement). Reading viewModel.isLoading directly inside this lambda
+                // would force the entire stickyHeader to recompose every time isLoading
+                // toggles — which fires on every observeAllDevices emit during active
+                // scanning. Hoist the isLoading observation into a sibling sub-composable
+                // (LoadingBar) so its state read is scoped, and Filters only recomposes
+                // when filter / search / chip state actually changes.
+                Box {
                     Filters(viewModel)
-                    if (viewModel.isLoading) {
-                        LinearProgressIndicator(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(4.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    LoadingBar(viewModel)
                 }
             }
 
@@ -169,15 +169,19 @@ object DeviceListScreen {
             // rows re-render. Critical at N>1000.
             items(devices.size, key = { devices[it].address }, contentType = { ListContentType.DEVICE}) { index ->
                 val deviceData = devices[index]
-                    DeviceListItem(
-                        modifier = Modifier.animateItem(),
-                        device = deviceData,
-                        onClick = { viewModel.onDeviceClick(deviceData) },
-                    )
+                // animateItem() removed: it triggered layout-animation cost whenever the
+                // list reordered (every scan refresh in continuous mode), without a
+                // corresponding visual win — devices don't visibly slide between positions
+                // in a way the user notices, and dropping the animation cuts the per-row
+                // cost of every list refresh by a measurable margin at N>500 rows.
+                DeviceListItem(
+                    device = deviceData,
+                    onClick = { viewModel.onDeviceClick(deviceData) },
+                )
 
                 val showDivider = devices.getOrNull(index + 1)?.lastDetectTimeMs != deviceData.lastDetectTimeMs
                 if (showDivider) {
-                    Divider(Modifier.animateItem())
+                    Divider()
                 }
             }
 
@@ -409,6 +413,25 @@ object DeviceListScreen {
                     Text(text = stringResource(R.string.background_location_hide_button), color = MaterialTheme.colorScheme.onSurface)
                 }
             }
+        }
+    }
+
+    /**
+     * Thin wrapper around the loading-progress indicator. Pulled out of the stickyHeader so
+     * its viewModel.isLoading read can recompose this composable independently of the
+     * sibling Filters block — a flip from idle to loading would otherwise force the entire
+     * sticky header (filter chip flow + dividers + sub-trees) to recompose, which fires on
+     * every observeAllDevices emit during active scanning.
+     */
+    @Composable
+    private fun LoadingBar(viewModel: DeviceListViewModel) {
+        if (viewModel.isLoading) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 

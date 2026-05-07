@@ -30,10 +30,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.ext.getFullName
@@ -216,7 +219,7 @@ class DeviceListViewModel(
         }
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     private fun observeAllDevices(): Job {
         isLoading = true
         return viewModelScope.launch {
@@ -231,30 +234,56 @@ class DeviceListViewModel(
                 .flatMapLatest { (filterHolders, query) ->
                     flow {
                         isLoading = true
-                        val result = withContext(Dispatchers.Default) {
-                            val filters = filterHolders.map { it.filter }
-                            // Try the SQL push-down path first. If every applied filter
-                            // translates to a WHERE clause (e.g., user only has the empty
-                            // filter set, or only IsPaired / Tag / Address / interval / Name
-                            // / non-Apple Manufacturer), the DB returns at most LIMIT rows
-                            // already filtered + sorted — orders of magnitude faster at
-                            // M=200k devices than the legacy materialise-then-filter path.
-                            val sqlSnapshot = devicesRepository.snapshotFilteredDevices(filters, query)
-                            val devices = sqlSnapshot ?: devicesRepository.getDevices(withAirdropInfo = true)
-                            devices
-                                // Re-apply filters in Kotlin only on the fallback path
-                                // (sqlSnapshot==null): the SQL snapshot is already filtered
-                                // + sorted. The fallback case happens for non-pushable
-                                // filters (Apple Manufacturer / Device or User location).
-                                .let { list -> if (sqlSnapshot != null) list else list.withFilters(filterHolders, query) }
-                                .let { list -> if (sqlSnapshot != null) list else list.sortedWith(GENERAL_COMPARATOR) }
+                        val filters = filterHolders.map { it.filter }
+                        // Progressive paging on the SQL push-down path: emit a small initial
+                        // page so the LazyColumn can paint the visible viewport in one
+                        // frame, then follow up with the full DEVICE_LIST_LIMIT (1000) once
+                        // the user has something to look at. Halves the time-to-first-paint
+                        // on a cold device-list open. Skipped when only the second page would
+                        // contain net-new rows (when initial returned < INITIAL_PAGE_LIMIT,
+                        // the table doesn't have more rows to fetch anyway).
+                        val initialSql = withContext(Dispatchers.Default) {
+                            devicesRepository.snapshotFilteredDevices(
+                                filters = filters,
+                                searchQuery = query,
+                                limit = INITIAL_PAGE_LIMIT,
+                            )
                         }
-                        emit(result)
+                        if (initialSql != null) {
+                            emit(initialSql)
+                            // Only fetch the wider page if the initial one filled — otherwise
+                            // we already have everything that matches.
+                            if (initialSql.size >= INITIAL_PAGE_LIMIT) {
+                                val full = withContext(Dispatchers.Default) {
+                                    devicesRepository.snapshotFilteredDevices(filters = filters, searchQuery = query)
+                                }
+                                if (full != null) emit(full)
+                            }
+                        } else {
+                            // Non-pushable filter (Apple Manufacturer / location-based) —
+                            // single-shot fallback through the legacy in-Kotlin path. No
+                            // progressive paging here; it would require materialising the
+                            // whole table twice.
+                            val devices = withContext(Dispatchers.Default) {
+                                devicesRepository.getDevices(withAirdropInfo = true)
+                                    .withFilters(filterHolders, query)
+                                    .sortedWith(GENERAL_COMPARATOR)
+                            }
+                            emit(devices)
+                        }
                     }
                 }
                 .onStart {
                     isLoading = true
                 }
+                // Throttle: rapid Room invalidations during active scanning + bulk inserts
+                // can fire several times per second. The UI doesn't need that resolution —
+                // sample at ~3 Hz so scroll/recompose work doesn't pile up on the main
+                // thread. distinctUntilChanged on top: when the resulting list is reference-
+                // or content-equal to what's already on screen, suppress the state write
+                // entirely (avoids re-keying every visible LazyColumn item for a no-op).
+                .sample(VIEW_STATE_THROTTLE_MS)
+                .distinctUntilChanged()
                 .collect { devices ->
                     isLoading = false
                     devicesViewState = devices
@@ -447,6 +476,18 @@ class DeviceListViewModel(
     companion object {
         private const val PAGE_SIZE = 40
         private const val INITIAL_PAGE = 0
+        // Sample-rate cap on devicesViewState writes. Active scanning + bulk inserts can
+        // fire several Room invalidations per second; the user can't perceptibly benefit
+        // from a refresh faster than ~3 Hz on a long list, and the per-write LazyColumn
+        // re-key cost is real. Combined with distinctUntilChanged, this means the screen
+        // only repaints when the list actually changed AND at most once every 333 ms.
+        private const val VIEW_STATE_THROTTLE_MS: Long = 333L
+        // First-page size for the SQL-pushdown progressive paging. Sized for a device with
+        // a tall LazyColumn viewport — about 30-40 visible rows on a portrait phone, plus
+        // generous over-fetch for fast scroll. The follow-up emission widens to the full
+        // DEVICE_LIST_LIMIT cap (1000); under VIEW_STATE_THROTTLE_MS the two emits coalesce
+        // when the table is small enough that the initial query already returned < cap.
+        private const val INITIAL_PAGE_LIMIT = 200
 
         private val GENERAL_COMPARATOR = Comparator<DeviceData> { second, first ->
 
