@@ -39,6 +39,7 @@ class BulkEnumerateGattInteractor(
     private val settingsRepository: SettingsRepository,
     private val vendorIdentifier: VendorIdentifier,
     private val sdpEnumerationHelper: SdpEnumerationHelper,
+    private val capturedAdvertFingerprintRepository: f.cking.software.data.repo.CapturedAdvertFingerprintRepository,
 ) {
 
     sealed interface Progress {
@@ -74,7 +75,18 @@ class BulkEnumerateGattInteractor(
      */
     enum class Outcome { SUCCESS, SDP_SUCCESS, SDP_TIMEOUT, SKIPPED_VENDOR, ERROR, TIMEOUT }
 
-    private data class EnumResult(val outcome: Outcome, val errorMessage: String? = null)
+    /**
+     * [allCharsRead] gates the AD-fingerprint dedup write — we only mark a fingerprint as
+     * "fully captured" when the prior attempt actually finished every readable
+     * characteristic. A partial capture leaves the device eligible for retry under a fresh
+     * BDADDR (matches the user's "if and only if it successfully read all readable
+     * Characteristics" requirement).
+     */
+    private data class EnumResult(
+        val outcome: Outcome,
+        val errorMessage: String? = null,
+        val allCharsRead: Boolean = false,
+    )
 
     /**
      * Drives a Connect All run.
@@ -132,6 +144,15 @@ class BulkEnumerateGattInteractor(
             normalizedSkipAddresses = normalizedSkip,
             shouldSkipVendor = shouldSkipVendor,
         )
+
+        // Snapshot the AD-fingerprint dedup set ONCE at pass start. New entries written via
+        // [register] inside this pass land in the DB but are also reflected locally so the
+        // refresher's filter sees them on its next rebuild — see [capturedFingerprints]
+        // mutation below the worker loop. Persistent across app restarts (table is
+        // [captured_advert_fingerprint]); cleared by Settings → Clear database.
+        val capturedFingerprints: MutableSet<String> = capturedAdvertFingerprintRepository
+            .allFingerprints()
+            .toMutableSet()
         // Note: Started.total is sent below after [frozenCandidates] is built, so it reflects
         // the actual attempt count (initialCandidateCount minus the per-pass max-retries cap).
 
@@ -172,6 +193,8 @@ class BulkEnumerateGattInteractor(
                 attemptCounts = attemptCounts,
                 maxAttemptsPerDevice = maxAttemptsPerDevice,
                 shouldSkipVendor = shouldSkipVendor,
+                capturedFingerprints = capturedFingerprints,
+                fingerprintFn = AdvertisementFingerprint::fingerprint,
             )
             pool.clear()
             for (d in candidates) {
@@ -238,6 +261,26 @@ class BulkEnumerateGattInteractor(
                     Outcome.SUCCESS, Outcome.SDP_SUCCESS -> succeeded.incrementAndGet()
                     Outcome.SKIPPED_VENDOR -> skippedVendor.incrementAndGet()
                     Outcome.SDP_TIMEOUT, Outcome.ERROR, Outcome.TIMEOUT -> errors.incrementAndGet()
+                }
+                // AD-fingerprint dedup: when an attempt completes with allCharsRead=true the
+                // user explicitly does NOT want us to re-attempt the same AD bytes under a
+                // rotated BDADDR. Register the fingerprint (idempotent on the table's PK) and
+                // mirror into the in-memory set so the refresher's selectFrozenCandidates
+                // sees it on the next rebuild without a DB round-trip per pop. Fingerprint
+                // returns null for peers without raw AD bytes (BR/EDR-only inquiries) — those
+                // fall through to address-only dedup, which is fine since BR/EDR addresses
+                // don't rotate.
+                if (result.outcome == Outcome.SUCCESS && result.allCharsRead) {
+                    AdvertisementFingerprint.fingerprint(device)?.let { fp ->
+                        pickerLock.withLock { capturedFingerprints.add(fp) }
+                        runCatching {
+                            capturedAdvertFingerprintRepository.register(
+                                fingerprint = fp,
+                                address = device.address,
+                                capturedTimeMs = System.currentTimeMillis(),
+                            )
+                        }.onFailure { Timber.tag(TAG).w(it, "Failed to persist fingerprint for ${device.address}") }
+                    }
                 }
                 // Re-fetch the device row on a successful enumeration. enumerateOne may have
                 // promoted a freshly-read GATT 0x2A00 ("Device Name") and 0x2A29
@@ -435,7 +478,7 @@ class BulkEnumerateGattInteractor(
             } else {
                 val written = btidesRepository.closeGattSession(device.address, commit = true)
                 Timber.tag(TAG).i("Committed $written GATT records for ${device.address} (allCharsRead=$allCharsRead)")
-                EnumResult(Outcome.SUCCESS)
+                EnumResult(Outcome.SUCCESS, allCharsRead = allCharsRead)
             }
         } catch (e: TimeoutFallback) {
             // Partial enumeration is still useful — keep whatever made it into the buffer

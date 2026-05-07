@@ -18,6 +18,7 @@ import f.cking.software.data.helpers.LocationProvider
 import f.cking.software.data.helpers.NotificationsHelper
 import f.cking.software.data.helpers.PermissionHelper
 import f.cking.software.data.helpers.PowerModeHelper
+import f.cking.software.data.repo.CapturedAdvertFingerprintRepository
 import f.cking.software.data.repo.DevicesRepository
 import f.cking.software.data.repo.JournalRepository
 import f.cking.software.data.repo.LocationRepository
@@ -59,6 +60,7 @@ class DataModule(
         single { SettingsRepository(get()) }
         single { AppDatabase.build(get(), appDatabaseName) }
         single { DevicesRepository(get()) }
+        single { CapturedAdvertFingerprintRepository(get()) }
         single { PermissionHelper(get(), get(), get()) }
         single { ActivityProvider() }
         single { IntentHelper(get(), get(), get()) }

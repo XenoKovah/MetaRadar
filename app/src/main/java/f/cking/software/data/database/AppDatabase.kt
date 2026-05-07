@@ -31,6 +31,7 @@ import java.io.File
         LocationEntity::class,
         DeviceToLocationEntity::class,
         JournalEntryEntity::class,
+        f.cking.software.data.database.entity.CapturedAdvertFingerprintEntity::class,
     ],
     autoMigrations = [
         AutoMigration(from = 7, to = 8),
@@ -39,7 +40,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 26,
+    version = 27,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -48,6 +49,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun appleContactDao(): AppleContactDao
     abstract fun locationDao(): LocationDao
     abstract fun journalDao(): JournalDao
+    abstract fun capturedAdvertFingerprintDao(): f.cking.software.data.database.dao.CapturedAdvertFingerprintDao
 
     suspend fun backupDatabase(toUri: Uri, context: Context) {
         Timber.i("Backup DB to file: ${toUri}")
@@ -134,6 +136,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_23_24,
                     MIGRATION_24_25,
                     MIGRATION_25_26,
+                    MIGRATION_26_27,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -344,6 +347,19 @@ abstract class AppDatabase : RoomDatabase() {
         // MSD-derived name is available.
         val MIGRATION_25_26 = migration(25, 26) {
             it.execSQL("ALTER TABLE device ADD COLUMN gatt_manufacturer_name TEXT DEFAULT NULL;")
+        }
+
+        // captured_advert_fingerprint table. Backs the Connect All "skip same advert,
+        // different BDADDR" optimisation — see CapturedAdvertFingerprintEntity for the
+        // semantics. INSERT-OR-IGNORE on the PK ensures repeated captures of the same
+        // fingerprint don't overwrite the diagnostic first_address / captured_time_ms.
+        val MIGRATION_26_27 = migration(26, 27) {
+            it.execSQL(
+                "CREATE TABLE IF NOT EXISTS captured_advert_fingerprint (" +
+                    "fingerprint TEXT NOT NULL PRIMARY KEY, " +
+                    "first_address TEXT NOT NULL, " +
+                    "captured_time_ms INTEGER NOT NULL)"
+            )
         }
 
         private fun migration(

@@ -30,6 +30,15 @@ internal object BulkEnumerateCandidateSelection {
     /**
      * Build the per-pass frozen queue. The result is the exact list (in pop order) that the
      * worker pool will iterate; an [ArrayDeque] over this list is what production wraps.
+     *
+     * [capturedFingerprints] + [fingerprintFn] implement the "skip same AD, different
+     * BDADDR" dedup: when a prior fully-successful capture (allCharsRead = true) registered
+     * a fingerprint, any later device whose AD bytes hash to the same fingerprint is
+     * filtered out before reaching the workers. [fingerprintFn] is allowed to return null
+     * for inputs it can't fingerprint (BR/EDR-only inquiries with no rowDataEncoded, etc.) —
+     * those devices fall through and rely on address-based dedup. Pass an empty set + a
+     * function returning null to disable the dedup entirely (used by tests to keep prior
+     * call shape stable).
      */
     fun selectFrozenCandidates(
         connectable: List<DeviceData>,
@@ -37,10 +46,18 @@ internal object BulkEnumerateCandidateSelection {
         attemptCounts: Map<String, Int>,
         maxAttemptsPerDevice: Int,
         shouldSkipVendor: (DeviceData) -> Boolean,
+        capturedFingerprints: Set<String> = emptySet(),
+        fingerprintFn: (DeviceData) -> String? = { null },
     ): List<DeviceData> = connectable
         .filter { it.address.uppercase() !in normalizedSkipAddresses }
         .filter { (attemptCounts[it.address.uppercase()] ?: 0) < maxAttemptsPerDevice }
         .filterNot(shouldSkipVendor)
+        .filterNot { d ->
+            // Skip when this device's AD bytes match a fingerprint already captured with
+            // allCharsRead=true. Null fingerprint (no AD bytes / can't hash) falls through.
+            val fp = fingerprintFn(d) ?: return@filterNot false
+            fp in capturedFingerprints
+        }
         .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
 
     /**
