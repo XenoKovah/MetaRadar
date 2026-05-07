@@ -292,14 +292,23 @@ class DevicesRepository(
         return withContext(Dispatchers.Default) {
             // Only fetch the contacts whose associatedAddress is actually in this list, instead
             // of `appleContactsDao.getAll()` (which materialised the entire table — at M=200k
-            // devices × 5 contacts each = 1M rows on every batch tick). DAO already chunks by
-            // splitToBatches under the hood for the IN-clause variable limit.
+            // devices × 5 contacts each = 1M rows on every batch tick).
+            //
+            // appleContactsDao.getByAddresses is a plain Room @Query that pastes the address
+            // list straight into an `IN (?, ?, ...)` clause — no internal chunking. SQLite
+            // caps the bound-variable count at 999 (pre-Android-12) or 32766 (Android 12+),
+            // so passing the whole page as one call FATAL-crashes the UI thread the moment
+            // the table grows past the cap. Chunk via DatabaseUtils.getMaxSQLVariablesNumber()
+            // and flatMap the per-batch results, matching the pattern at lines 189 and 222.
             val addressesInPage = mapTo(mutableSetOf()) { it.address }
             val allRelatedContacts = if (addressesInPage.isEmpty()) {
                 emptyMap()
             } else {
                 withContext(Dispatchers.IO) {
-                    appleContactsDao.getByAddresses(addressesInPage.toList()).groupBy { it.associatedAddress }
+                    addressesInPage.toList()
+                        .splitToBatches(DatabaseUtils.getMaxSQLVariablesNumber())
+                        .flatMap { batch -> appleContactsDao.getByAddresses(batch) }
+                        .groupBy { it.associatedAddress }
                 }
             }
 
