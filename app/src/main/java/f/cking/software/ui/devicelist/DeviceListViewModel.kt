@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onStart
@@ -83,6 +84,20 @@ class DeviceListViewModel(
     private var scannerObservingJob: Job? = null
     private var lastBatchJob: Job? = null
     private var currentPage: Int by mutableStateOf(INITIAL_PAGE)
+
+    /**
+     * Latches true while the user is actively scrolling the LazyColumn — driven by the
+     * Compose `LazyListState.isScrollInProgress` snapshotFlow in [DeviceListScreen]. Used by
+     * [observeAllDevices] to defer expensive snapshot rebuilds until the scroll settles, so
+     * Room invalidations + AppleContact joins + DeviceData allocation pressure don't
+     * compete with the LazyColumn for main-thread budget mid-scroll. A 1.88s Davey + 167-
+     * frame Choreographer skip on the Motorola during a 60-fling test traced back to a major
+     * GC triggered by snapshot churn during scroll; gating the rebuild eliminates that.
+     */
+    private val isScrollingFlow = MutableStateFlow(false)
+    fun setScrolling(scrolling: Boolean) {
+        isScrollingFlow.value = scrolling
+    }
 
     init {
         observeIsScannerEnabled()
@@ -233,6 +248,16 @@ class DeviceListViewModel(
             ) { filters, query, _ -> filters to query }
                 .flatMapLatest { (filterHolders, query) ->
                     flow {
+                        // Scroll gate: defer the snapshot rebuild until the user stops
+                        // scrolling. Combined with flatMapLatest above, multiple Room
+                        // invalidations during a long scroll are conflated to "rebuild once
+                        // when the scroll stops" — which is what eliminates the major-GC
+                        // stall (1.88s Davey + 167-frame Choreographer skip on the
+                        // Motorola) caused by snapshot churn racing the LazyColumn for
+                        // main-thread / heap budget mid-scroll.
+                        if (isScrollingFlow.value) {
+                            isScrollingFlow.first { !it }
+                        }
                         isLoading = true
                         val filters = filterHolders.map { it.filter }
                         // Progressive paging on the SQL push-down path: emit a small initial

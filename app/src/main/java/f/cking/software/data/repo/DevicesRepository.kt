@@ -30,6 +30,22 @@ class DevicesRepository(
     private val allDevices = deviceDao.observeAll()
         .map { it.toDomain(withAirdropInfo = true) }
 
+    /**
+     * Cache of (entity, domain) pairs keyed by address from the most recent
+     * [snapshotFilteredDevices] call. Used to AVOID rebuilding [DeviceData] for entities
+     * that haven't changed across snapshots — for steady-state Connect All sessions where
+     * 999 of 1000 rows are unchanged from the prior emit, this drops per-emit allocations
+     * by ~3 orders of magnitude. Replaced wholesale on each snapshot so cache size stays
+     * bounded by the snapshot size (no leak).
+     *
+     * Equality check is data-class structural equality on [DeviceEntity] — covers all
+     * persisted fields (last_detect_time_ms / RSSI / scan-record bytes / etc.) so any
+     * meaningful row change forces a fresh [DeviceData] allocation; only true no-op
+     * Room invalidations reuse.
+     */
+    @Volatile
+    private var snapshotReuseCache: Map<String, Pair<f.cking.software.data.database.entity.DeviceEntity, DeviceData>> = emptyMap()
+
     suspend fun getDevices(withAirdropInfo: Boolean = false): List<DeviceData> {
         return withContext(Dispatchers.IO) {
             deviceDao.getAll().toDomain(withAirdropInfo)
@@ -111,7 +127,27 @@ class DevicesRepository(
         val effectiveLimit = limit.coerceIn(1, DEVICE_LIST_LIMIT)
         val sql = "SELECT * FROM device$where ORDER BY last_detect_time_ms DESC LIMIT $effectiveLimit"
         val query = SimpleSQLiteQuery(sql, args.toTypedArray())
-        deviceDao.queryFiltered(query).map { it.toDomain() }
+        val entities = deviceDao.queryFiltered(query)
+        // Per-snapshot diff against the prior cache: reuse the cached DeviceData instance
+        // when this entity row is byte-equal to last time we saw it. The data-class equals
+        // on DeviceEntity covers every persisted column, so any change (lastDetectTimeMs
+        // bumping, RSSI shifting, fresh scan-record, name promotion) drops to the else
+        // branch and allocates a fresh DeviceData. Cache is replaced wholesale below so it
+        // stays bounded by the current snapshot size — no unbounded growth.
+        val priorCache = snapshotReuseCache
+        val newCache = HashMap<String, Pair<f.cking.software.data.database.entity.DeviceEntity, DeviceData>>(entities.size)
+        val result = entities.map { entity ->
+            val cached = priorCache[entity.address]
+            val domain = if (cached != null && cached.first == entity) {
+                cached.second
+            } else {
+                entity.toDomain()
+            }
+            newCache[entity.address] = entity to domain
+            domain
+        }
+        snapshotReuseCache = newCache
+        result
     }
 
     suspend fun observeLastBatch(): StateFlow<List<DeviceData>> {

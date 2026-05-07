@@ -110,6 +110,13 @@ object DeviceListScreen {
     fun DevicesListContent(modifier: Modifier, viewModel: DeviceListViewModel) {
         val focusManager = LocalFocusManager.current
         val state = rememberLazyListState()
+        // Wire LazyListState.isScrollInProgress into the VM so observeAllDevices can defer
+        // its expensive snapshot rebuild while the user is actively scrolling. snapshotFlow
+        // ensures we observe Compose state through the coroutine boundary correctly.
+        LaunchedEffect(state) {
+            androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }
+                .collect { viewModel.setScrolling(it) }
+        }
         val nestedScroll = remember {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
