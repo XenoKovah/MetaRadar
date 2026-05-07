@@ -682,7 +682,21 @@ class BTIDESRepository(
         onBytesProcessed: suspend (Long) -> Unit,
     ): LinkedHashMap<String, File> {
         val devFiles = LinkedHashMap<String, File>()
-        val writers = HashMap<String, BufferedWriter>()
+        // LRU-bounded writer pool. Previously this was an unbounded HashMap that kept one
+        // open BufferedWriter per distinct device for the full source scan. On the Motorola
+        // observed in the wild (≥867 distinct devices in a 60 MB archive) that pushed the
+        // app into OOM via two paths: heap pressure from 800+ × 8 KB buffers + UTF-8
+        // encoder state, and file-descriptor pressure (per-process fd cap is ~1024 on
+        // Android). The LRU caps concurrent open writers at MAX_OPEN_DEVICE_WRITERS; the
+        // eldest writer is flushed + closed on overflow. Reopens use append=true so prior
+        // writes survive the cycle.
+        val writerLru = object : LinkedHashMap<String, BufferedWriter>(MAX_OPEN_DEVICE_WRITERS, 0.75f, /* accessOrder= */ true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, BufferedWriter>): Boolean {
+                if (size <= MAX_OPEN_DEVICE_WRITERS) return false
+                runCatching { eldest.value.close() }
+                return true
+            }
+        }
         var bytes = 0L
         try {
             sourceFile.bufferedReader().useLines { lines ->
@@ -696,10 +710,14 @@ class BTIDESRepository(
                     if (line.isEmpty()) continue
                     val m = KEY_REGEX.find(line) ?: continue
                     val key = "${m.groupValues[1]}|${m.groupValues[2]}"
-                    val writer = writers.getOrPut(key) {
-                        val f = File(tempDir, "dev_${devFiles.size}.jsonl")
-                        devFiles[key] = f
-                        f.bufferedWriter()
+                    val file = devFiles.getOrPut(key) {
+                        File(tempDir, "dev_${devFiles.size}.jsonl")
+                    }
+                    val writer = writerLru.getOrPut(key) {
+                        // append=true so the FIRST open creates the file empty (it doesn't
+                        // exist yet) and subsequent reopens after LRU eviction extend instead
+                        // of truncating prior writes.
+                        java.io.BufferedWriter(java.io.FileWriter(file, /* append= */ true))
                     }
                     writer.write(line)
                     writer.newLine()
@@ -708,7 +726,7 @@ class BTIDESRepository(
                 }
             }
         } finally {
-            writers.values.forEach { runCatching { it.close() } }
+            writerLru.values.forEach { runCatching { it.close() } }
         }
         return devFiles
     }
@@ -1345,6 +1363,14 @@ class BTIDESRepository(
         // recompositions while still picking up new GATT records soon after they land.
         private const val GATT_ADDRESSES_TTL_MS = 5_000L
         private const val INDENT_UNIT = "  "
+        // Cap on concurrent open per-device writers during the per-device temp-file routing
+        // pass. With 64 active writers and an 8 KB BufferedWriter buffer each, peak buffer
+        // memory is bounded at ~512 KB regardless of how many distinct devices the source
+        // contains. Anecdotally a Motorola moto g play with ~867 distinct devices in a
+        // 60 MB archive OOM'd at the unbounded prior implementation; this cap fixes it
+        // without sacrificing throughput (most archives have temporally clustered records
+        // per device, so the LRU re-open rate stays low).
+        private const val MAX_OPEN_DEVICE_WRITERS = 64
         // Match the bdaddr + bdaddr_rand top-level fields without parsing the whole record. The
         // appendScan/appendGattRecord writers always emit them as the first two object keys, in
         // that order, on a single line — this regex is a fast first-pass router.
