@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
@@ -211,9 +212,18 @@ class DeviceListViewModel(
         currentBatchViewState = currentBatchViewState?.sortedWith(strategy.comparator)
     }
 
-    @ExperimentalCoroutinesApi
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     private fun observeCurrentBatch(): Job {
         return viewModelScope.launch {
+            // Sample BEFORE the expensive filter+sort, not after — combine emits on every
+            // upstream change (and observeLastBatch fires every Room invalidation during
+            // active scanning, several times per second), so applying the throttle to the
+            // raw triple lets us collapse multiple batch arrivals into one rebuild.
+            // Without this, scrolling-with-Connect-All in a dense (250+ device) environment
+            // sustained ~120 MB/s of LOS allocation pressure from this one Flow alone, and
+            // the heap would peg at the 192 MB cap within ~30-90 minutes → OOM crash
+            // (logcat 12:17:44 on 2026-05-08, PID 4687, fixedPeriodTicker as incidental
+            // allocator on a heap with <1% free).
             combine(
                 appliedFilter,
                 searchQuery,
@@ -222,12 +232,13 @@ class DeviceListViewModel(
                         currentBatchViewState = emptyList()
                         devicesRepository.clearLastBatch()
                     }
-            ) { filters, query, devices ->
-                val devices = devices
-                    .withFilters(filters, query)
-                    .sortedWith(currentBatchSortingStrategy.comparator)
-                devices
-            }
+            ) { filters, query, devices -> Triple(filters, query, devices) }
+                .sample(VIEW_STATE_THROTTLE_MS)
+                .map { (filters, query, devices) ->
+                    devices
+                        .withFilters(filters, query)
+                        .sortedWith(currentBatchSortingStrategy.comparator)
+                }
                 .collect { devices ->
                     currentBatchViewState = devices
                 }
