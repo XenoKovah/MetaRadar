@@ -756,8 +756,24 @@ class BleScannerHelper(
     private fun cancelScanning(scanResult: ScanResultInternal) {
         inProgress.tryEmit(false)
 
+        // With [SCAN_REPORT_DELAY_MS] > 0 the system buffers results in batch mode and
+        // delivers them via [onBatchScanResults] only at flush time. Per Android docs the
+        // requested delay is clamped to ≥5000 ms internally, so the typical scan window
+        // ends BEFORE the system has spontaneously flushed. We have to:
+        //   1. Ask the controller to flush (async).
+        //   2. Wait long enough for the flush callback to land — while the scanner is
+        //      still registered, otherwise the records are dropped on an unregistered
+        //      callback ID.
+        //   3. THEN stopScan + snapshot + deliver onSuccess.
+        // Earlier attempt (flush + stopScan synchronously, then postDelayed snapshot)
+        // silently dropped every batch because stopScan unregistered the callback
+        // before the system flush had a chance to invoke it.
         if (bluetoothAdapter?.state == BluetoothAdapter.STATE_ON) {
-            bluetoothScanner?.stopScan(callback)
+            try {
+                bluetoothScanner?.flushPendingScanResults(callback)
+            } catch (e: Throwable) {
+                Timber.tag(TAG).d(e, "flushPendingScanResults threw during cancelScanning")
+            }
             // Don't call requireAdapter().cancelDiscovery() here. The BLE scan teardown runs
             // every ~10s; before BR/EDR support landed, this line was a no-op (no inquiry
             // was ever in flight). With BrEdrDiscoveryHelper running on its own cadence,
@@ -767,21 +783,35 @@ class BleScannerHelper(
             // each startDiscovery, which is the only place that needs it.
         }
 
-        when (scanResult) {
-            is ScanResultInternal.Success -> {
-                Timber.tag(TAG).d("BLE Scan finished ${batch.count()} devices found")
-                scanListener?.onSuccess(batch.values.toList())
-            }
-
-            is ScanResultInternal.Failure -> {
-                scanListener?.onFailure(BLEScanFailure(scanResult.errorCode, BleScanErrorMapper.map(scanResult.errorCode)))
-            }
-
-            is ScanResultInternal.Canceled -> {
-                // do nothing
-            }
-        }
+        // Capture state locally so concurrent state mutation by a re-entered scan() can't
+        // surprise the deferred lambda. scanListener stays referenced through the closure
+        // even after we null it on the field.
+        val capturedListener = scanListener
         scanListener = null
+        handler.postDelayed({
+            // Only NOW do we stopScan — by this point the system flush from above has had
+            // [BATCH_FLUSH_GRACE_MS] to deliver via onBatchScanResults, and the consumer
+            // coroutine has had time to drain the channel into [batch].
+            if (bluetoothAdapter?.state == BluetoothAdapter.STATE_ON) {
+                try {
+                    bluetoothScanner?.stopScan(callback)
+                } catch (e: Throwable) {
+                    Timber.tag(TAG).d(e, "stopScan threw during cancelScanning postDelayed")
+                }
+            }
+            when (scanResult) {
+                is ScanResultInternal.Success -> {
+                    Timber.tag(TAG).d("BLE Scan finished ${batch.count()} devices found")
+                    capturedListener?.onSuccess(batch.values.toList())
+                }
+                is ScanResultInternal.Failure -> {
+                    capturedListener?.onFailure(BLEScanFailure(scanResult.errorCode, BleScanErrorMapper.map(scanResult.errorCode)))
+                }
+                is ScanResultInternal.Canceled -> {
+                    // do nothing
+                }
+            }
+        }, BATCH_FLUSH_GRACE_MS)
     }
 
     private fun tryToInitBluetoothScanner() {
@@ -848,7 +878,19 @@ class BleScannerHelper(
         // sweet spot: aggressive enough to coalesce per-device advertisement bursts (most
         // peripherals broadcast at 50–100 Hz, so a 500 ms window catches every device once
         // and dedups ~50 callbacks/device into one), short enough that a newly-arrived
-        // device's first paint lands inside ~1 sec of physical detection.
+        // device's first paint lands inside ~1 sec of physical detection. Note: Android
+        // internally clamps this to ≥5000 ms — the system flushes either at our explicit
+        // [BluetoothLeScanner.flushPendingScanResults] call (issued in [cancelScanning])
+        // or at scan stop, whichever is sooner.
         private const val SCAN_REPORT_DELAY_MS: Long = 500L
+        // Grace window after the explicit flush + stopScan in [cancelScanning], before we
+        // snapshot the batch map and deliver onSuccess to the listener. The system
+        // delivers the buffered batch via onBatchScanResults from the BLE binder thread
+        // shortly after our flush request; the consumer coroutine then drains the channel
+        // into the [batch] map. 250 ms is empirically a comfortable upper bound for this
+        // round trip on the moto g 5G — we've measured ~50–150 ms in steady state.
+        // Without this delay, the snapshot fires synchronously and reports "0 devices
+        // found" while the system silently drops a multi-record batch arriving 18 ms later.
+        private const val BATCH_FLUSH_GRACE_MS: Long = 250L
     }
 }

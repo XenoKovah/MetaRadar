@@ -192,14 +192,33 @@ object DeviceListScreen {
                 }
             }
 
-            if (viewModel.isPaginationEnabled) {
+            // Manual "Show next N" pagination footer. Visible whenever the most recent
+            // SQL fetch returned more rows than the current displayedCount (over-fetch+1
+            // detection in the VM). At the hard cap we instead show a static "cap
+            // reached" hint so the user knows scrolling further isn't held back by them.
+            if (viewModel.hasMoreRows) {
                 item(contentType = ListContentType.PAGINATION_PROGRESS) {
                     Box(
                         modifier = Modifier
                             .padding(16.dp)
                             .fillMaxWidth(), contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator()
+                        Button(onClick = { viewModel.loadMoreDevices() }) {
+                            Text(stringResource(id = R.string.device_list_show_next_page, DeviceListViewModel.PAGE_SIZE))
+                        }
+                    }
+                }
+            } else if (viewModel.displayedCount >= DeviceListViewModel.DEVICE_LIST_LIMIT_HARD_CAP) {
+                item(contentType = ListContentType.PAGINATION_PROGRESS) {
+                    Box(
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .fillMaxWidth(), contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = stringResource(id = R.string.device_list_pagination_cap, DeviceListViewModel.DEVICE_LIST_LIMIT_HARD_CAP),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }

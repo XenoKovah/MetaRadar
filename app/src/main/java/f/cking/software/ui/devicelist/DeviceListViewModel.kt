@@ -63,7 +63,21 @@ class DeviceListViewModel(
     var searchQuery: MutableStateFlow<String?> = MutableStateFlow(null)
     var isSearchMode: Boolean by mutableStateOf(false)
     var isLoading: Boolean by mutableStateOf(false)
-    var isPaginationEnabled: Boolean by mutableStateOf(false)
+    /**
+     * Number of "Show next N" pages currently loaded into the visible list. Drives the SQL
+     * `LIMIT` on every refetch, and the visibility of the footer button. Read by Compose
+     * (so the button shows "Show next 50" with the configured page size); written from
+     * [loadMoreDevices], the filter / search / sort handlers (reset to one page), and
+     * the "limit reached" coercion.
+     */
+    var displayedCount: Int by mutableStateOf(PAGE_SIZE)
+    /**
+     * True when the most recent SQL fetch returned more rows than [displayedCount] —
+     * tells the LazyColumn to render a "Show next 50" footer item. False at the
+     * [DEVICE_LIST_LIMIT] cap or when the filter/search has fewer matching rows than
+     * the current page.
+     */
+    var hasMoreRows: Boolean by mutableStateOf(false)
     var quickFilters: List<FilterHolder> by mutableStateOf(
         listOf(
             DefaultFilters.btc(context),
@@ -84,7 +98,33 @@ class DeviceListViewModel(
 
     private var scannerObservingJob: Job? = null
     private var lastBatchJob: Job? = null
-    private var currentPage: Int by mutableStateOf(INITIAL_PAGE)
+
+    /**
+     * Backing Flow for [displayedCount] — the SQL-side page cap. Used as a combine input
+     * in [observeAllDevices] so loading more pages re-fires the query (with a wider LIMIT)
+     * without resetting the existing snapshot or unsubscribing from the Room invalidation
+     * tick. Filter/search changes reset this back to one page via [resetPageDepth] before
+     * emitting the new filter/query, so the user always lands on page 1 when they change
+     * the result set.
+     */
+    private val displayedCountFlow = MutableStateFlow(PAGE_SIZE)
+
+    private fun resetPageDepth() {
+        displayedCountFlow.value = PAGE_SIZE
+        displayedCount = PAGE_SIZE
+    }
+
+    /**
+     * Footer-button handler. Bumps [displayedCount] by [PAGE_SIZE], capped at
+     * [DEVICE_LIST_LIMIT_HARD_CAP] so the Room/Compose working set stays bounded even if
+     * the user keeps clicking. The combine() in [observeAllDevices] picks up the new
+     * value and re-issues the SQL query at the wider LIMIT.
+     */
+    fun loadMoreDevices() {
+        val next = (displayedCountFlow.value + PAGE_SIZE).coerceAtMost(DEVICE_LIST_LIMIT_HARD_CAP)
+        displayedCountFlow.value = next
+        displayedCount = next
+    }
 
     /**
      * Latches true while the user is actively scrolling the LazyColumn — driven by the
@@ -111,6 +151,7 @@ class DeviceListViewModel(
         } else {
             newFilters.add(filter)
         }
+        resetPageDepth()
         viewModelScope.launch { appliedFilter.emit(newFilters) }
     }
 
@@ -126,18 +167,21 @@ class DeviceListViewModel(
         val updated = appliedFilter.value.toMutableList()
         val idx = updated.indexOf(old)
         if (idx >= 0) updated[idx] = new else updated.add(new)
+        resetPageDepth()
         viewModelScope.launch { appliedFilter.emit(updated) }
     }
 
     /** Remove [filter] from the active filter list. Used by the editor's top-bar trash icon. */
     fun removeFilter(filter: FilterHolder) {
         val updated = appliedFilter.value.toMutableList().also { it.remove(filter) }
+        resetPageDepth()
         viewModelScope.launch { appliedFilter.emit(updated) }
     }
 
     fun onOpenSearchClick() {
         isSearchMode = !isSearchMode
         if (!isSearchMode) {
+            resetPageDepth()
             viewModelScope.launch { searchQuery.emit(null) }
         }
     }
@@ -149,6 +193,7 @@ class DeviceListViewModel(
     }
 
     fun onSearchInput(str: String) {
+        resetPageDepth()
         viewModelScope.launch { searchQuery.emit(str) }
     }
 
@@ -165,17 +210,9 @@ class DeviceListViewModel(
 
     private fun checkScreenMode(invalidateCurrentBatch: Boolean) {
         val isScannerEnabled = BgScanService.isActive
-        val anyFilterApplyed = isSearchMode || appliedFilter.value.isNotEmpty()
 
         scannerObservingJob?.cancel()
-        disablePagination()
-
-        // TODO fix realtime items observing before enabling pagination
-//        if (isScannerEnabled || anyFilterApplyed) {
-//            disablePagination()
-//        } else {
-//            enablePagination()
-//        }
+        scannerObservingJob = observeAllDevices()
 
         if (invalidateCurrentBatch) {
             lastBatchJob?.cancel()
@@ -187,11 +224,6 @@ class DeviceListViewModel(
                 lastBatchJob = null
             }
         }
-    }
-
-    private fun disablePagination() {
-        isPaginationEnabled = false
-        scannerObservingJob = observeAllDevices()
     }
 
     fun onBackgraundLocationWarningClick() {
@@ -249,63 +281,57 @@ class DeviceListViewModel(
     private fun observeAllDevices(): Job {
         isLoading = true
         return viewModelScope.launch {
-            // Step 1: collapse filter / search / DB-tick into a single trigger. We don't
-            // collect devices here — we just use Room's flow as a "table changed" signal so
-            // the snapshot below re-runs.
+            // Combine filter / search / page-depth / Room-tick. Page-depth changes (user
+            // tapped "Show next 50") fire just like filter changes — they re-run the SQL
+            // at the wider LIMIT and emit the larger snapshot. Room-tick is observed
+            // purely as a "table changed" signal; we don't consume the rows it carries
+            // because the snapshot below re-queries with the current filters anyway.
             combine(
                 appliedFilter,
                 searchQuery,
+                displayedCountFlow,
                 devicesRepository.observeAllDevices(),
-            ) { filters, query, _ -> filters to query }
-                .flatMapLatest { (filterHolders, query) ->
+            ) { filters, query, count, _ -> Triple(filters, query, count) }
+                .flatMapLatest { (filterHolders, query, count) ->
                     flow {
                         // Scroll gate: defer the snapshot rebuild until the user stops
                         // scrolling. Combined with flatMapLatest above, multiple Room
                         // invalidations during a long scroll are conflated to "rebuild once
-                        // when the scroll stops" — which is what eliminates the major-GC
-                        // stall (1.88s Davey + 167-frame Choreographer skip on the
-                        // Motorola) caused by snapshot churn racing the LazyColumn for
-                        // main-thread / heap budget mid-scroll.
+                        // when the scroll stops" — which eliminates the major-GC stall
+                        // (1.88s Davey + 167-frame Choreographer skip on the Motorola)
+                        // caused by snapshot churn racing the LazyColumn for main-thread /
+                        // heap budget mid-scroll.
                         if (isScrollingFlow.value) {
                             isScrollingFlow.first { !it }
                         }
                         isLoading = true
                         val filters = filterHolders.map { it.filter }
-                        // Progressive paging on the SQL push-down path: emit a small initial
-                        // page so the LazyColumn can paint the visible viewport in one
-                        // frame, then follow up with the full DEVICE_LIST_LIMIT (1000) once
-                        // the user has something to look at. Halves the time-to-first-paint
-                        // on a cold device-list open. Skipped when only the second page would
-                        // contain net-new rows (when initial returned < INITIAL_PAGE_LIMIT,
-                        // the table doesn't have more rows to fetch anyway).
-                        val initialSql = withContext(Dispatchers.Default) {
+                        // Over-fetch by 1 to detect whether more rows exist beyond [count].
+                        // Cheaper than a separate COUNT(*) and good enough for the footer
+                        // gate — we only need the boolean, not the exact remaining count.
+                        val limit = (count + 1).coerceAtMost(DEVICE_LIST_LIMIT_HARD_CAP + 1)
+                        val rows = withContext(Dispatchers.Default) {
                             devicesRepository.snapshotFilteredDevices(
                                 filters = filters,
                                 searchQuery = query,
-                                limit = INITIAL_PAGE_LIMIT,
+                                limit = limit,
                             )
                         }
-                        if (initialSql != null) {
-                            emit(initialSql)
-                            // Only fetch the wider page if the initial one filled — otherwise
-                            // we already have everything that matches.
-                            if (initialSql.size >= INITIAL_PAGE_LIMIT) {
-                                val full = withContext(Dispatchers.Default) {
-                                    devicesRepository.snapshotFilteredDevices(filters = filters, searchQuery = query)
-                                }
-                                if (full != null) emit(full)
-                            }
+                        if (rows != null) {
+                            hasMoreRows = rows.size > count
+                            emit(rows.take(count))
                         } else {
                             // Non-pushable filter (Apple Manufacturer / location-based) —
-                            // single-shot fallback through the legacy in-Kotlin path. No
-                            // progressive paging here; it would require materialising the
-                            // whole table twice.
+                            // single-shot fallback through the legacy in-Kotlin path. The
+                            // whole filtered set is materialised in memory; we slice for
+                            // pagination locally rather than re-running the filter.
                             val devices = withContext(Dispatchers.Default) {
                                 devicesRepository.getDevices(withAirdropInfo = true)
                                     .withFilters(filterHolders, query)
                                     .sortedWith(GENERAL_COMPARATOR)
                             }
-                            emit(devices)
+                            hasMoreRows = devices.size > count
+                            emit(devices.take(count))
                         }
                     }
                 }
@@ -510,20 +536,24 @@ class DeviceListViewModel(
     }
 
     companion object {
-        private const val PAGE_SIZE = 40
-        private const val INITIAL_PAGE = 0
+        // Page size for the user-driven "Show next 50" footer. Drives both the initial
+        // SQL `LIMIT` (one page) and the increment per button-tap. 50 is large enough
+        // to fill the visible viewport on a portrait phone with over-fetch, small
+        // enough to keep the LazyColumn working set tight when the user only wants the
+        // most recent few devices.
+        const val PAGE_SIZE = 50
+        // Hard ceiling on [displayedCount] so the per-refetch SQL + Compose working
+        // set stays bounded even after many "Show next 50" taps. Matches the existing
+        // DEVICE_LIST_LIMIT in DevicesRepository (the SQL also clamps there) — kept
+        // duplicated so the VM can render the cap-reached footer without a repository
+        // dependency just for the constant.
+        const val DEVICE_LIST_LIMIT_HARD_CAP = 1000
         // Sample-rate cap on devicesViewState writes. Active scanning + bulk inserts can
         // fire several Room invalidations per second; the user can't perceptibly benefit
         // from a refresh faster than ~3 Hz on a long list, and the per-write LazyColumn
         // re-key cost is real. Combined with distinctUntilChanged, this means the screen
         // only repaints when the list actually changed AND at most once every 333 ms.
         private const val VIEW_STATE_THROTTLE_MS: Long = 333L
-        // First-page size for the SQL-pushdown progressive paging. Sized for a device with
-        // a tall LazyColumn viewport — about 30-40 visible rows on a portrait phone, plus
-        // generous over-fetch for fast scroll. The follow-up emission widens to the full
-        // DEVICE_LIST_LIMIT cap (1000); under VIEW_STATE_THROTTLE_MS the two emits coalesce
-        // when the table is small enough that the initial query already returned < cap.
-        private const val INITIAL_PAGE_LIMIT = 200
 
         private val GENERAL_COMPARATOR = Comparator<DeviceData> { second, first ->
 
