@@ -7,7 +7,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -94,7 +95,26 @@ class ConnectAllSession(
     }
 
     private val _state = MutableStateFlow(State())
-    val state: StateFlow<State> = _state
+    /**
+     * Throttled view of the session state for UI consumers. Internal mutations via
+     * `_state.update {}` happen on every Progress.DeviceFinished event — in continuous
+     * mode that's several per second per worker × 5 workers, with each emit forcing
+     * StateFlow to clone-and-publish the connected/errors/tooManyAttempts lists. On low-
+     * end SoCs (TCL Helio A22-class) that allocation rate compounds with the bulk-enum
+     * path's BluetoothGatt callback churn into a heap-thrashing GC death spiral
+     * (~10 major GCs in 14s, peak heap 189 MB / 192 MB cap, 7 Davey events ≥ 880ms).
+     *
+     * sample(STATE_THROTTLE_MS) collapses bursty updates to "latest every 750 ms" without
+     * dropping the final value (StateFlow always retains it), which is what the UI
+     * actually needs — the user can't see sub-second changes to running totals anyway.
+     * onStart emits the current value immediately so a fresh observer doesn't have to
+     * wait a sampling window for the first frame.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    val state: kotlinx.coroutines.flow.Flow<State> =
+        _state
+            .sample(STATE_THROTTLE_MS)
+            .onStart { emit(_state.value) }
 
     private val successfulAddresses: MutableSet<String> = mutableSetOf()
     private val attemptCounts: MutableMap<String, Int> = mutableMapOf()
@@ -278,5 +298,11 @@ class ConnectAllSession(
         // doesn't add user-visible information and forces every state-emit to copy a long
         // List<*> through the StateFlow.
         private const val MAX_ENTRIES_PER_CATEGORY = 200
+        // Sample period for the public [state] flow. Internal _state.update mutations still
+        // happen at full rate (per-DeviceFinished event), but downstream observers only see
+        // the LATEST state every STATE_THROTTLE_MS. The user can't perceive sub-second
+        // changes to running totals; this caps the per-emit list-copy + StateFlow publish
+        // cost that was driving heap thrash on slow SoCs during continuous Connect All runs.
+        private const val STATE_THROTTLE_MS: Long = 750L
     }
 }

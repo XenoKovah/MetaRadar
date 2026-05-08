@@ -407,7 +407,9 @@ class BulkEnumerateGattInteractor(
                                 // wins.
                                 if (event.characteristic.uuid == GAP_DEVICE_NAME_UUID) {
                                     runCatching {
-                                        val bytes = android.util.Base64.decode(event.valueEncoded64, android.util.Base64.NO_WRAP)
+                                        // event.value is the raw bytes — base64 round-trip removed
+                                        // (was a wasted alloc per char read on the bulk-enum hot path).
+                                        val bytes = event.value
                                         // Trim NULs that some peers append, then decode as UTF-8.
                                         val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
                                         if (name.isNotEmpty()) {
@@ -425,7 +427,8 @@ class BulkEnumerateGattInteractor(
                                 // capture, so a single bad read can't corrupt the row.
                                 if (event.characteristic.uuid == DIS_MANUFACTURER_NAME_UUID) {
                                     runCatching {
-                                        val bytes = android.util.Base64.decode(event.valueEncoded64, android.util.Base64.NO_WRAP)
+                                        // event.value is raw bytes; same base64-removal as above.
+                                        val bytes = event.value
                                         val mfg = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
                                         if (mfg.isNotEmpty()) {
                                             devicesRepository.setGattManufacturerNameIfMissing(device.address, mfg)

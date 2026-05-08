@@ -343,7 +343,12 @@ class BleScannerHelper(
                     captureCharacteristicRead(characteristic, value, status)
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         Timber.tag(TAG_CONNECT).d("Characteristic read. ${characteristic.uuid}, value: ${value.decodeToString()}")
-                        trySend(DeviceConnectResult.CharacteristicRead(gatt, characteristic, value.toBase64()))
+                        // Pass the raw bytes through instead of round-tripping value.toBase64()
+                        // → consumer.fromBase64(). Every char read used to allocate two
+                        // throwaway byte-array-and-String pairs (encoder + decoder buffers)
+                        // for no semantic benefit; both consumers (DeviceDetailsViewModel +
+                        // BulkEnumerateGattInteractor) immediately re-decoded back to bytes.
+                        trySend(DeviceConnectResult.CharacteristicRead(gatt, characteristic, value))
                     } else {
                         Timber.tag(TAG_CONNECT).e("Error while reading characteristic ${characteristic.uuid}. Error code: $status")
                         trySend(DeviceConnectResult.FailedReadCharacteristic(gatt, characteristic, status))
@@ -355,7 +360,9 @@ class BleScannerHelper(
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         Timber.tag(TAG_CONNECT).d("Descriptor read. ${descriptor.uuid}, value: ${value.decodeToString()}")
                         captureDescriptorRead(descriptor, value, status)
-                        trySend(DeviceConnectResult.DescriptorRead(gatt, descriptor, value.toBase64()))
+                        // Same raw-bytes pass-through as CharacteristicRead — drop the
+                        // base64 round-trip that was wasted allocation per descriptor read.
+                        trySend(DeviceConnectResult.DescriptorRead(gatt, descriptor, value))
                     } else {
                         Timber.tag(TAG_CONNECT).e("Error while reading descriptor ${descriptor.uuid}. Error code: $status")
                         trySend(DeviceConnectResult.FailedReadDescriptor(gatt, descriptor))
@@ -580,7 +587,7 @@ class BleScannerHelper(
 
     sealed interface DeviceConnectResult {
         data class AvailableServices(val gatt: BluetoothGatt, val services: List<BluetoothGattService>) : DeviceConnectResult
-        data class CharacteristicRead(val gatt: BluetoothGatt, val characteristic: BluetoothGattCharacteristic, val valueEncoded64: String) :
+        data class CharacteristicRead(val gatt: BluetoothGatt, val characteristic: BluetoothGattCharacteristic, val value: ByteArray) :
             DeviceConnectResult
 
         data class FailedReadCharacteristic(
@@ -589,7 +596,7 @@ class BleScannerHelper(
             /** GATT error status (BluetoothGatt.GATT_*). 5=auth, 8=authz, 15=encryption. */
             val status: Int,
         ) : DeviceConnectResult
-        data class DescriptorRead(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor, val valueEncoded64: String) : DeviceConnectResult
+        data class DescriptorRead(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor, val value: ByteArray) : DeviceConnectResult
         data class FailedReadDescriptor(val gatt: BluetoothGatt, val descriptor: BluetoothGattDescriptor) : DeviceConnectResult
         data object Connecting : DeviceConnectResult
         data class Connected(val gatt: BluetoothGatt) : DeviceConnectResult

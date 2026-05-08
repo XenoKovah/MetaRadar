@@ -305,7 +305,7 @@ class DeviceDetailsViewModel(
                 val updatedServices = services.map { service ->
                     val updatedCharacteristics = service.characteristics.map { characteristic ->
                         if (characteristic.uuid == result.characteristic.uuid.toString()) {
-                            mapCharacteristic(result.characteristic, result.valueEncoded64.fromBase64())
+                            mapCharacteristic(result.characteristic, result.value)
                         } else {
                             characteristic
                         }
@@ -334,7 +334,7 @@ class DeviceDetailsViewModel(
                 val updatedServices = services.map { service ->
                     val updatedCharacteristics = service.characteristics.map { characteristic ->
                         if (characteristic.gatt != null && characteristic.gatt === ownerChar) {
-                            mapCharacteristic(characteristic.gatt, characteristic.encodedValue?.fromBase64(), result.valueEncoded64.fromBase64())
+                            mapCharacteristic(characteristic.gatt, characteristic.encodedValue?.fromBase64(), result.value)
                         } else {
                             characteristic
                         }
