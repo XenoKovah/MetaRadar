@@ -93,12 +93,6 @@ object ConnectAllScreen {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Switcher(
-                value = viewModel.retryForever,
-                title = stringResource(R.string.bulk_gatt_retry_forever_title),
-                subtitle = stringResource(R.string.bulk_gatt_retry_forever_subtitle),
-                onClick = { viewModel.onRetryForeverToggled() }
-            )
-            Switcher(
                 value = viewModel.bulkSkipApple,
                 title = stringResource(R.string.bulk_gatt_skip_apple_title),
                 subtitle = stringResource(R.string.bulk_gatt_skip_apple_subtitle),

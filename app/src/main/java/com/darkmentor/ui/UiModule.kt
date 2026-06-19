@@ -22,7 +22,7 @@ object UiModule {
         single<Router> { get<RouterImpl>() }
         // App-singleton holder for the Connect All session so the loop can be driven by either
         // the UI or the boot receiver. Lives in the application coroutine scope (DataModule).
-        single { ConnectAllSession(get(), get(), get()) }
+        single { ConnectAllSession(get(), get()) }
         viewModel { MainViewModel(get(), get(), get(), get(), get(), get(), get()) }
         viewModel { DeviceListViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }

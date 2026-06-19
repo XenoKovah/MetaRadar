@@ -1,6 +1,5 @@
 package com.darkmentor.ui.connectall
 
-import com.darkmentor.data.repo.SettingsRepository
 import com.darkmentor.domain.interactor.BulkEnumerateGattInteractor
 import com.darkmentor.domain.model.DeviceData
 import kotlinx.coroutines.CancellationException
@@ -38,7 +37,6 @@ import timber.log.Timber
 class ConnectAllSession(
     private val applicationScope: CoroutineScope,
     private val bulkEnumerateGattInteractor: BulkEnumerateGattInteractor,
-    private val settingsRepository: SettingsRepository,
 ) {
 
     /**
@@ -123,21 +121,18 @@ class ConnectAllSession(
     val isActive: Boolean get() = bulkJob?.isActive == true
 
     /**
-     * Begin a new run. Idempotent if already running. [retryForever] is captured at start;
-     * later toggle changes don't affect an in-flight session (matches the prior VM behaviour).
-     *
-     * When [retryForever] is true, the underlying interactor runs in continuous mode and
-     * never voluntarily exits — this session lives until [stop] is called. When false, one
-     * pass runs, the workers drain the initial pool, and the session ends naturally.
+     * Begin a new run. Idempotent if already running. Connect All always runs in continuous
+     * ("retry forever") mode: the underlying interactor never voluntarily exits, so the
+     * session lives until [stop] is called.
      */
-    fun start(retryForever: Boolean) {
+    fun start() {
         if (isActive) return
         successfulAddresses.clear()
         attemptCounts.clear()
         _state.value = State(inProgress = true, statusLine = "")
         bulkJob = applicationScope.launch {
             try {
-                runEnumeration(retryForever)
+                runEnumeration()
             } catch (ce: CancellationException) {
                 _state.update { it.copy(statusLine = "Cancelled") }
                 throw ce
@@ -166,14 +161,14 @@ class ConnectAllSession(
         _state.update { it.copy(tooManyAttemptsExpanded = !it.tooManyAttemptsExpanded) }
     }
 
-    private suspend fun runEnumeration(retryForever: Boolean) {
+    private suspend fun runEnumeration() {
         bulkEnumerateGattInteractor.execute(
             skipAddresses = successfulAddresses.toSet(),
             attemptCounts = attemptCounts,
-            continuous = retryForever,
+            continuous = true,
         ).collect { progress ->
             when (progress) {
-                is BulkEnumerateGattInteractor.Progress.Started -> handleStarted(progress, retryForever)
+                is BulkEnumerateGattInteractor.Progress.Started -> handleStarted(progress)
                 is BulkEnumerateGattInteractor.Progress.DeviceStarted -> handleDeviceStarted(progress)
                 is BulkEnumerateGattInteractor.Progress.DeviceFinished -> handleDeviceFinished(progress)
                 is BulkEnumerateGattInteractor.Progress.Done -> handleDone(progress)
@@ -181,14 +176,13 @@ class ConnectAllSession(
         }
     }
 
-    private fun handleStarted(progress: BulkEnumerateGattInteractor.Progress.Started, retryForever: Boolean) {
+    private fun handleStarted(progress: BulkEnumerateGattInteractor.Progress.Started) {
         val text = if (progress.total == 0 && progress.skippedAdvFilter == 0) {
-            if (retryForever) "Waiting for connectable devices to appear" else "No connectable devices visible"
+            "Waiting for connectable devices to appear"
         } else {
             val noun = if (progress.total == 1) "device" else "devices"
             val skipNote = if (progress.skippedAdvFilter > 0) " (${progress.skippedAdvFilter} pre-skipped)" else ""
-            if (retryForever) "Running continuously — ${progress.total} $noun queued$skipNote"
-            else "Starting on ${progress.total} $noun$skipNote"
+            "Running continuously — ${progress.total} $noun queued$skipNote"
         }
         _state.update { it.copy(statusLine = text) }
     }

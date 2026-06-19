@@ -37,7 +37,6 @@ class ConnectAllViewModel(
 
     var bulkSkipApple: Boolean by mutableStateOf(settingsRepository.getBulkSkipApple())
     var bulkSkipSamsung: Boolean by mutableStateOf(settingsRepository.getBulkSkipSamsung())
-    var retryForever: Boolean by mutableStateOf(settingsRepository.getBulkRetryForever())
     var inProgress: Boolean by mutableStateOf(false)
     /** Live one-line headline ("Pass N — Starting on M devices…", "Done…", etc.). */
     var statusLine: String by mutableStateOf("")
@@ -225,11 +224,6 @@ class ConnectAllViewModel(
         viewModelScope.launch { recomputeCandidates(devicesRepository.observeLastBatch().value) }
     }
 
-    fun onRetryForeverToggled() {
-        retryForever = !retryForever
-        settingsRepository.setBulkRetryForever(retryForever)
-    }
-
     fun onToggleConnectedExpanded() {
         connectAllSession.toggleConnectedExpanded()
     }
@@ -247,7 +241,7 @@ class ConnectAllViewModel(
             connectAllSession.stop()
             return
         }
-        connectAllSession.start(retryForever = retryForever)
+        connectAllSession.start()
     }
 
     fun onDeviceClick(device: DeviceData) {

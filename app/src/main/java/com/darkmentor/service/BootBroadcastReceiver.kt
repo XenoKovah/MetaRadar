@@ -40,7 +40,6 @@ class BootBroadcastReceiver : BroadcastReceiver() {
             runDeviceScanOnStartup = settingsRepository.getRunOnStartup(),
             runConnectAllOnStartup = settingsRepository.getRunConnectAllOnStartup(),
             blePermissionsAllowed = permissionHelper.blePermissionsAllowed(),
-            bulkRetryForever = settingsRepository.getBulkRetryForever(),
         )
 
         try {
@@ -67,7 +66,7 @@ class BootBroadcastReceiver : BroadcastReceiver() {
                     // even when the user visits and leaves the pane.
                     settingsRepository.setScanStartMode(SettingsRepository.ScanStartMode.CONNECT_ALL_AUTO)
                     BgScanService.start(context)
-                    connectAllSession.start(retryForever = action.retryForever)
+                    connectAllSession.start()
                 }
             }
         } catch (error: Exception) {

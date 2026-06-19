@@ -26,10 +26,10 @@ sealed interface BootStartupAction {
     object StartDeviceScan : BootStartupAction
 
     /**
-     * Start BgScanService with mode = CONNECT_ALL_AUTO and resume the bulk Connect-All loop
-     * with [retryForever] from saved settings.
+     * Start BgScanService with mode = CONNECT_ALL_AUTO and resume the bulk Connect-All loop.
+     * Connect All always runs in continuous ("retry forever") mode.
      */
-    data class StartConnectAll(val retryForever: Boolean) : BootStartupAction
+    object StartConnectAll : BootStartupAction
 }
 
 /** Human-readable label used in the Journal entry for a permission-error report. */
@@ -45,7 +45,7 @@ const val BOOT_STARTUP_LABEL_CONNECT_ALL = "Launch Connect All at system startup
  *   ("Connect All" wins the label if its toggle is on; otherwise "device scan").
  * - Otherwise → [BootStartupAction.StartDeviceScan] when the device-scan toggle is on
  *   (takes precedence, matching the receiver's pre-extraction behaviour), else
- *   [BootStartupAction.StartConnectAll] with [retryForever] from settings.
+ *   [BootStartupAction.StartConnectAll].
  *
  * Settings UI enforces mutual exclusion so the device-scan-wins precedence shouldn't fire in
  * practice, but it's the deterministic fallback if the prefs ever land in that state.
@@ -54,7 +54,6 @@ fun decideBootStartup(
     runDeviceScanOnStartup: Boolean,
     runConnectAllOnStartup: Boolean,
     blePermissionsAllowed: Boolean,
-    bulkRetryForever: Boolean,
 ): BootStartupAction {
     if (!runDeviceScanOnStartup && !runConnectAllOnStartup) return BootStartupAction.Idle
     if (!blePermissionsAllowed) {
@@ -64,6 +63,6 @@ fun decideBootStartup(
     return if (runDeviceScanOnStartup) {
         BootStartupAction.StartDeviceScan
     } else {
-        BootStartupAction.StartConnectAll(retryForever = bulkRetryForever)
+        BootStartupAction.StartConnectAll
     }
 }

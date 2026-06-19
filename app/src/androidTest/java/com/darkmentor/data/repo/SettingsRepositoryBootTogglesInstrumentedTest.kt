@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -84,18 +83,6 @@ class SettingsRepositoryBootTogglesInstrumentedTest {
         // Boot 3: the disable persists.
         val thirdBoot = freshRepo()
         assertFalse(thirdBoot.getRunOnStartup())
-    }
-
-    @Test
-    fun bulk_retry_forever_survives_reboot_and_drives_connect_all_action() {
-        // Connect-All boot path reads bulkRetryForever to decide whether to keep the bulk loop
-        // spinning. The user's last choice must survive a reboot.
-        val firstBoot = freshRepo()
-        assertEquals("factory default is true", true, firstBoot.getBulkRetryForever())
-        firstBoot.setBulkRetryForever(false)
-
-        val nextBoot = freshRepo()
-        assertEquals("flipped value survives", false, nextBoot.getBulkRetryForever())
     }
 
     @Test

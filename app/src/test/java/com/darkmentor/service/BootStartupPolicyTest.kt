@@ -12,7 +12,8 @@ import org.junit.Test
  *   - Background DEVICE SCAN auto-resume on boot (the "Launch device scan at system startup"
  *     toggle, persisted in SettingsRepository.getRunOnStartup).
  *   - Background CONNECT ALL auto-resume on boot ("Launch Connect All at system startup",
- *     persisted in SettingsRepository.getRunConnectAllOnStartup).
+ *     persisted in SettingsRepository.getRunConnectAllOnStartup). Connect All always runs in
+ *     continuous ("retry forever") mode — there is no longer a per-session toggle.
  *
  * The decision is pure (input → action), so we sweep the input space without standing up a
  * real Context / Koin container / BroadcastReceiver lifecycle.
@@ -27,7 +28,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = false,
             runConnectAllOnStartup = false,
             blePermissionsAllowed = true,
-            bulkRetryForever = true,
         )
         assertSame(BootStartupAction.Idle, action)
     }
@@ -40,7 +40,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = false,
             runConnectAllOnStartup = false,
             blePermissionsAllowed = false,
-            bulkRetryForever = true,
         )
         assertSame(BootStartupAction.Idle, action)
     }
@@ -53,7 +52,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = true,
             runConnectAllOnStartup = false,
             blePermissionsAllowed = true,
-            bulkRetryForever = true,
         )
         assertSame(BootStartupAction.StartDeviceScan, action)
     }
@@ -64,54 +62,21 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = true,
             runConnectAllOnStartup = false,
             blePermissionsAllowed = false,
-            bulkRetryForever = true,
         )
         assertTrue("expected PermissionError, got $action", action is BootStartupAction.PermissionError)
         assertEquals(BOOT_STARTUP_LABEL_DEVICE_SCAN, (action as BootStartupAction.PermissionError).label)
     }
 
-    @Test
-    fun `device scan auto-resume ignores bulkRetryForever (only relevant to Connect All)`() {
-        // bulkRetryForever should have no effect on the device-scan path — exercise both values.
-        val withRetry = decideBootStartup(
-            runDeviceScanOnStartup = true,
-            runConnectAllOnStartup = false,
-            blePermissionsAllowed = true,
-            bulkRetryForever = true,
-        )
-        val withoutRetry = decideBootStartup(
-            runDeviceScanOnStartup = true,
-            runConnectAllOnStartup = false,
-            blePermissionsAllowed = true,
-            bulkRetryForever = false,
-        )
-        assertSame(BootStartupAction.StartDeviceScan, withRetry)
-        assertSame(BootStartupAction.StartDeviceScan, withoutRetry)
-    }
-
     // ---- Background Connect-All auto-resume on boot ------------------------------------------
 
     @Test
-    fun `connect all toggle plus granted permissions resumes Connect All with retry-forever true`() {
+    fun `connect all toggle plus granted permissions resumes Connect All`() {
         val action = decideBootStartup(
             runDeviceScanOnStartup = false,
             runConnectAllOnStartup = true,
             blePermissionsAllowed = true,
-            bulkRetryForever = true,
         )
-        assertEquals(BootStartupAction.StartConnectAll(retryForever = true), action)
-    }
-
-    @Test
-    fun `connect all toggle plus granted permissions resumes Connect All with retry-forever false`() {
-        // The user's last-configured retryForever flag persists across the reboot.
-        val action = decideBootStartup(
-            runDeviceScanOnStartup = false,
-            runConnectAllOnStartup = true,
-            blePermissionsAllowed = true,
-            bulkRetryForever = false,
-        )
-        assertEquals(BootStartupAction.StartConnectAll(retryForever = false), action)
+        assertSame(BootStartupAction.StartConnectAll, action)
     }
 
     @Test
@@ -121,7 +86,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = false,
             runConnectAllOnStartup = true,
             blePermissionsAllowed = false,
-            bulkRetryForever = true,
         )
         assertTrue("expected PermissionError, got $action", action is BootStartupAction.PermissionError)
         assertEquals(BOOT_STARTUP_LABEL_CONNECT_ALL, (action as BootStartupAction.PermissionError).label)
@@ -138,7 +102,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = true,
             runConnectAllOnStartup = true,
             blePermissionsAllowed = true,
-            bulkRetryForever = true,
         )
         assertSame(BootStartupAction.StartDeviceScan, action)
     }
@@ -152,7 +115,6 @@ class BootStartupPolicyTest {
             runDeviceScanOnStartup = true,
             runConnectAllOnStartup = true,
             blePermissionsAllowed = false,
-            bulkRetryForever = true,
         )
         assertTrue(action is BootStartupAction.PermissionError)
         assertEquals(BOOT_STARTUP_LABEL_CONNECT_ALL, (action as BootStartupAction.PermissionError).label)

@@ -138,8 +138,6 @@
     <string name="bulk_gatt_skip_apple_subtitle">Skip devices identified by Apple MSD company ID, IEEE OUI, BT SIG member UUID, or CLUES UUID attribution.</string>
     <string name="bulk_gatt_skip_samsung_title">Skip Samsung devices</string>
     <string name="bulk_gatt_skip_samsung_subtitle">Same matching rules as Apple, for Samsung.</string>
-    <string name="bulk_gatt_retry_forever_title">Retry forever</string>
-    <string name="bulk_gatt_retry_forever_subtitle">After every pass, immediately start another. Devices that have already completed service enumeration are never retried.</string>
     <string name="connect_all_category_connected">Connected successfully: %1$d</string>
     <string name="connect_all_category_errors">Failed due to errors: %1$d</string>
     <string name="connect_all_category_too_many_attempts">Too many failed attempts: %1$d</string>

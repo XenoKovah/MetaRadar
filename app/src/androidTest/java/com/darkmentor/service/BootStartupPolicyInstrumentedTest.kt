@@ -59,7 +59,6 @@ class BootStartupPolicyInstrumentedTest {
             runDeviceScanOnStartup = booted.getRunOnStartup(),
             runConnectAllOnStartup = booted.getRunConnectAllOnStartup(),
             blePermissionsAllowed = blePermissionsAllowed,
-            bulkRetryForever = booted.getBulkRetryForever(),
         )
     }
 
@@ -76,22 +75,12 @@ class BootStartupPolicyInstrumentedTest {
     }
 
     @Test
-    fun connect_all_toggle_set_then_reboot_yields_StartConnectAll_with_persisted_retryForever() {
-        val firstBoot = freshRepo()
-        firstBoot.setRunConnectAllOnStartup(true)
-        firstBoot.setBulkRetryForever(false)
-        assertEquals(
-            BootStartupAction.StartConnectAll(retryForever = false),
-            decisionAfterReboot(blePermissionsAllowed = true),
-        )
-    }
-
-    @Test
-    fun connect_all_with_default_retryForever_uses_factory_default() {
-        // setBulkRetryForever never called — boot must read the factory default (true).
+    fun connect_all_toggle_set_then_reboot_yields_StartConnectAll() {
+        // Connect All always resumes in continuous ("retry forever") mode — there is no longer
+        // a per-session toggle to persist.
         freshRepo().setRunConnectAllOnStartup(true)
-        assertEquals(
-            BootStartupAction.StartConnectAll(retryForever = true),
+        assertSame(
+            BootStartupAction.StartConnectAll,
             decisionAfterReboot(blePermissionsAllowed = true),
         )
     }
@@ -131,7 +120,6 @@ class BootStartupPolicyInstrumentedTest {
         val firstBoot = freshRepo()
         firstBoot.setRunOnStartup(true)
         firstBoot.setRunConnectAllOnStartup(true) // (Settings UI normally prevents this; defensive)
-        firstBoot.setBulkRetryForever(false)
 
         val rebooted = freshRepo()
         // After reboot, the device-scan path takes precedence per [decideBootStartup]'s
@@ -140,21 +128,18 @@ class BootStartupPolicyInstrumentedTest {
             runDeviceScanOnStartup = rebooted.getRunOnStartup(),
             runConnectAllOnStartup = rebooted.getRunConnectAllOnStartup(),
             blePermissionsAllowed = true,
-            bulkRetryForever = rebooted.getBulkRetryForever(),
         )
         assertSame(BootStartupAction.StartDeviceScan, action)
 
-        // Now flip device-scan off; Connect-All should win on the next reboot, with retryForever
-        // still propagated from the persisted false.
+        // Now flip device-scan off; Connect-All should win on the next reboot.
         rebooted.setRunOnStartup(false)
         val nextBoot = freshRepo()
-        assertEquals(
-            BootStartupAction.StartConnectAll(retryForever = false),
+        assertSame(
+            BootStartupAction.StartConnectAll,
             decideBootStartup(
                 runDeviceScanOnStartup = nextBoot.getRunOnStartup(),
                 runConnectAllOnStartup = nextBoot.getRunConnectAllOnStartup(),
                 blePermissionsAllowed = true,
-                bulkRetryForever = nextBoot.getBulkRetryForever(),
             ),
         )
     }

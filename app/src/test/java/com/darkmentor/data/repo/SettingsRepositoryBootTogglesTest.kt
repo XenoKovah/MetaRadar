@@ -4,7 +4,6 @@ import android.content.SharedPreferences
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
-import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
 import junit.framework.TestCase.assertTrue
 import org.junit.Test
@@ -91,20 +90,6 @@ class SettingsRepositoryBootTogglesTest {
         secondBoot.setRunOnStartup(false)
         val thirdBoot = reboot(backing)
         assertFalse(thirdBoot.getRunOnStartup())
-    }
-
-    @Test
-    fun `bulkRetryForever default is true and persists across reboot`() {
-        // The Connect-All boot path reads bulkRetryForever to decide whether to keep the bulk
-        // loop spinning. Default behaviour must match what a user-driven Connect All session
-        // does, and the user's choice must survive a reboot.
-        val (prefs, backing) = fakePrefs()
-        val firstBoot = SettingsRepository(prefs)
-        assertEquals(true, firstBoot.getBulkRetryForever()) // factory default
-
-        firstBoot.setBulkRetryForever(false)
-        val rebooted = reboot(backing)
-        assertEquals(false, rebooted.getBulkRetryForever())
     }
 
     @Test
