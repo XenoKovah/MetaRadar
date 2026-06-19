@@ -67,7 +67,7 @@
         tools:targetApi="31">
 
         <activity
-            android:name="f.cking.software.ui.MainActivity"
+            android:name="com.darkmentor.ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"
@@ -82,7 +82,7 @@
         </activity>
 
         <service
-            android:name="f.cking.software.service.BgScanService"
+            android:name="com.darkmentor.service.BgScanService"
             android:foregroundServiceType="location|connectedDevice" />
 
         <!--
@@ -94,7 +94,7 @@
             revoking the OS-level permission.
         -->
         <service
-            android:name="f.cking.software.service.AutoPairAccessibilityService"
+            android:name="com.darkmentor.service.AutoPairAccessibilityService"
             android:exported="true"
             android:label="@string/auto_pair_accessibility_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

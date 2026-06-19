@@ -49,7 +49,7 @@ jobs:
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: f.cking.software
+          packageName: com.darkmentor
           releaseFiles: app/build/outputs/bundle/googlePlayRelease/app-googlePlay-release.aab
           track: production
           mappingFile: app/build/outputs/mapping/googlePlayRelease/mapping.txt

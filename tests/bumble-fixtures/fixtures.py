@@ -3,7 +3,7 @@
 Each fixture pairs a bumble advertiser configuration (used by
 [run_fixture.py]) with the parser invariants asserted by the matching
 on-device test class in
-`app/src/androidTest/java/f/cking/software/bumblefixture/BumbleFixtureTNN…`.
+`app/src/androidTest/java/com/darkmentor/bumblefixture/BumbleFixtureTNN…`.
 
 When a fixture is added/changed here, the matching Kotlin test must be
 updated in lockstep — they share an MAC + adv-bytes contract, not code.

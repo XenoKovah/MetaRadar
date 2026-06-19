@@ -18,11 +18,11 @@ apply {
 
 android {
     compileSdk = 36
-    namespace = "f.cking.software"
+    namespace = "com.darkmentor"
     val javaConfig: JavaConfig = JavaConfig.getByString(getEnvJavaConfigVersion())
 
     defaultConfig {
-        applicationId = "f.cking.software"
+        applicationId = "com.darkmentor"
         minSdk = 29
         targetSdk = 36
 
@@ -96,7 +96,7 @@ android {
 
             buildConfigField("String", "DISTRIBUTION", "\"Google play\"")
             buildConfigField("Boolean", "STORE_RATING_IS_APPLICABLE", "true")
-            buildConfigField("String", "STORE_PAGE_URL", "\"https://play.google.com/store/apps/details?id=f.cking.software&pcampaignid=web_share\"")
+            buildConfigField("String", "STORE_PAGE_URL", "\"https://play.google.com/store/apps/details?id=com.darkmentor&pcampaignid=web_share\"")
         }
         create("fdroid") {
             isDefault = false

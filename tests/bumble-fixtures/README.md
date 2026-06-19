@@ -3,7 +3,7 @@
 Paired host-runs-bumble + phone-runs-test regression suite. Each fixture
 ID corresponds to one bumble advertiser configuration ([fixtures.py](fixtures.py))
 and one on-device JUnit test class
-(`app/src/androidTest/java/f/cking/software/bumblefixture/BumbleFixtureTNN…`).
+(`app/src/androidTest/java/com/darkmentor/bumblefixture/BumbleFixtureTNN…`).
 
 The fixture advertises a known set of bytes from a known BD_ADDR; the
 on-device test scans for that BD_ADDR and asserts that every field the
@@ -39,7 +39,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
 # Terminal 2 — run only the matching test class on the phone
 JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
   ./gradlew :app:connectedGithubDebugAndroidTest \
-    -Pandroid.testInstrumentationRunnerArguments.class=f.cking.software.bumblefixture.BumbleFixtureT01InstrumentedTest
+    -Pandroid.testInstrumentationRunnerArguments.class=com.darkmentor.bumblefixture.BumbleFixtureT01InstrumentedTest
 ```
 
 When the test finishes, **Ctrl-C** the bumble process (don't `kill -9`
@@ -68,7 +68,7 @@ red — there's no hidden cost to one-at-a-time.
    collide with adjacent fixtures.
 2. Mirror its `expected` block into a new
    `BumbleFixtureT??InstrumentedTest.kt` under
-   `app/src/androidTest/java/f/cking/software/bumblefixture/`.
+   `app/src/androidTest/java/com/darkmentor/bumblefixture/`.
 3. Reference the AD type / parser branch the test pins in the test
    class's KDoc, so future readers know what regression each fixture
    guards against.

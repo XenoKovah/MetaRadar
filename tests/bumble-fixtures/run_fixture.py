@@ -4,7 +4,7 @@ Usage:
     python run_fixture.py <FIXTURE_ID> [--transport TRANSPORT]
 
 Each fixture corresponds to one instrumented test class in
-`app/src/androidTest/java/f/cking/software/bumblefixture/`. Run the
+`app/src/androidTest/java/com/darkmentor/bumblefixture/`. Run the
 fixture in one terminal, then run the matching test on the phone in
 another terminal; the test scans for the fixture's BD_ADDR and asserts
 that DM BT captured every field the fixture advertised.
