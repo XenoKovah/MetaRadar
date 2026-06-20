@@ -415,11 +415,12 @@ class BulkEnumerateGattInteractor(
                                         val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
                                         if (name.isNotEmpty()) {
                                             devicesRepository.setNameIfBetter(device.address, name)
-                                            // A Galaxy device that didn't advertise its "Galaxy" Local
-                                            // Name can only be recognised as Samsung once its GAP Device
-                                            // Name is read here. Honour Skip Samsung at this point too,
-                                            // otherwise it enumerates to completion and shows up as a
-                                            // connected "Galaxy ..." despite the toggle being on.
+                                            // A Galaxy / iPhone device that didn't advertise its name is
+                                            // only recognisable once its GAP Device Name is read.
+                                            // pickReadableCharacteristics reads 0x2A00 FIRST, so honour
+                                            // Skip Samsung / Skip Apple here to abort before reading the
+                                            // rest of its characteristics (otherwise it would enumerate
+                                            // to completion and show up connected despite the toggle).
                                             if (vendorIdentifier.shouldSkipByName(name, skipApple, skipSamsung)) {
                                                 abortForVendor = true
                                             }
@@ -630,16 +631,16 @@ class BulkEnumerateGattInteractor(
     }
 
     private fun pickReadableCharacteristics(services: List<BluetoothGattService>): List<BluetoothGattCharacteristic> {
-        val result = mutableListOf<BluetoothGattCharacteristic>()
-        for (s in services) {
-            for (c in s.characteristics.orEmpty()) {
-                if ((c.properties and BluetoothGattCharacteristic.PROPERTY_READ) != 0) {
-                    result += c
-                    if (result.size >= MAX_CHARS_PER_DEVICE) return result
-                }
-            }
-        }
-        return result
+        val readable = services
+            .flatMap { it.characteristics.orEmpty() }
+            .filter { (it.properties and BluetoothGattCharacteristic.PROPERTY_READ) != 0 }
+        // Read the GAP Device Name (0x2A00) FIRST so a "Galaxy"/"iPhone"-style name lets us skip the
+        // device (when Skip Samsung / Skip Apple is on) before spending time reading the rest of its
+        // characteristics. Stable sort keeps every other char in discovery order, and collecting all
+        // readable chars before the cap means 0x2A00 is included even if it'd fall past the cap.
+        return readable
+            .sortedByDescending { it.uuid == GAP_DEVICE_NAME_UUID }
+            .take(MAX_CHARS_PER_DEVICE)
     }
 
     private suspend fun <T> Flow<T>.collectUntil(predicate: suspend (T) -> Boolean) {

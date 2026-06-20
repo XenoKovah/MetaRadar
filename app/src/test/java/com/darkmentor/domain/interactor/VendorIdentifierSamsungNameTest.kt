@@ -10,13 +10,14 @@ import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
 /**
- * Coverage for the Samsung "Galaxy" advertised-name rule (VendorIdentifier.identify step 5).
+ * Coverage for the advertised / GATT Device-Name vendor rules (VendorIdentifier.identify step 5):
+ * Samsung's "Galaxy" brand and Apple product names ("iPhone", "iPad", "AirPods", …).
  *
- * In captured scan data the bulk of Galaxy devices advertise a rotating RPA address with no
- * Samsung MSD company id and no usable OUI, so the advertised name is the only reliable Samsung
- * signal. These tests build a [DeviceData] with manufacturerInfo=null, a random address type,
- * no service UUIDs, and rowDataEncoded=null — so the name is the ONLY thing identify() can key
- * on, and no android.util.Base64 decode is triggered in this JVM unit test.
+ * In captured scan data the bulk of Galaxy / Apple devices advertise a rotating RPA address with no
+ * vendor MSD company id and no usable OUI, so the name is the only reliable vendor signal. These
+ * tests build a [DeviceData] with manufacturerInfo=null, a random address type, no service UUIDs,
+ * and rowDataEncoded=null — so the name is the ONLY thing identify() can key on, and no
+ * android.util.Base64 decode is triggered in this JVM unit test.
  */
 class VendorIdentifierSamsungNameTest {
 
@@ -82,10 +83,24 @@ class VendorIdentifierSamsungNameTest {
         // only recognisable as Samsung once the GAP Device Name characteristic is read.
         assertTrue(identifier.shouldSkipByName("Galaxy S24", skipApple = false, skipSamsung = true))
         assertFalse(identifier.shouldSkipByName("Galaxy S24", skipApple = false, skipSamsung = false))
-        // skipApple has no name rule; a non-Galaxy or null name is never name-skipped.
+        // skipApple must NOT skip a Samsung/Galaxy name; a non-vendor or null name is never skipped.
         assertFalse(identifier.shouldSkipByName("Galaxy S24", skipApple = true, skipSamsung = false))
         assertFalse(identifier.shouldSkipByName("Pixel 9 Pro", skipApple = true, skipSamsung = true))
         assertFalse(identifier.shouldSkipByName(null, skipApple = true, skipSamsung = true))
+    }
+
+    @Test
+    fun `Apple product names are classified Apple and skipped only when skipApple is on`() {
+        // Apple devices that don't advertise Apple MSD are recognisable by their GATT/advertised
+        // name. Substring + case-insensitive, since users rename ("John's iPhone").
+        assertEquals(VendorIdentifier.Vendor.APPLE, identifier.identifyVendor(device("John's iPhone")))
+        assertEquals(VendorIdentifier.Vendor.APPLE, identifier.identifyVendor(device("iPad Pro")))
+        assertTrue(identifier.isApple(device("AirPods Pro")))
+        assertTrue(identifier.shouldSkipByName("John's iPhone", skipApple = true, skipSamsung = false))
+        assertTrue(identifier.shouldSkipByName("Galaxy Watch", skipApple = false, skipSamsung = true))
+        // skipSamsung must NOT skip an Apple name; a non-vendor name is never skipped.
+        assertFalse(identifier.shouldSkipByName("John's iPhone", skipApple = false, skipSamsung = true))
+        assertFalse(identifier.shouldSkipByName("Pixel 9 Pro", skipApple = true, skipSamsung = true))
     }
 
     @Test

@@ -82,13 +82,12 @@ class VendorIdentifier(
 
     /**
      * Name-only vendor skip, used after a GATT 0x2A00 ("Device Name") read surfaces a name that
-     * wasn't present in the advertisement. Only Samsung has a name-based rule (the "Galaxy"
-     * brand) — Apple has no comparable name convention — so [skipApple] never matches here; it's
-     * accepted purely so the call site reads symmetrically with [shouldSkip] /
-     * [shouldSkipByServiceUuids].
+     * wasn't present in the advertisement: Samsung's "Galaxy" brand, or an Apple product name
+     * ("iPhone", "iPad", "AirPods", …). Lets the bulk enumerator drop a device as soon as its
+     * Device Name is read, before spending time on the rest of its characteristics.
      */
     fun shouldSkipByName(name: String?, skipApple: Boolean, skipSamsung: Boolean): Boolean =
-        skipSamsung && isSamsungLocalName(name)
+        (skipSamsung && isSamsungLocalName(name)) || (skipApple && isAppleLocalName(name))
 
     /**
      * Same idea as [shouldSkip], but starting from raw advertisement bytes plus the BD address.
@@ -182,10 +181,11 @@ class VendorIdentifier(
             if (companyName.startsWith("apple")) return Vendor.APPLE
             if ("samsung" in companyName) return Vendor.SAMSUNG
         }
-        // 5. Advertised Local Name — Samsung "Galaxy" brand. Checked last so a SIG-registered
-        //    company id / member UUID still wins, but this is the only signal for the majority
-        //    of Galaxy devices (RPA address, no Samsung MSD).
+        // 5. Advertised Local Name — Samsung "Galaxy" brand or an Apple product name. Checked
+        //    last so a SIG-registered company id / member UUID still wins, but for many Galaxy
+        //    (RPA, no Samsung MSD) and the occasional Apple device the name is the only signal.
         if (isSamsungLocalName(localName)) return Vendor.SAMSUNG
+        if (isAppleLocalName(localName)) return Vendor.APPLE
         return null
     }
 
@@ -195,6 +195,18 @@ class VendorIdentifier(
      */
     private fun isSamsungLocalName(name: String?): Boolean =
         name?.trim()?.startsWith(SAMSUNG_NAME_PREFIX, ignoreCase = true) == true
+
+    /**
+     * True when [name] looks like an Apple product name (e.g. "iPhone", "John's iPad",
+     * "AirPods Pro"). Substring + case-insensitive, because users rename devices ("John's iPhone")
+     * and Apple has no single prefix. The markers are distinctive enough that non-Apple false
+     * positives are negligible.
+     */
+    private fun isAppleLocalName(name: String?): Boolean {
+        val n = name?.trim() ?: return false
+        if (n.isEmpty()) return false
+        return APPLE_NAME_MARKERS.any { n.contains(it, ignoreCase = true) }
+    }
 
     /** Complete (0x09) or Shortened (0x08) Local Name AD frame, decoded as UTF-8. */
     private fun parseLocalName(frames: List<BleRecordFrame>): String? {
@@ -381,5 +393,13 @@ class VendorIdentifier(
         private const val AD_TYPE_COMPLETE_LOCAL_NAME = 0x09
         /** Samsung sells its consumer Bluetooth devices under the "Galaxy" brand. */
         private const val SAMSUNG_NAME_PREFIX = "Galaxy"
+        /**
+         * Distinctive Apple product-name markers, matched case-insensitively as substrings of the
+         * advertised / GATT Device Name (users rename devices, e.g. "John's iPhone"). Trim or
+         * extend as needed.
+         */
+        private val APPLE_NAME_MARKERS = listOf(
+            "iPhone", "iPad", "iPod", "MacBook", "iMac", "AirPods", "Apple Watch", "AirTag", "HomePod",
+        )
     }
 }
