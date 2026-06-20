@@ -401,6 +401,14 @@
     <string name="menu_device_list">Devices</string>
     <string name="menu_journal">Error Logs</string>
     <string name="menu_settings">Settings</string>
+    <!-- Settings two-layer section titles (level-1 rows + level-2 page titles) -->
+    <string name="settings_section_discovery">Discovery transports</string>
+    <string name="settings_section_app_behavior">App behavior</string>
+    <string name="settings_section_location">Location</string>
+    <string name="settings_section_database">Database</string>
+    <string name="settings_section_btidalpool">BTIDALPOOL upload</string>
+    <string name="settings_section_btides">BTIDES logs</string>
+    <string name="settings_section_about">About</string>
     <string name="stop">Stop</string>
     <string name="scan">Scan</string>
     <string name="refresh">refresh</string>

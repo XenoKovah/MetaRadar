@@ -59,17 +59,40 @@ import com.darkmentor.utils.graphic.RoundedBox
 import com.darkmentor.utils.graphic.Switcher
 import com.darkmentor.utils.graphic.ThemedDialog
 import org.koin.androidx.compose.koinViewModel
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.ui.Alignment
+import com.darkmentor.utils.navigation.BackCommand
+import com.darkmentor.utils.navigation.Router
+
+/** The Settings sub-pages reachable from the top-level Settings list — one per level-1 row. */
+enum class SettingsSection(val titleRes: Int) {
+    DISCOVERY(R.string.settings_section_discovery),
+    APP_BEHAVIOR(R.string.settings_section_app_behavior),
+    LOCATION(R.string.settings_section_location),
+    DATABASE(R.string.settings_section_database),
+    BTIDALPOOL(R.string.settings_section_btidalpool),
+    BTIDES(R.string.settings_section_btides),
+    ABOUT(R.string.settings_section_about),
+}
 
 object SettingsScreen {
 
+    /**
+     * Level-1 Settings: a single tappable row per section. Each row opens a level-2 [DetailScreen]
+     * (or, for GPS exclusion zones / Error Logs, their existing full screens) so the once-giant
+     * single page is now a short menu.
+     */
     @Composable
     fun Screen() {
         val viewModel: SettingsViewModel = koinViewModel()
-        // Re-poll the BTIDES log size every time the Settings tab enters composition. The
-        // ViewModel survives tab switches, so the cached size goes stale once the user runs a
-        // scan / Connect All on another tab. Tab navigation tears down + rebuilds this
-        // composable, so a `LaunchedEffect(Unit)` re-fires on each visit.
-        LaunchedEffect(Unit) { viewModel.refreshBTIDESLogSize() }
         Column(
             modifier = Modifier
                 .background(MaterialTheme.colorScheme.surface)
@@ -77,26 +100,102 @@ object SettingsScreen {
                 .verticalScroll(rememberScrollState())
         ) {
             Spacer(modifier = Modifier.height(16.dp))
-            ProjectInformationBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_discovery)) { viewModel.onOpenDiscoveryTransportsClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            DiscoveryTransportsBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_app_behavior)) { viewModel.onOpenAppBehaviorClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            AppSettings(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_location)) { viewModel.onOpenLocationClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            DatabaseBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.exclusion_zones_block_title)) { viewModel.onOpenExclusionZonesClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            BtidalpoolBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_database)) { viewModel.onOpenDatabaseClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            BTIDESBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_btidalpool)) { viewModel.onOpenBtidalpoolClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            LocationBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.settings_section_btides)) { viewModel.onOpenBtidesClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            ExclusionZonesBlock(viewModel = viewModel)
+            SettingsRow(stringResource(R.string.menu_journal)) { viewModel.onOpenJournalClick() }
             Spacer(modifier = Modifier.height(8.dp))
-            JournalBlock(viewModel = viewModel)
-            Spacer(modifier = Modifier.height(8.dp))
-            AppInfo()
+            SettingsRow(stringResource(R.string.settings_section_about)) { viewModel.onOpenAboutClick() }
             FABSpacer()
+        }
+    }
+
+    /** A single tappable level-1 row: title + chevron, opening that section's sub-page. */
+    @Composable
+    private fun SettingsRow(title: String, onClick: () -> Unit) {
+        RoundedBox(internalPaddings = 0.dp) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick() }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    /**
+     * Level-2 detail page: renders the chosen section's existing block(s) under a back-arrow app
+     * bar. These are the SAME block composables the old single-page Settings rendered, so each
+     * section's behaviour is unchanged — only the navigation is now two layers.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun DetailScreen(router: Router, section: SettingsSection) {
+        val viewModel: SettingsViewModel = koinViewModel()
+        // Keep the BTIDES log size fresh on entry (it goes stale after a scan / Connect All).
+        LaunchedEffect(section) {
+            if (section == SettingsSection.BTIDES) viewModel.refreshBTIDESLogSize()
+        }
+        Scaffold(
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.surface)
+                .fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text(text = stringResource(section.titleRes)) },
+                    navigationIcon = {
+                        IconButton(onClick = { router.navigate(BackCommand) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = stringResource(R.string.back),
+                            )
+                        }
+                    },
+                )
+            },
+        ) { paddings ->
+            Column(
+                modifier = Modifier
+                    .padding(top = paddings.calculateTopPadding())
+                    .background(MaterialTheme.colorScheme.surface)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Spacer(modifier = Modifier.height(16.dp))
+                when (section) {
+                    SettingsSection.DISCOVERY -> DiscoveryTransportsBlock(viewModel)
+                    SettingsSection.APP_BEHAVIOR -> AppSettings(viewModel)
+                    SettingsSection.LOCATION -> LocationBlock(viewModel)
+                    SettingsSection.DATABASE -> DatabaseBlock(viewModel)
+                    SettingsSection.BTIDALPOOL -> BtidalpoolBlock(viewModel)
+                    SettingsSection.BTIDES -> BTIDESBlock(viewModel)
+                    SettingsSection.ABOUT -> {
+                        ProjectInformationBlock(viewModel)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        AppInfo()
+                    }
+                }
+                FABSpacer()
+            }
         }
     }
 
@@ -582,32 +681,6 @@ object SettingsScreen {
             ClearCurrentBTIDESLogButton(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             ClearAllBTIDESLogsButton(viewModel = viewModel)
-        }
-    }
-
-    @Composable
-    private fun JournalBlock(viewModel: SettingsViewModel) {
-        RoundedBox {
-            Text(text = stringResource(R.string.menu_journal), fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = stringResource(R.string.journal_block_description), fontWeight = FontWeight.Light)
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onOpenJournalClick() }) {
-                Text(text = stringResource(R.string.journal_open_button), color = MaterialTheme.colorScheme.onPrimary)
-            }
-        }
-    }
-
-    @Composable
-    private fun ExclusionZonesBlock(viewModel: SettingsViewModel) {
-        RoundedBox {
-            Text(text = stringResource(R.string.exclusion_zones_block_title), fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = stringResource(R.string.exclusion_zones_block_description), fontWeight = FontWeight.Light)
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onOpenExclusionZonesClick() }) {
-                Text(text = stringResource(R.string.exclusion_zones_open_button), color = MaterialTheme.colorScheme.onPrimary)
-            }
         }
     }
 

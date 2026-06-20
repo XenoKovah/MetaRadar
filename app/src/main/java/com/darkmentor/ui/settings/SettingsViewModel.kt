@@ -765,6 +765,34 @@ class SettingsViewModel(
         router.navigate(ScreenNavigationCommands.OpenExclusionZonesScreen)
     }
 
+    fun onOpenDiscoveryTransportsClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.DISCOVERY))
+    }
+
+    fun onOpenAppBehaviorClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.APP_BEHAVIOR))
+    }
+
+    fun onOpenLocationClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.LOCATION))
+    }
+
+    fun onOpenDatabaseClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.DATABASE))
+    }
+
+    fun onOpenBtidalpoolClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.BTIDALPOOL))
+    }
+
+    fun onOpenBtidesClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.BTIDES))
+    }
+
+    fun onOpenAboutClick() {
+        router.navigate(ScreenNavigationCommands.OpenSettingsDetailScreen(SettingsSection.ABOUT))
+    }
+
     private fun observeLocationData() {
         viewModelScope.launch {
             locationProvider.observeLocation()

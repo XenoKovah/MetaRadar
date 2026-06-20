@@ -15,6 +15,8 @@ import com.darkmentor.ui.main.MainScreen
 import com.darkmentor.ui.selectdevice.SelectDeviceScreen
 import com.darkmentor.ui.selectlocation.SelectLocationScreen
 import com.darkmentor.ui.selectmanufacturer.SelectManufacturerScreen
+import com.darkmentor.ui.settings.SettingsScreen
+import com.darkmentor.ui.settings.SettingsSection
 import com.darkmentor.utils.navigation.AddToStackCommand
 import com.darkmentor.utils.navigation.BackCommand
 
@@ -63,6 +65,10 @@ object ScreenNavigationCommands {
 
     object OpenExclusionZonesScreen : AddToStackCommand(screenFunction = { key, router ->
         ExclusionZonesScreen.Screen(router)
+    })
+
+    class OpenSettingsDetailScreen(val section: SettingsSection) : AddToStackCommand(screenFunction = { key, router ->
+        SettingsScreen.DetailScreen(router, section)
     })
 
     class OpenSelectLocationScreen(
