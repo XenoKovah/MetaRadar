@@ -46,8 +46,8 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
 
     @Test
     fun `one log throwing during uploadFile does not abort the rest of the loop`() = runBlocking {
-        // GIVEN: signed-in, three rotated archives, all small enough for client-side dedup,
-        // and a BtidalpoolClient whose uploadFile succeeds, throws, and succeeds in turn.
+        // GIVEN: signed-in, three rotated archives, and a BtidalpoolClient whose uploadFile
+        // succeeds, throws, and succeeds in turn.
         val context = mockk<Context>()
         every { context.cacheDir } returns cacheTempDir
 
@@ -83,9 +83,6 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
         }
 
         val client = mockk<BtidalpoolClient>()
-        // Hash check returns NotPresent for every log → flow reaches the upload step every time.
-        coEvery { client.checkHash(any(), any(), any(), any()) } returns
-                BtidalpoolClient.CheckHashResult.NotPresent
         // Sequential answers: success → throw → success. Counter inside coAnswers because the
         // sequence depends on call order, not arg matching.
         var uploadCallCount = 0
@@ -159,7 +156,6 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
         // OAuth-prompt UI is the contract for the NotSignedIn path.
         coVerify(exactly = 0) { btidesRepo.listLogs() }
         coVerify(exactly = 0) { client.uploadFile(any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { client.checkHash(any(), any(), any(), any()) }
     }
 
     @Test

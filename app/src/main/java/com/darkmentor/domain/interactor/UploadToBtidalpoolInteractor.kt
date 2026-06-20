@@ -3,14 +3,11 @@ package com.darkmentor.domain.interactor
 import android.content.Context
 import com.darkmentor.data.btidalpool.BtidalpoolAuthRepository
 import com.darkmentor.data.btidalpool.BtidalpoolClient
-import com.darkmentor.data.btidalpool.PythonCanonicalJson
 import com.darkmentor.data.btides.BTIDESRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
-import java.security.MessageDigest
 
 /**
  * Orchestrates uploads of merged BTIDES files to the BTIDALPOOL pool server. Mirrors the
@@ -130,17 +127,14 @@ class UploadToBtidalpoolInteractor(
     }
 
     /**
-     * Export [logFile] to a temp `.btides` file, hash + check (only when small enough) +
-     * upload, delete the source archive on success. Single-log workhorse for both
-     * [executeCurrent] and [executeAll].
+     * Export [logFile] to a temp `.btides` file, upload it, and delete the source archive on
+     * success. Single-log workhorse for both [executeCurrent] and [executeAll].
      *
-     * For files at or below [HASH_CHECK_FILE_BYTES] we run the canonical SHA1 dedup
-     * optimisation: parse → re-emit in Python-compatible canonical form → hash → ask the
-     * server if it already has that content, skipping the upload if so. Above that
-     * threshold the parse + canonical re-emit blew the heap (a 125 MB file with a 4-5x
-     * JsonElement-tree expansion needs >500 MB peak — observed crashing the Moto with
-     * "Failed to allocate a 134250504 byte allocation"). For large files we go straight
-     * to the streaming upload, which the server then dedupes on its own end.
+     * There is no client-side hash pre-flight: the Rust pool server dedups uploaded content
+     * itself and reports a re-upload as [BtidalpoolClient.UploadResult.AlreadyPresent], which we
+     * treat exactly like a fresh success (archive deleted, counted as already-on-server). This
+     * also sidesteps the old parse → canonical re-emit → SHA1 step, which expanded the
+     * JsonElement tree ~4-5x and OOM'd a 4 GB heap on a 125 MB log.
      */
     private suspend fun uploadOneLog(
         logFile: File,
@@ -174,37 +168,8 @@ class UploadToBtidalpoolInteractor(
                 return LogResult.EmptyLog(displayName)
             }
 
-            // Optional client-side dedup short-circuit. Only safe to run when the file is
-            // small enough that the parse + canonical re-emit doesn't OOM. On larger files
-            // we accept the wasted bandwidth in exchange for not crashing — the server runs
-            // the same SHA1 check on the streamed upload and rejects duplicates with HTTP
-            // 400 + "already exists".
-            if (tempExport.length() <= HASH_CHECK_FILE_BYTES) {
-                val rawJson = tempExport.readText(Charsets.UTF_8)
-                val canonical = try {
-                    PythonCanonicalJson.encode(Json.parseToJsonElement(rawJson))
-                } catch (t: Throwable) {
-                    Timber.e(t, "Exported BTIDES for %s failed to parse — refusing upload", displayName)
-                    return LogResult.Failed(displayName, "exported file was not valid JSON")
-                }
-                val sha1 = sha1Hex(canonical.toByteArray(Charsets.UTF_8))
-                when (val hashResult = withTokenRefresh { (t, r) -> client.checkHash(sha1, t, r, useTestDb) }) {
-                    is BtidalpoolClient.CheckHashResult.AlreadyPresent -> {
-                        deleteIfArchive(logFile)
-                        return LogResult.AlreadyOnServer(displayName, deviceCount)
-                    }
-                    is BtidalpoolClient.CheckHashResult.NotPresent -> Unit
-                    is BtidalpoolClient.CheckHashResult.AuthFailed -> return LogResult.AuthFailed(displayName)
-                    is BtidalpoolClient.CheckHashResult.Failed ->
-                        return LogResult.Failed(displayName, "hash check HTTP ${hashResult.httpCode}: ${hashResult.body}")
-                }
-            } else {
-                Timber.i(
-                    "Skipping client-side hash check for %s (%d bytes > %d threshold); server will dedup",
-                    displayName, tempExport.length(), HASH_CHECK_FILE_BYTES,
-                )
-            }
-
+            // No client-side hash pre-flight: the Rust server dedups uploaded content and reports
+            // a re-upload as AlreadyPresent (handled below), so we just upload and let it decide.
             return when (val up = withTokenRefresh { (t, r) -> client.uploadFile(tempExport, t, r, useTestDb, uploadProgress) }) {
                 is BtidalpoolClient.UploadResult.Success -> {
                     deleteIfArchive(logFile)
@@ -244,29 +209,5 @@ class UploadToBtidalpoolInteractor(
         return block(refreshed.token to refreshed.refreshToken)
     }
 
-    private fun isAuthFailure(r: Any): Boolean = when (r) {
-        is BtidalpoolClient.CheckHashResult.AuthFailed,
-        is BtidalpoolClient.UploadResult.AuthFailed,
-        -> true
-        else -> false
-    }
-
-    companion object {
-        /**
-         * Files at or below this size run through the in-memory parse + canonical encode +
-         * SHA1 + server check_hash optimisation. Larger files skip straight to the streaming
-         * upload because the parse step's JsonElement tree expands ~4-5x, which OOM'd a 4 GB
-         * heap on a 125 MB BTIDES log on a Moto g play 2024 (Android 14, ~200 MB cap). 8 MB
-         * is well under that ceiling and covers the typical Connect-All-pass output.
-         */
-        private const val HASH_CHECK_FILE_BYTES = 8L * 1024 * 1024
-    }
-
-    private fun sha1Hex(bytes: ByteArray): String {
-        val md = MessageDigest.getInstance("SHA-1")
-        val digest = md.digest(bytes)
-        val sb = StringBuilder(digest.size * 2)
-        for (b in digest) sb.append("%02x".format(b))
-        return sb.toString()
-    }
+    private fun isAuthFailure(r: Any): Boolean = r is BtidalpoolClient.UploadResult.AuthFailed
 }
