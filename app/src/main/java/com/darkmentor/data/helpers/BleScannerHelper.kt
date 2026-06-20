@@ -77,6 +77,16 @@ class BleScannerHelper(
     // throw ConcurrentModificationException under sustained scan rates.
     private val batch: MutableMap<String, BleScanDevice> = ConcurrentHashMap()
     private var currentScanTimeMs: Long = System.currentTimeMillis()
+
+    /**
+     * When true, [scan] ignores the power-mode restricted BLE filter set and always scans
+     * match-all. Set by the Connect All pane (foreground, user actively discovering devices to
+     * enumerate) so the candidate list populates even under Battery Saver / screen-off — where
+     * the restricted filter set matches almost nothing on a freshly-reset (empty) DB and the
+     * "potentially connectable" count would otherwise sit stuck at 0.
+     */
+    @Volatile
+    var forceFullDiscovery: Boolean = false
     private val connections: MutableMap<String, BluetoothGatt> = ConcurrentHashMap()
 
     var inProgress = MutableStateFlow(false)
@@ -662,9 +672,11 @@ class BleScannerHelper(
 
             val powerMode = powerModeHelper.powerMode()
             val keepScreenOn = powerMode.tryToTurnOnScreen && settingsRepository.getWakeUpScreenWhileScanning()
-            val scanFilters = if (powerMode.useRestrictedBleConfig && !keepScreenOn) {
+            val scanFilters = if (powerMode.useRestrictedBleConfig && !keepScreenOn && !forceFullDiscovery) {
                 bleFiltersProvider.getBackgroundFilters()
             } else {
+                // Match-all: full discovery in interactive power mode, or whenever the Connect All
+                // pane forces it (so candidates populate under Battery Saver / on an empty DB).
                 listOf(ScanFilter.Builder().build())
             }
 

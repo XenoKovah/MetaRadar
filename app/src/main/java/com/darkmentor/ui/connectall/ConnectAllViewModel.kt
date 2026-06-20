@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.darkmentor.data.helpers.BleScannerHelper
 import com.darkmentor.data.helpers.PermissionHelper
 import com.darkmentor.data.repo.DevicesRepository
 import com.darkmentor.data.repo.SettingsRepository
@@ -33,6 +34,7 @@ class ConnectAllViewModel(
     private val vendorIdentifier: VendorIdentifier,
     private val permissionHelper: PermissionHelper,
     private val connectAllSession: ConnectAllSession,
+    private val bleScannerHelper: BleScannerHelper,
 ) : ViewModel() {
 
     var bulkSkipApple: Boolean by mutableStateOf(settingsRepository.getBulkSkipApple())
@@ -155,6 +157,11 @@ class ConnectAllViewModel(
         // First time the pane reports visible, start the polling loop.
         val firstVisible = !paneVisible
         paneVisible = true
+        // The user is actively on Connect All hunting for devices to enumerate, so force a
+        // comprehensive (match-all) scan even under Battery Saver / screen-off restricted power
+        // modes. Without this the restricted BLE filter set matches almost nothing on an empty DB
+        // (right after a fresh reset) and the candidate count stays stuck at 0. Reverted on exit.
+        bleScannerHelper.forceFullDiscovery = true
         if (firstVisible) startCandidatePolling()
         permissionHelper.checkOrRequestPermission(
             onRequestPermissions = { _, _, _ -> /* no-op: skip silently if not yet granted */ },
@@ -176,6 +183,9 @@ class ConnectAllViewModel(
      */
     fun onPaneHidden() {
         paneVisible = false
+        // Restore power-mode-driven scan filtering once the user leaves the pane, so the forced
+        // full-scan's extra radio use stays scoped to "while you're on Connect All".
+        bleScannerHelper.forceFullDiscovery = false
         pollJob?.cancel()
         pollJob = null
         // Don't tear down the foreground scan service if a Connect All session is still
