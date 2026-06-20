@@ -109,4 +109,33 @@ class BtidalpoolCodecTest {
             // expected
         }
     }
+
+    @Test
+    fun `check_hash frame carries the cmd discriminator and hash text`() {
+        val frame = BtidalpoolCodec.encodeCheckHashFrame(
+            token = "tok", refreshToken = "ref", useTestDb = false, hash = "deadbeef01",
+        )
+        assertEquals('B'.code.toByte(), frame[0])
+        assertEquals(1.toByte(), frame[4])
+        val declaredLen =
+            ((frame[5].toInt() and 0xFF) shl 24) or
+                ((frame[6].toInt() and 0xFF) shl 16) or
+                ((frame[7].toInt() and 0xFF) shl 8) or
+                (frame[8].toInt() and 0xFF)
+        val cborBytes = Zstd.decompress(frame.copyOfRange(9, frame.size), declaredLen)
+        assertEquals(declaredLen, cborBytes.size)
+
+        val envelope = cbor.decodeFromByteArray<BtidalpoolCodec.CheckHashEnvelope>(cborBytes)
+        assertEquals("tok", envelope.auth.token)
+        assertEquals("ref", envelope.auth.refreshToken)
+        assertEquals(false, envelope.auth.useTestDb)
+        assertEquals("check_hash", envelope.payload.cmd)
+        assertEquals("deadbeef01", envelope.payload.hash)
+
+        // The serde-internally-tagged "cmd" discriminator + snake_case keys must be on the wire.
+        val asLatin1 = String(cborBytes, Charsets.ISO_8859_1)
+        for (key in listOf("auth", "payload", "cmd", "check_hash", "hash", "refresh_token", "use_test_db")) {
+            assertTrue("CBOR should contain wire key/value '$key'", asLatin1.contains(key))
+        }
+    }
 }

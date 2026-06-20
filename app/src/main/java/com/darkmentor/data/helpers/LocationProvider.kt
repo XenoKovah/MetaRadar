@@ -222,7 +222,7 @@ class LocationProvider(
 
     private fun Location.isRelevant(oldLocation: Location?): Boolean {
         return oldLocation == null
-                || ((latitude != oldLocation.latitude || longitude != oldLocation.longitude)
+                || (locationPositionsDiffer(latitude, longitude, oldLocation.latitude, oldLocation.longitude)
                 && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && elapsedRealtimeAgeMillis <= ALLOWED_LOCATION_LIVETIME_MS)
                 && accuracy <= MAX_ALLOWED_ACCURACY_METERS)
     }
@@ -239,3 +239,11 @@ class LocationProvider(
         private const val RESTART_SERVICE_TIMER = 10L * 60L * 1000L // 10 min
     }
 }
+
+/**
+ * True when two coordinates are not the same point. Extracted as a top-level function so the
+ * lat/lng comparison can be unit-tested without Android's [Location] / Build APIs — a copy-paste
+ * bug here once compared the new latitude against the old *longitude*.
+ */
+internal fun locationPositionsDiffer(newLat: Double, newLng: Double, oldLat: Double, oldLng: Double): Boolean =
+    newLat != oldLat || newLng != oldLng
