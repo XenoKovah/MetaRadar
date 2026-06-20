@@ -321,12 +321,19 @@ class DeviceListViewModel(
                             hasMoreRows = rows.size > count
                             emit(rows.take(count))
                         } else {
-                            // Non-pushable filter (Apple Manufacturer / location-based) —
-                            // single-shot fallback through the legacy in-Kotlin path. The
-                            // whole filtered set is materialised in memory; we slice for
-                            // pagination locally rather than re-running the filter.
+                            // Non-pushable filter present (Apple/Samsung vendor, location,
+                            // address-type, GATT). PARTIAL pushdown: narrow the candidate rows by
+                            // the SQL-pushable SUBSET of the active filters first (e.g. a "Dual"
+                            // chip collapses ~M rows to the dual-mode handful; a lone non-pushable
+                            // filter still caps at the most-recent DEVICE_LIST_LIMIT), then run
+                            // the full in-Kotlin chain — including the expensive VendorIdentifier
+                            // checks — over only that bounded set instead of materialising the
+                            // entire table. Slice locally for pagination.
                             val devices = withContext(Dispatchers.Default) {
-                                devicesRepository.getDevices(withAirdropInfo = true)
+                                devicesRepository.snapshotNarrowedDevices(
+                                    filters = filters,
+                                    limit = DEVICE_LIST_LIMIT_HARD_CAP,
+                                )
                                     .withFilters(filterHolders, query)
                                     .sortedWith(GENERAL_COMPARATOR)
                             }

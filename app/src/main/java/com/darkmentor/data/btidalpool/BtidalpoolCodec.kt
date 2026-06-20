@@ -73,6 +73,18 @@ object BtidalpoolCodec {
         val payload: UploadPayload,
     )
 
+    @Serializable
+    data class CheckHashPayload(
+        val hash: String,
+        val cmd: String = "check_hash",
+    )
+
+    @Serializable
+    data class CheckHashEnvelope(
+        val auth: Auth,
+        val payload: CheckHashPayload,
+    )
+
     /** Flat view over all three server response shapes (`ok` / `err` / `query_result`). */
     @Serializable
     data class WireResponse(
@@ -93,6 +105,20 @@ object BtidalpoolCodec {
         val envelope = UploadEnvelope(
             auth = Auth(token = token, refreshToken = refreshToken, useTestDb = useTestDb),
             payload = UploadPayload(btidesJson = btidesJson),
+        )
+        return frame(cbor.encodeToByteArray(envelope))
+    }
+
+    /** Build the BTPL `check_hash` frame for canonical SHA1 [hash]. */
+    fun encodeCheckHashFrame(
+        token: String,
+        refreshToken: String,
+        useTestDb: Boolean,
+        hash: String,
+    ): ByteArray {
+        val envelope = CheckHashEnvelope(
+            auth = Auth(token = token, refreshToken = refreshToken, useTestDb = useTestDb),
+            payload = CheckHashPayload(hash = hash),
         )
         return frame(cbor.encodeToByteArray(envelope))
     }

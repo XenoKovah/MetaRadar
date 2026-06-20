@@ -123,6 +123,14 @@ class SettingsViewModel(
      * to know whether their data actually landed on the server.
      */
     var btidalpoolStatusDialogMessage: String? by mutableStateOf(null)
+    /**
+     * Non-null while the post-sign-in "Credentials valid"/"Credentials invalid" dialog should
+     * be shown. Separate from [btidalpoolStatusDialogMessage] so the two can carry different
+     * titles; the user dismisses it with OK. A valid result has already persisted the token (so
+     * the upload UI shows underneath); an invalid result persisted nothing (so the Sign-in
+     * button shows underneath).
+     */
+    var btidalpoolCredentialsDialogMessage: String? by mutableStateOf(null)
     /** True while a "Cancel current BTIDALPOOL upload?" confirmation dialog is showing. */
     var btidalpoolCancelDialogVisible: Boolean by mutableStateOf(false)
     /** Job handle for the in-flight upload pass, so the cancel dialog can interrupt it. */
@@ -156,22 +164,80 @@ class SettingsViewModel(
     }
 
     fun onBtidalpoolPasteSubmit(json: String) {
+        // Guard against a double-tap on "Use token" kicking off a second validation while the
+        // first network round-trip is still in flight.
+        if (btidalpoolSignInInProgress) return
         viewModelScope.launch {
             btidalpoolSignInInProgress = true
             try {
-                val result = btidalpoolAuthRepository.signInWithPastedJson(json)
-                result.fold(
-                    onSuccess = { state ->
-                        btidalpoolPasteDialogVisible = false
-                        toast(context.getString(R.string.btidalpool_signed_in_as, state.email ?: "?"))
-                    },
-                    onFailure = { e ->
-                        toast(e.message ?: context.getString(R.string.btidalpool_signin_failed))
-                    },
+                // Validates against Google AND probes the BTIDALPOOL upload server. Persists
+                // (flipping btidalpoolAuth non-null) on any Valid outcome — including when the
+                // upload server is unreachable, since Google already vouched for the token.
+                val outcome = btidalpoolAuthRepository.signInWithPastedJson(
+                    json,
+                    settingsRepository.getBtidalpoolUseTestDb(),
                 )
+                // Close the paste dialog and report the verdict in a follow-up dialog. A Valid
+                // outcome persisted the token, so the upload UI renders underneath; an Invalid
+                // one persisted nothing, so the screen falls back to "Sign in with Google".
+                btidalpoolPasteDialogVisible = false
+                btidalpoolCredentialsDialogMessage = messageFor(outcome)
             } finally {
                 btidalpoolSignInInProgress = false
             }
+        }
+    }
+
+    /**
+     * Native "Sign in with Google" entry point. The Settings screen owns the Google Identity
+     * Services interaction and the consent ActivityResult launcher (those need an Activity +
+     * Compose launcher); it hands us the one-time serverAuthCode here. From this point on the
+     * flow is identical to the paste flow's tail: exchange → validate → probe → persist.
+     */
+    fun onGoogleServerAuthCode(authCode: String) {
+        if (btidalpoolSignInInProgress) return
+        viewModelScope.launch {
+            btidalpoolSignInInProgress = true
+            try {
+                val outcome = btidalpoolAuthRepository.signInWithServerAuthCode(
+                    authCode,
+                    settingsRepository.getBtidalpoolUseTestDb(),
+                )
+                btidalpoolCredentialsDialogMessage = messageFor(outcome)
+            } finally {
+                btidalpoolSignInInProgress = false
+            }
+        }
+    }
+
+    /**
+     * The native Google sign-in failed before any code was issued (e.g. Google Play services
+     * unavailable, or the app's Android OAuth client isn't registered → DEVELOPER_ERROR). This
+     * is distinct from "credentials invalid" — no credential was ever produced — so we say so.
+     */
+    fun onGoogleSignInFailed(detail: String?) {
+        Timber.d("Google sign-in failed: %s", detail ?: "unknown")
+        btidalpoolCredentialsDialogMessage = context.getString(R.string.btidalpool_google_signin_failed)
+    }
+
+    /** User dismissed the Google account picker / consent screen — silent no-op. */
+    fun onGoogleSignInCancelled() {
+        btidalpoolSignInInProgress = false
+    }
+
+    /** Maps a sign-in outcome to the dialog text shared by the native and paste flows. */
+    private fun messageFor(outcome: BtidalpoolAuthRepository.SignInOutcome): String = when (outcome) {
+        is BtidalpoolAuthRepository.SignInOutcome.Valid ->
+            if (outcome.serverReachable) {
+                context.getString(R.string.btidalpool_credentials_valid)
+            } else {
+                // Token is good (Google confirmed it) but the upload server didn't answer.
+                // Tell the truth instead of falsely claiming the token is invalid.
+                context.getString(R.string.btidalpool_credentials_valid_server_unreachable)
+            }
+        is BtidalpoolAuthRepository.SignInOutcome.Invalid -> {
+            Timber.d("BTIDALPOOL credentials invalid: %s", outcome.reason)
+            context.getString(R.string.btidalpool_credentials_invalid)
         }
     }
 
@@ -182,6 +248,10 @@ class SettingsViewModel(
 
     fun onBtidalpoolStatusDialogDismiss() {
         btidalpoolStatusDialogMessage = null
+    }
+
+    fun onBtidalpoolCredentialsDialogDismiss() {
+        btidalpoolCredentialsDialogMessage = null
     }
 
     fun onToggleBtidalpoolUseTestDb() {

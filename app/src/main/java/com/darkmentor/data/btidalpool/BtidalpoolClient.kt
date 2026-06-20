@@ -41,6 +41,15 @@ class BtidalpoolClient(
     private val context: Context,
 ) {
 
+    /** Result of a check-hash query. The upload path no longer uses this (the server dedups on
+     *  upload); it survives only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]. */
+    sealed class CheckHashResult {
+        object NotPresent : CheckHashResult()
+        object AlreadyPresent : CheckHashResult()
+        object AuthFailed : CheckHashResult()
+        data class Failed(val httpCode: Int, val body: String) : CheckHashResult()
+    }
+
     sealed class UploadResult {
         object Success : UploadResult()
         object AlreadyPresent : UploadResult()
@@ -53,6 +62,46 @@ class BtidalpoolClient(
 
     /** Transport-level result of a single framed POST: HTTP code, response Content-Type, raw body. */
     private data class RawResponse(val code: Int, val contentType: String, val body: ByteArray)
+
+    /**
+     * Check whether the server holds content with canonical SHA1 [sha1], as a `cmd:"check_hash"`
+     * BTPL frame. The upload path no longer calls this (the server dedups on upload); it remains
+     * only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]: `unauthorized`
+     * maps to [CheckHashResult.AuthFailed] (bad creds), any other non-OK framed result or a
+     * transport error maps to [CheckHashResult.Failed] (treated as server-unreachable, not a
+     * rejection).
+     */
+    suspend fun checkHash(
+        sha1: String,
+        token: String,
+        refreshToken: String,
+        useTestDb: Boolean,
+    ): CheckHashResult = withContext(Dispatchers.IO) {
+        val frame = try {
+            BtidalpoolCodec.encodeCheckHashFrame(token, refreshToken, useTestDb, sha1)
+        } catch (t: Throwable) {
+            return@withContext CheckHashResult.Failed(-1, "could not encode check_hash frame: ${t.message}")
+        }
+        val raw = postFrame(UPLOAD_URL, frame, null)
+        if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) {
+            val text = String(raw.body, Charsets.UTF_8).trim()
+            return@withContext CheckHashResult.Failed(raw.code, text.ifEmpty { "HTTP ${raw.code} (non-codec response)" })
+        }
+        val wire = try {
+            BtidalpoolCodec.decodeResponse(raw.body)
+        } catch (t: Throwable) {
+            return@withContext CheckHashResult.Failed(raw.code, "malformed response frame: ${t.message}")
+        }
+        when (wire.result) {
+            "ok" -> CheckHashResult.NotPresent
+            "err" -> when (wire.kind) {
+                "duplicate_upload" -> CheckHashResult.AlreadyPresent
+                "unauthorized" -> CheckHashResult.AuthFailed
+                else -> CheckHashResult.Failed(raw.code, "${wire.kind ?: "err"}: ${wire.message ?: ""}".trim())
+            }
+            else -> CheckHashResult.Failed(raw.code, "unexpected result '${wire.result}'")
+        }
+    }
 
     /**
      * Upload [btidesFile] to the Rust pool server as a BTPL frame. The whole file is read into
@@ -194,6 +243,50 @@ class BtidalpoolClient(
     }
 
     /**
+     * Exchange a one-time Google serverAuthCode — obtained natively by the app via Google
+     * Identity Services (`AuthorizationClient.requestOfflineAccess`) — for the access + refresh
+     * tokens, through the BTIDALPOOL OAuth helper's `/exchange_app` endpoint. The helper holds
+     * the web client_secret and performs the Google token exchange server-side, then returns
+     * `{"token","refresh_token"}` directly over TLS (no token ever transits a browser URL).
+     * Uses the LetsEncrypt-validated trust store, like [refreshToken]. Returns null on any error.
+     */
+    suspend fun exchangeServerAuthCode(authCode: String): RefreshedTokens? = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("auth_code", authCode)
+        }.toString()
+        try {
+            val url = URL(EXCHANGE_URL)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            try {
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                if (code != 200) {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    Timber.w("exchange_app returned HTTP %d: %s", code, err)
+                    return@withContext null
+                }
+                val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                val obj: JsonObject = Json.parseToJsonElement(resp).jsonObject
+                val newToken = obj["token"]?.jsonPrimitive?.contentOrNull
+                val newRefresh = obj["refresh_token"]?.jsonPrimitive?.contentOrNull
+                if (newToken.isNullOrBlank() || newRefresh.isNullOrBlank()) null
+                else RefreshedTokens(newToken, newRefresh)
+            } finally {
+                conn.disconnect()
+            }
+        } catch (t: Throwable) {
+            Timber.w(t, "exchange_app request failed")
+            null
+        }
+    }
+
+    /**
      * POST a BTPL [frame] to the upload server, validating the server's TLS cert against the pinned
      * `btidalpool_server.crt`. With FixedLengthStreamingMode set, the frame flows straight to the
      * socket in 64KB chunks (so [onProgress] can advance the UI) without HttpsURLConnection
@@ -272,6 +365,8 @@ class BtidalpoolClient(
     companion object {
         private const val UPLOAD_URL = "https://btidalpool.ddns.net:3568/"
         private const val REFRESH_URL = "https://btidalpool.ddns.net:7653/refresh"
+        // Phone-app SSO: exchanges a native Google serverAuthCode for tokens (see [exchangeServerAuthCode]).
+        private const val EXCHANGE_URL = "https://btidalpool.ddns.net:7653/exchange_app"
         private const val USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
         private const val PINNED_CERT_ASSET = "btidalpool_server.crt"
 

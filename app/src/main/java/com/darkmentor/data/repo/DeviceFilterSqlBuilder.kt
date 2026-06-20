@@ -100,6 +100,34 @@ object DeviceFilterSqlBuilder {
             -> Result.NotPushable
     }
 
+    /**
+     * The SQL-pushable subset of a flat, AND-combined filter list, for PARTIAL pushdown. When a
+     * caller hits a non-pushable filter (Apple/Samsung vendor, location, address-type, has-GATT)
+     * it can still narrow the candidate rows by the filters that DO translate, then apply the
+     * rest in memory over the much smaller set. Top-level semantics are AND (the Devices VM
+     * composes the active chips with [DeviceFilter.All]), so pushing a subset is sound — SQL
+     * returns a superset and the in-memory residual narrows it further. [whereClause] is null
+     * when nothing is pushable (e.g. a lone "Not Samsung").
+     */
+    data class PushableWhere(val whereClause: String?, val args: List<Any?>)
+
+    fun pushableWhere(filters: List<DeviceFilter>): PushableWhere {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<Any?>()
+        for (filter in filters) {
+            val pushed = toSql(filter)
+            if (pushed is Result.Pushable) {
+                clauses.add(pushed.whereClause)
+                args.addAll(pushed.args)
+            }
+            // Result.NotPushable filters are left for the caller's in-Kotlin filter chain.
+        }
+        return PushableWhere(
+            whereClause = if (clauses.isEmpty()) null else clauses.joinToString(" AND "),
+            args = args,
+        )
+    }
+
     private fun combineComposite(filters: List<DeviceFilter>, joiner: String): Result {
         if (filters.isEmpty()) return Result.Pushable("1=1", emptyList())
         val parts = filters.map(::toSql)
