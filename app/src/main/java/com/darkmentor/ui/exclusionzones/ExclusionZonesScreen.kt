@@ -264,8 +264,21 @@ object ExclusionZonesScreen {
                 mapView.setMultiTouchControls(true)
                 mapView.minZoomLevel = MapConfig.MIN_MAP_ZOOM
                 mapView.maxZoomLevel = MapConfig.MAX_MAP_ZOOM
-                scope.launch {
-                    if (permissionHelper.locationAllowed()) {
+                // Seed the camera immediately from a cached last-known fix at a usable zoom, so the
+                // map is never stuck at whole-world min zoom while waiting for a live fix — which
+                // indoors can be slow or filtered out entirely (accuracy/freshness limits).
+                val allowed = permissionHelper.locationAllowed()
+                val seed = if (allowed) locationProvider.lastKnownLocation() else null
+                mapView.controller.setZoom(if (seed != null) MapConfig.DEFAULT_MAP_ZOOM else MapConfig.MIN_MAP_ZOOM)
+                if (seed != null) mapView.controller.setCenter(GeoPoint(seed))
+                if (allowed) {
+                    scope.launch {
+                        // Then request a fresh fix and refine the center once it arrives. fetchOnce()
+                        // must run BEFORE collect(): observeLocation() is a MutableStateFlow(null), so
+                        // collect() suspends until the first non-null location — the old code called
+                        // fetchOnce() *after* the collect, so nothing ever requested a fix and the map
+                        // sat at min zoom forever.
+                        locationProvider.fetchOnce()
                         locationProvider.observeLocation()
                             .filterNotNull()
                             .take(1)
@@ -273,9 +286,6 @@ object ExclusionZonesScreen {
                                 mapView.controller.setZoom(MapConfig.DEFAULT_MAP_ZOOM)
                                 mapView.controller.setCenter(GeoPoint(location.location))
                             }
-                        locationProvider.fetchOnce()
-                    } else {
-                        mapView.controller.setZoom(MapConfig.MIN_MAP_ZOOM)
                     }
                 }
             },

@@ -154,11 +154,11 @@
     <string name="menu_connect_all">Connect All</string>
     <string name="journal_open_button">Open Error Logs</string>
     <string name="journal_block_description">View background errors recorded by the scanner / GATT / export pipelines.</string>
-    <!-- Upload exclusion zones -->
-    <string name="exclusion_zones_block_title">Upload exclusion zones</string>
+    <!-- GPS exclusion zones -->
+    <string name="exclusion_zones_block_title">GPS exclusion zones</string>
     <string name="exclusion_zones_block_description">Define up to 3 map areas (circles or squares) whose detections are excluded from BTIDALPOOL uploads. Manual exports are unaffected.</string>
     <string name="exclusion_zones_open_button">Manage exclusion zones</string>
-    <string name="exclusion_zones_screen_title">Exclusion zones</string>
+    <string name="exclusion_zones_screen_title">GPS exclusion zones</string>
     <string name="exclusion_zones_adjust_label">Adjust exclusion zone</string>
     <string name="exclusion_zones_save">Save zone</string>
     <string name="exclusion_zones_cancel">Cancel exclusion zone</string>

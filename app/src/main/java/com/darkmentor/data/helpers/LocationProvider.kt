@@ -104,6 +104,19 @@ class LocationProvider(
             ?.location
     }
 
+    /**
+     * Best-effort cached last fix straight from the system provider — possibly stale or less
+     * accurate, but instant. Good enough to seed a map's initial camera (the user pans from
+     * there); deliberately skips the freshness/accuracy filtering used for scan-location tagging,
+     * so the map never has to wait on (or be starved by) a slow/filtered live fix.
+     */
+    @SuppressLint("MissingPermission")
+    fun lastKnownLocation(): Location? = try {
+        locationManager?.getLastKnownLocation(provider())
+    } catch (t: Throwable) {
+        null
+    }
+
     @SuppressLint("MissingPermission")
     fun startLocationFetching() {
         fetchLocation(withRestartSchedule = true)
