@@ -7,21 +7,26 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,9 +43,16 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.Scope
 import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import com.darkmentor.BuildConfig
 import com.darkmentor.R
+import com.darkmentor.data.btidalpool.BtidalpoolAuthRepository
 import com.darkmentor.dateTimeStringFormat
 import com.darkmentor.utils.graphic.FABSpacer
 import com.darkmentor.utils.graphic.RoundedBox
@@ -191,8 +203,71 @@ object SettingsScreen {
         }
     }
 
+    /**
+     * Sets up the native Google sign-in (Google Identity Services AuthorizationClient) plus the
+     * consent ActivityResult launcher, returning a trigger lambda for the "Sign in with Google"
+     * button. Requests offline access for the BTIDALPOOL *web* client so the resulting one-time
+     * serverAuthCode is exchangeable server-side (and the refresh proxy keeps working). The code
+     * is handed to the ViewModel, which POSTs it to /exchange_app and validates the tokens.
+     */
+    @Composable
+    private fun rememberBtidalpoolGoogleSignIn(viewModel: SettingsViewModel): () -> Unit {
+        val context = LocalContext.current
+        val launcher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                runCatching {
+                    Identity.getAuthorizationClient(context)
+                        .getAuthorizationResultFromIntent(result.data)
+                }.onSuccess { authResult ->
+                    val code = authResult.serverAuthCode
+                    if (code.isNullOrBlank()) viewModel.onGoogleSignInFailed("No server auth code in consent result")
+                    else viewModel.onGoogleServerAuthCode(code)
+                }.onFailure { viewModel.onGoogleSignInFailed(it.message) }
+            } else {
+                viewModel.onGoogleSignInCancelled()
+            }
+        }
+        return remember(context, launcher, viewModel) {
+            {
+                val request = AuthorizationRequest.builder()
+                    .setRequestedScopes(
+                        listOf(
+                            Scope("https://www.googleapis.com/auth/userinfo.email"),
+                            Scope("https://www.googleapis.com/auth/userinfo.profile"),
+                        )
+                    )
+                    // serverClientId = the BTIDALPOOL web client; forceCodeForRefreshToken=true
+                    // so the exchanged code yields a refresh token (the /refresh proxy needs it).
+                    .requestOfflineAccess(BtidalpoolAuthRepository.CLIENT_ID, true)
+                    .build()
+                Identity.getAuthorizationClient(context)
+                    .authorize(request)
+                    .addOnSuccessListener { authResult ->
+                        val pendingIntent = authResult.pendingIntent
+                        if (authResult.hasResolution() && pendingIntent != null) {
+                            // Needs user consent / account selection — launch the system UI.
+                            runCatching {
+                                launcher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                            }.onFailure { viewModel.onGoogleSignInFailed(it.message) }
+                        } else {
+                            // Already authorized — code returned directly.
+                            val code = authResult.serverAuthCode
+                            if (code.isNullOrBlank()) viewModel.onGoogleSignInFailed("No server auth code returned")
+                            else viewModel.onGoogleServerAuthCode(code)
+                        }
+                    }
+                    .addOnFailureListener { viewModel.onGoogleSignInFailed(it.message) }
+            }
+        }
+    }
+
     @Composable
     private fun BtidalpoolBlock(viewModel: SettingsViewModel) {
+        // Native "Sign in with Google" trigger (owns the Google Identity Services consent
+        // launcher). Set up unconditionally so the launcher is always registered.
+        val triggerGoogleSignIn = rememberBtidalpoolGoogleSignIn(viewModel)
         if (viewModel.btidalpoolPasteDialogVisible) {
             BtidalpoolPasteTokenDialog(
                 inProgress = viewModel.btidalpoolSignInInProgress,
@@ -202,8 +277,16 @@ object SettingsScreen {
         }
         viewModel.btidalpoolStatusDialogMessage?.let { message ->
             BtidalpoolStatusDialog(
+                title = stringResource(R.string.btidalpool_status_dialog_title),
                 message = message,
                 onDismiss = { viewModel.onBtidalpoolStatusDialogDismiss() },
+            )
+        }
+        viewModel.btidalpoolCredentialsDialogMessage?.let { message ->
+            BtidalpoolStatusDialog(
+                title = stringResource(R.string.btidalpool_credentials_dialog_title),
+                message = message,
+                onDismiss = { viewModel.onBtidalpoolCredentialsDialogDismiss() },
             )
         }
         if (viewModel.btidalpoolCancelDialogVisible) {
@@ -219,11 +302,33 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(8.dp))
             val auth = viewModel.btidalpoolAuth
             if (auth == null) {
+                // Primary: fully-native Google sign-in (no browser, no paste). Hands a
+                // serverAuthCode to the VM, which exchanges + validates it. The spinner shows
+                // while the VM runs the server exchange after consent returns.
                 Button(
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = { viewModel.onBtidalpoolSignInClick() },
+                    onClick = { triggerGoogleSignIn() },
+                    enabled = !viewModel.btidalpoolSignInInProgress,
                 ) {
+                    if (viewModel.btidalpoolSignInInProgress) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
                     Text(text = stringResource(R.string.btidalpool_sign_in_button), color = MaterialTheme.colorScheme.onPrimary)
+                }
+                // Fallback: the original browser + copy-paste flow, in case the native flow is
+                // unavailable (e.g. before the Android OAuth client is registered in the Google
+                // Cloud project, or on a device without Google Play services).
+                TextButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { viewModel.onBtidalpoolSignInClick() },
+                    enabled = !viewModel.btidalpoolSignInInProgress,
+                ) {
+                    Text(text = stringResource(R.string.btidalpool_sign_in_manual_button))
                 }
             } else {
                 Text(
@@ -360,11 +465,12 @@ object SettingsScreen {
     }
 
     @Composable
-    private fun BtidalpoolStatusDialog(message: String, onDismiss: () -> Unit) {
-        // Modal acknowledgement: the only way out is the OK button. Uploads finish
-        // asynchronously and the user may have switched apps in the meantime, so a toast
-        // would be too easy to miss — especially on a duplicate / auth-failed result that
-        // changes whether they need to sign in again.
+    private fun BtidalpoolStatusDialog(title: String, message: String, onDismiss: () -> Unit) {
+        // Modal acknowledgement: the only way out is the OK button. Used both for upload
+        // outcomes and for the post-sign-in credential check — in both cases the network call
+        // runs asynchronously and the user may have switched apps in the meantime, and the
+        // result changes what they do next (re-sign-in, retry an upload), so a toast would be
+        // too easy to miss.
         val dialogState = rememberMaterialDialogState(initialValue = true)
         LaunchedEffect(dialogState.showing) {
             if (!dialogState.showing) onDismiss()
@@ -380,7 +486,7 @@ object SettingsScreen {
         ) {
             Column(Modifier.padding(16.dp)) {
                 Text(
-                    text = stringResource(R.string.btidalpool_status_dialog_title),
+                    text = title,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -403,6 +509,10 @@ object SettingsScreen {
         var pasted by remember { mutableStateOf("") }
         ThemedDialog(
             dialogState = dialogState,
+            // Don't auto-dismiss on "Use token": keep the dialog up showing a spinner while the
+            // token is validated against the server, instead of vanishing into a blank screen
+            // for the duration of the network round-trip. The VM closes it once it has a verdict.
+            autoDismiss = false,
             buttons = {
                 negativeButton(
                     text = stringResource(R.string.cancel),
@@ -435,6 +545,17 @@ object SettingsScreen {
                     singleLine = false,
                     maxLines = 6,
                 )
+                if (inProgress) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = stringResource(R.string.btidalpool_validating))
+                    }
+                }
             }
         }
     }

@@ -18,6 +18,10 @@ import java.util.UUID
  *     service UUIDs or as discovered GATT service UUIDs.
  *  4. CLUES-attributed UUIDs (typically 128-bit) from the CLUES_data.json
  *     community database — same usage as #3.
+ *  5. The advertised Local Name. Samsung sells its phones / tablets / watches / buds under
+ *     the "Galaxy" brand, and most of those advertise a rotating RPA address with no Samsung
+ *     MSD company id, so the name is frequently the only reliable Samsung signal. Samsung-only
+ *     — Apple has no comparable name convention worth matching.
  *
  * The data sets behind #1-#4 are baked in to [VendorRegistry] (auto-generated
  * from upstream sources) and the CLUES asset.
@@ -45,6 +49,7 @@ class VendorIdentifier(
             oui = if (device.systemAddressType == ADDRESS_TYPE_PUBLIC) parseOui(device.address) else null,
             uuids = advUuids,
             msdCompanyIds = collectMsdCompanyIds(device),
+            localName = device.name,
         )
     }
 
@@ -124,6 +129,7 @@ class VendorIdentifier(
             oui = oui,
             uuids = advUuids,
             msdCompanyIds = msdCompanyIds,
+            localName = parseLocalName(frames),
         ) ?: return false
         return (skipApple && vendor == Vendor.APPLE) || (skipSamsung && vendor == Vendor.SAMSUNG)
     }
@@ -133,6 +139,7 @@ class VendorIdentifier(
         oui: Int?,
         uuids: Collection<String>,
         msdCompanyIds: List<Int>,
+        localName: String? = null,
     ): Vendor? {
         // 1. Top-level manufacturer info (resolved by upstream interactor)
         when (companyId) {
@@ -165,7 +172,29 @@ class VendorIdentifier(
             if (companyName.startsWith("apple")) return Vendor.APPLE
             if ("samsung" in companyName) return Vendor.SAMSUNG
         }
+        // 5. Advertised Local Name — Samsung "Galaxy" brand. Checked last so a SIG-registered
+        //    company id / member UUID still wins, but this is the only signal for the majority
+        //    of Galaxy devices (RPA address, no Samsung MSD).
+        if (isSamsungLocalName(localName)) return Vendor.SAMSUNG
         return null
+    }
+
+    /**
+     * True when [name] is a Samsung "Galaxy"-branded advertised name (e.g. "Galaxy S24",
+     * "Galaxy Buds3 Pro", "Galaxy Watch7"). Case-insensitive; tolerates leading whitespace.
+     */
+    private fun isSamsungLocalName(name: String?): Boolean =
+        name?.trim()?.startsWith(SAMSUNG_NAME_PREFIX, ignoreCase = true) == true
+
+    /** Complete (0x09) or Shortened (0x08) Local Name AD frame, decoded as UTF-8. */
+    private fun parseLocalName(frames: List<BleRecordFrame>): String? {
+        val frame = frames.firstOrNull { (it.type.toInt() and 0xFF) == AD_TYPE_COMPLETE_LOCAL_NAME }
+            ?: frames.firstOrNull { (it.type.toInt() and 0xFF) == AD_TYPE_SHORTENED_LOCAL_NAME }
+            ?: return null
+        return runCatching { String(frame.data, Charsets.UTF_8) }
+            .getOrNull()
+            ?.trim { it.isWhitespace() || it == ' ' }
+            ?.takeIf { it.isNotEmpty() }
     }
 
     private fun collectAdvertisementUuids(device: DeviceData): List<String> {
@@ -338,5 +367,9 @@ class VendorIdentifier(
         private const val SAMSUNG_COMPANY_ID = 0x0075
         private const val ADDRESS_TYPE_PUBLIC = 0
         private const val TYPE_MSD: Byte = 0xFF.toByte()
+        private const val AD_TYPE_SHORTENED_LOCAL_NAME = 0x08
+        private const val AD_TYPE_COMPLETE_LOCAL_NAME = 0x09
+        /** Samsung sells its consumer Bluetooth devices under the "Galaxy" brand. */
+        private const val SAMSUNG_NAME_PREFIX = "Galaxy"
     }
 }

@@ -159,6 +159,11 @@ dependencies {
     implementation(libs.kotlin.coroutines)
     implementation(libs.kotlin.annotation.processing)
     implementation(libs.kotlin.serialization.json)
+    // BTIDALPOOL Rust server (:3568) speaks CBOR-over-zstd in a "BTPL" frame. CBOR via
+    // kotlinx-serialization (same 1.6.3 train as -json); zstd via the zstd-jni *AAR* — the .aar
+    // (not the .jar) ships the Android arm64-v8a/armeabi-v7a/x86/x86_64 native .so files.
+    implementation(libs.kotlin.serialization.cbor)
+    implementation("com.github.luben:zstd-jni:1.5.7-11@aar")
 
     // android general
     implementation(libs.appcompat)
@@ -204,6 +209,10 @@ dependencies {
     // Map
     implementation(libs.map)
 
+    // Native "Sign in with Google" (Google Identity Services AuthorizationClient) for the
+    // seamless BTIDALPOOL serverAuthCode flow.
+    implementation(libs.play.services.auth)
+
     // app restart
     implementation(libs.process.phoenix)
 
@@ -215,6 +224,9 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.ktx.testing)
     testImplementation(libs.ktx.testing.core)
+    // zstd-jni *jar* (desktop natives) so JVM unit tests can exercise the BTPL codec's real
+    // zstd round-trip — the app uses the @aar variant, which ships only Android .so files.
+    testImplementation("com.github.luben:zstd-jni:1.5.7-11")
     androidTestImplementation(libs.ktx.testing)
     // androidx.test.ext:junit doesn't pull in the runner classes — add them explicitly so
     // AndroidJUnitRunner is loadable on-device.

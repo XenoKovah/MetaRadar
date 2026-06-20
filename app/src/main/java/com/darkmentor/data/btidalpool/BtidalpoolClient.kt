@@ -22,18 +22,27 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 /**
- * HTTP client for the BTIDALPOOL upload server (port 3567, self-signed cert pinned via the
- * bundled `btidalpool_server.crt` asset) and the BTIDALPOOL OAuth helper server (port 7653,
+ * HTTP client for the BTIDALPOOL **Rust** upload server (port 3568, self-signed cert pinned via
+ * the bundled `btidalpool_server.crt` asset) and the BTIDALPOOL OAuth helper server (port 7653,
  * LetsEncrypt cert validated by the standard Android trust store).
  *
- * Two TLS configurations because the two endpoints use different certificate authorities and
- * the upload server's self-signed cert isn't in the system trust store.
+ * The upload server speaks the BTPL codec — a zstd-compressed CBOR envelope wrapped in a 9-byte
+ * "BTPL" frame (see [BtidalpoolCodec]) — over `Content-Type: application/x-btidalpool-cbor-zstd`.
+ * Requests carry `{ auth: {token, refresh_token, use_test_db}, payload: {cmd: "upload",
+ * btides_json: <raw JSON bytes>} }`; the server dedups content itself (returning a
+ * `duplicate_upload` error we treat as success), so there is no separate client-side hash
+ * pre-flight.
+ *
+ * Two TLS configurations because the two endpoints use different certificate authorities and the
+ * upload server's self-signed cert isn't in the system trust store. The 7653 refresh proxy and the
+ * Google userinfo lookup use the standard system trust store.
  */
 class BtidalpoolClient(
     private val context: Context,
 ) {
 
-    /** Result of a check-hash query against the upload server. */
+    /** Result of a check-hash query. The upload path no longer uses this (the server dedups on
+     *  upload); it survives only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]. */
     sealed class CheckHashResult {
         object NotPresent : CheckHashResult()
         object AlreadyPresent : CheckHashResult()
@@ -51,8 +60,16 @@ class BtidalpoolClient(
     /** Opaque pair returned from [refreshToken]. */
     data class RefreshedTokens(val token: String, val refreshToken: String)
 
+    /** Transport-level result of a single framed POST: HTTP code, response Content-Type, raw body. */
+    private data class RawResponse(val code: Int, val contentType: String, val body: ByteArray)
+
     /**
-     * POST `{"command":"check_hash", "hash": <sha1>, "token":..., "refresh_token":..., "use_test_db":...}`.
+     * Check whether the server holds content with canonical SHA1 [sha1], as a `cmd:"check_hash"`
+     * BTPL frame. The upload path no longer calls this (the server dedups on upload); it remains
+     * only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]: `unauthorized`
+     * maps to [CheckHashResult.AuthFailed] (bad creds), any other non-OK framed result or a
+     * transport error maps to [CheckHashResult.Failed] (treated as server-unreachable, not a
+     * rejection).
      */
     suspend fun checkHash(
         sha1: String,
@@ -60,88 +77,103 @@ class BtidalpoolClient(
         refreshToken: String,
         useTestDb: Boolean,
     ): CheckHashResult = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("command", "check_hash")
-            put("hash", sha1)
-            put("token", token)
-            put("refresh_token", refreshToken)
-            put("use_test_db", useTestDb)
-        }.toString()
-        val (code, respBody) = postPinned(UPLOAD_URL, body)
-        when {
-            code == 200 -> CheckHashResult.NotPresent
-            // Server returns 400 + a specific message both when content already exists AND when
-            // the OAuth token is invalid — disambiguate on the body text. Auth failures send the
-            // user back through SSO; "already exists" is just a no-op success.
-            code == 400 && respBody.contains("already exists", ignoreCase = true) -> CheckHashResult.AlreadyPresent
-            code == 400 && respBody.contains("Invalid OAuth", ignoreCase = true) -> CheckHashResult.AuthFailed
-            else -> CheckHashResult.Failed(code, respBody)
+        val frame = try {
+            BtidalpoolCodec.encodeCheckHashFrame(token, refreshToken, useTestDb, sha1)
+        } catch (t: Throwable) {
+            return@withContext CheckHashResult.Failed(-1, "could not encode check_hash frame: ${t.message}")
+        }
+        val raw = postFrame(UPLOAD_URL, frame, null)
+        if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) {
+            val text = String(raw.body, Charsets.UTF_8).trim()
+            return@withContext CheckHashResult.Failed(raw.code, text.ifEmpty { "HTTP ${raw.code} (non-codec response)" })
+        }
+        val wire = try {
+            BtidalpoolCodec.decodeResponse(raw.body)
+        } catch (t: Throwable) {
+            return@withContext CheckHashResult.Failed(raw.code, "malformed response frame: ${t.message}")
+        }
+        when (wire.result) {
+            "ok" -> CheckHashResult.NotPresent
+            "err" -> when (wire.kind) {
+                "duplicate_upload" -> CheckHashResult.AlreadyPresent
+                "unauthorized" -> CheckHashResult.AuthFailed
+                else -> CheckHashResult.Failed(raw.code, "${wire.kind ?: "err"}: ${wire.message ?: ""}".trim())
+            }
+            else -> CheckHashResult.Failed(raw.code, "unexpected result '${wire.result}'")
         }
     }
 
     /**
-     * POST `{"command":"upload", "btides_content":<json file content>, "token":..., "refresh_token":..., "use_test_db":...}`,
-     * streaming the file body directly to the HTTPS output stream. The JSON envelope is
-     * written prefix → file → suffix in 64KB chunks so we never hold the file content in
-     * memory — critical for the multi-MB BTIDES exports that previously OOM'd a 4GB-heap
-     * device on a 125 MB log (read full file into String → parse to JsonElement tree →
-     * canonicalize back to String → concatenate envelope = ~5x file-size peak heap).
+     * Upload [btidesFile] to the Rust pool server as a BTPL frame. The whole file is read into
+     * memory and CBOR+zstd-framed (the old :3567 path streamed; the codec can't), so files above
+     * [MAX_UPLOAD_BYTES] are refused up-front — both to honour the server's cap and to avoid an
+     * OOM building an oversize frame. The server dedups, so a re-upload comes back as
+     * [UploadResult.AlreadyPresent] rather than an error.
+     *
+     * [onProgress] reports `(bytesSent, totalBytes)` over the compressed frame as it streams to the
+     * socket, so the UI bar advances 0 → 1 across the network phase.
      */
     suspend fun uploadFile(
         btidesFile: File,
         token: String,
         refreshToken: String,
         useTestDb: Boolean,
-        /**
-         * Optional progress callback for the network-transfer phase. Reports
-         * `(bytesSentSoFar, totalBytesToSend)` after each chunk write — `totalBytesToSend`
-         * is the full envelope size (prefix + file + suffix), so the progress fraction
-         * advances smoothly from 0 → 1 across the upload. Called from the IO dispatcher;
-         * callers should keep the body cheap (e.g., a state-flow update).
-         */
         onProgress: (suspend (bytesSent: Long, totalBytes: Long) -> Unit)? = null,
     ): UploadResult = withContext(Dispatchers.IO) {
-        val prefix = "{\"command\":\"upload\",\"btides_content\":".toByteArray(Charsets.UTF_8)
-        val suffix = (
-            ",\"token\":" + JSONObject.quote(token) +
-                ",\"refresh_token\":" + JSONObject.quote(refreshToken) +
-                ",\"use_test_db\":" + (if (useTestDb) "true" else "false") +
-                "}"
-            ).toByteArray(Charsets.UTF_8)
-        val totalLen = prefix.size.toLong() + btidesFile.length() + suffix.size.toLong()
-        val (code, respBody) = postPinnedStreaming(UPLOAD_URL, totalLen) { out ->
-            var sent = 0L
-            out.write(prefix)
-            sent += prefix.size
-            onProgress?.invoke(sent, totalLen)
-            // 64KB transfer buffer keeps us well under any single-allocation cap and matches
-            // what HttpsURLConnection's chunked encoding would use anyway.
-            btidesFile.inputStream().use { input ->
-                val buf = ByteArray(64 * 1024)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    sent += n
-                    onProgress?.invoke(sent, totalLen)
-                }
-            }
-            out.write(suffix)
-            sent += suffix.size
-            onProgress?.invoke(sent, totalLen)
+        val fileLen = btidesFile.length()
+        if (fileLen > MAX_UPLOAD_BYTES) {
+            Timber.w(
+                "BTIDES file %s is %d bytes (> %d cap); refusing :3568 upload",
+                btidesFile.name, fileLen, MAX_UPLOAD_BYTES,
+            )
+            return@withContext UploadResult.Failed(
+                413,
+                "File is $fileLen bytes; BTIDALPOOL caps a single upload at $MAX_UPLOAD_BYTES " +
+                    "bytes (~10 MiB). Upload more often so each log stays small.",
+            )
         }
-        when {
-            code == 200 -> UploadResult.Success
-            code == 400 && respBody.contains("already exists", ignoreCase = true) -> UploadResult.AlreadyPresent
-            code == 400 && respBody.contains("Invalid OAuth", ignoreCase = true) -> UploadResult.AuthFailed
-            else -> UploadResult.Failed(code, respBody)
+        val jsonBytes = btidesFile.readBytes()
+        val frame = try {
+            BtidalpoolCodec.encodeUploadFrame(token, refreshToken, useTestDb, jsonBytes)
+        } catch (t: Throwable) {
+            Timber.e(t, "Failed to build BTPL upload frame for %s", btidesFile.name)
+            return@withContext UploadResult.Failed(-1, "could not encode upload frame: ${t.message}")
+        }
+        mapUploadResponse(postFrame(UPLOAD_URL, frame, onProgress))
+    }
+
+    /** Translate a framed POST result into an [UploadResult]. */
+    private fun mapUploadResponse(raw: RawResponse): UploadResult {
+        // Per the protocol a genuine codec reply — success OR a structured error — carries the
+        // codec Content-Type even on 4xx/5xx. Anything else (text/plain: 405/415/413/429/malformed
+        // body) is a transport-layer error we surface verbatim.
+        if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) {
+            val text = String(raw.body, Charsets.UTF_8).trim()
+            return UploadResult.Failed(raw.code, text.ifEmpty { "HTTP ${raw.code} (non-codec response)" })
+        }
+        val wire = try {
+            BtidalpoolCodec.decodeResponse(raw.body)
+        } catch (t: Throwable) {
+            Timber.e(t, "Malformed BTPL response frame (HTTP %d)", raw.code)
+            return UploadResult.Failed(raw.code, "malformed response frame: ${t.message}")
+        }
+        return when (wire.result) {
+            "ok" -> UploadResult.Success
+            "err" -> when (wire.kind) {
+                // Server already holds this content — same terminal "don't re-send" outcome.
+                "duplicate_upload" -> UploadResult.AlreadyPresent
+                // Token rejected — the interactor refreshes and retries once.
+                "unauthorized" -> UploadResult.AuthFailed
+                else -> UploadResult.Failed(raw.code, "${wire.kind ?: "err"}: ${wire.message ?: ""}".trim())
+            }
+            else -> UploadResult.Failed(raw.code, "unexpected result '${wire.result}': ${wire.message ?: ""}".trim())
         }
     }
 
     /**
-     * Verify the access token by fetching the authenticated user's email from Google's
-     * userinfo endpoint. Uses the standard system trust store (Google's cert is publicly
-     * trusted). Returns null on any non-200 response.
+     * Verify the access token by fetching the authenticated user's email from Google's userinfo
+     * endpoint. Uses the standard system trust store (Google's cert is publicly trusted). Returns
+     * null on any non-200 response.
      */
     suspend fun fetchUserEmail(accessToken: String): String? = withContext(Dispatchers.IO) {
         val url = URL(USERINFO_URL)
@@ -169,9 +201,9 @@ class BtidalpoolClient(
     }
 
     /**
-     * Exchange a refresh token for a fresh access token via the BTIDALPOOL refresh proxy
-     * (which holds the OAuth client_secret server-side). Uses the LetsEncrypt-validated trust
-     * store. Returns null on any error.
+     * Exchange a refresh token for a fresh access token via the BTIDALPOOL refresh proxy (which
+     * holds the OAuth client_secret server-side). Uses the LetsEncrypt-validated trust store.
+     * Returns null on any error.
      */
     suspend fun refreshToken(refreshToken: String): RefreshedTokens? = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
@@ -211,50 +243,91 @@ class BtidalpoolClient(
     }
 
     /**
-     * POST a JSON body to the upload server, validating the server's TLS cert against the
-     * pinned `btidalpool_server.crt` shipped in assets. Returns (status code, response body).
+     * Exchange a one-time Google serverAuthCode — obtained natively by the app via Google
+     * Identity Services (`AuthorizationClient.requestOfflineAccess`) — for the access + refresh
+     * tokens, through the BTIDALPOOL OAuth helper's `/exchange_app` endpoint. The helper holds
+     * the web client_secret and performs the Google token exchange server-side, then returns
+     * `{"token","refresh_token"}` directly over TLS (no token ever transits a browser URL).
+     * Uses the LetsEncrypt-validated trust store, like [refreshToken]. Returns null on any error.
      */
-    @Throws(IOException::class)
-    private suspend fun postPinned(urlStr: String, body: String): Pair<Int, String> {
-        val bytes = body.toByteArray(Charsets.UTF_8)
-        return postPinnedStreaming(urlStr, bytes.size.toLong()) { out -> out.write(bytes) }
+    suspend fun exchangeServerAuthCode(authCode: String): RefreshedTokens? = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("auth_code", authCode)
+        }.toString()
+        try {
+            val url = URL(EXCHANGE_URL)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            try {
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                if (code != 200) {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    Timber.w("exchange_app returned HTTP %d: %s", code, err)
+                    return@withContext null
+                }
+                val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                val obj: JsonObject = Json.parseToJsonElement(resp).jsonObject
+                val newToken = obj["token"]?.jsonPrimitive?.contentOrNull
+                val newRefresh = obj["refresh_token"]?.jsonPrimitive?.contentOrNull
+                if (newToken.isNullOrBlank() || newRefresh.isNullOrBlank()) null
+                else RefreshedTokens(newToken, newRefresh)
+            } finally {
+                conn.disconnect()
+            }
+        } catch (t: Throwable) {
+            Timber.w(t, "exchange_app request failed")
+            null
+        }
     }
 
     /**
-     * Streaming POST — caller writes the request body directly to the connection's
-     * outputStream via [writer]. With FixedLengthStreamingMode set, HttpsURLConnection
-     * doesn't buffer the body in memory; bytes flow straight to the socket as they're
-     * written. Used by [uploadFile] so a multi-megabyte BTIDES export never has to be
-     * materialised as a single byte array.
-     *
-     * The writer is `suspend` so progress callbacks (themselves suspend, since they update
-     * StateFlow / Compose state on the calling coroutine context) can fire mid-stream.
+     * POST a BTPL [frame] to the upload server, validating the server's TLS cert against the pinned
+     * `btidalpool_server.crt`. With FixedLengthStreamingMode set, the frame flows straight to the
+     * socket in 64KB chunks (so [onProgress] can advance the UI) without HttpsURLConnection
+     * buffering it. Reads the full response body — codec frame or text/plain transport error — for
+     * the caller to classify.
      */
     @Throws(IOException::class)
-    private suspend fun postPinnedStreaming(
+    private suspend fun postFrame(
         urlStr: String,
-        contentLength: Long,
-        writer: suspend (java.io.OutputStream) -> Unit,
-    ): Pair<Int, String> {
+        frame: ByteArray,
+        onProgress: (suspend (bytesSent: Long, totalBytes: Long) -> Unit)?,
+    ): RawResponse {
         val url = URL(urlStr)
         val conn = (url.openConnection() as HttpsURLConnection).apply {
             sslSocketFactory = pinnedSocketFactory()
             hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
             requestMethod = "POST"
             connectTimeout = 30_000
-            // Long enough for a 100 MB upload over slow Wi-Fi to finish without the connection
-            // dropping mid-stream.
+            // Long enough for a slow-Wi-Fi upload to finish without the connection dropping.
             readTimeout = 5 * 60_000
             doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setFixedLengthStreamingMode(contentLength)
+            setRequestProperty("Content-Type", BtidalpoolCodec.CONTENT_TYPE)
+            setRequestProperty("Accept", BtidalpoolCodec.CONTENT_TYPE)
+            setFixedLengthStreamingMode(frame.size.toLong())
         }
         return try {
-            conn.outputStream.use { writer(it) }
+            val total = frame.size.toLong()
+            conn.outputStream.use { out ->
+                var sent = 0
+                while (sent < frame.size) {
+                    val n = minOf(64 * 1024, frame.size - sent)
+                    out.write(frame, sent, n)
+                    sent += n
+                    onProgress?.invoke(sent.toLong(), total)
+                }
+            }
             val code = conn.responseCode
+            val ctype = conn.contentType ?: ""
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
-            code to resp
+            val respBody = stream?.use { it.readBytes() } ?: ByteArray(0)
+            RawResponse(code, ctype, respBody)
         } finally {
             conn.disconnect()
         }
@@ -290,9 +363,18 @@ class BtidalpoolClient(
     }
 
     companion object {
-        private const val UPLOAD_URL = "https://btidalpool.ddns.net:3567/"
+        private const val UPLOAD_URL = "https://btidalpool.ddns.net:3568/"
         private const val REFRESH_URL = "https://btidalpool.ddns.net:7653/refresh"
+        // Phone-app SSO: exchanges a native Google serverAuthCode for tokens (see [exchangeServerAuthCode]).
+        private const val EXCHANGE_URL = "https://btidalpool.ddns.net:7653/exchange_app"
         private const val USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
         private const val PINNED_CERT_ASSET = "btidalpool_server.crt"
+
+        /**
+         * Hard cap on a single upload's raw BTIDES JSON. The Rust server rejects larger bodies, and
+         * — unlike the streaming :3567 path — the CBOR+zstd frame is built fully in memory, so we
+         * refuse oversize files up-front rather than risk an OOM. 10 MiB matches the server limit.
+         */
+        private const val MAX_UPLOAD_BYTES = 10L * 1024 * 1024
     }
 }

@@ -2,6 +2,7 @@ package com.darkmentor.data.btidalpool
 
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -76,16 +77,122 @@ class BtidalpoolAuthRepository(
     }
 
     /**
-     * Parse the JSON the user pasted, validate it against Google's userinfo endpoint (with one
-     * refresh attempt on failure), persist on success.
+     * Outcome of a paste-token sign-in attempt.
+     *
+     * The distinction that matters: [Invalid] means the token was *definitively* rejected —
+     * malformed, failed Google validation, or the upload server answered "Invalid OAuth".
+     * A [Valid] with `serverReachable == false` means the token passed Google validation but we
+     * couldn't reach the upload server to confirm it end-to-end. These must NOT collapse into a
+     * single "invalid" verdict: a down/unreachable upload server is not a bad credential, and
+     * reporting it as one sends the user back through SSO for nothing.
      */
-    suspend fun signInWithPastedJson(pasted: String): Result<AuthState> = withContext(Dispatchers.IO) {
-        runCatching {
-            val parsed = parseTokenBlob(pasted)
-                ?: throw IllegalArgumentException("Pasted text is not a valid token JSON. Expected fields: \"token\", \"refresh_token\".")
-            val verified = verifyAndRefreshIfNeeded(parsed)
-            persist(verified)
-            verified
+    sealed class SignInOutcome {
+        data class Valid(val state: AuthState, val serverReachable: Boolean) : SignInOutcome()
+        data class Invalid(val reason: String) : SignInOutcome()
+    }
+
+    /**
+     * Parse the JSON the user pasted, validate it against Google's userinfo endpoint (with one
+     * refresh attempt on failure), then probe the BTIDALPOOL upload server, and persist on
+     * success.
+     *
+     * The Google userinfo check only proves the token is a valid Google token; the probe — a
+     * check-hash query for an all-zeros SHA1 (a digest no real BTIDES export produces) — adds an
+     * end-to-end confirmation against the upload server. Three cases:
+     *  - server says "not present"/"already exists" -> [SignInOutcome.Valid] (serverReachable = true)
+     *  - server says "Invalid OAuth"                -> [SignInOutcome.Invalid] (definitive reject)
+     *  - server unreachable / non-auth HTTP error   -> [SignInOutcome.Valid] (serverReachable = false)
+     *
+     * The last case still counts as valid because Google already vouched for the token; we just
+     * couldn't reach BTIDALPOOL to double-check. We persist on both Valid branches so the user
+     * ends up signed in (and can upload once the server is reachable again).
+     */
+    suspend fun signInWithPastedJson(pasted: String, useTestDb: Boolean): SignInOutcome = withContext(Dispatchers.IO) {
+        val parsed = parseTokenBlob(pasted)
+            ?: return@withContext SignInOutcome.Invalid("Pasted text is not a valid token JSON.")
+        val verified = try {
+            verifyAndRefreshIfNeeded(parsed)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Timber.d(e, "BTIDALPOOL token failed Google validation")
+            return@withContext SignInOutcome.Invalid(e.message ?: "Token validation failed.")
+        }
+        when (probeUploadServer(verified, useTestDb)) {
+            ProbeResult.REJECTED -> SignInOutcome.Invalid("The BTIDALPOOL server rejected these credentials.")
+            ProbeResult.ACCEPTED -> {
+                persist(verified)
+                SignInOutcome.Valid(verified, serverReachable = true)
+            }
+            ProbeResult.UNREACHABLE -> {
+                persist(verified)
+                SignInOutcome.Valid(verified, serverReachable = false)
+            }
+        }
+    }
+
+    /**
+     * Sign in from a native Google serverAuthCode (the seamless phone flow — no browser, no
+     * paste). Exchanges the one-time code for tokens via the BTIDALPOOL helper's `/exchange_app`
+     * endpoint, then runs the exact same Google-userinfo validation and upload-server probe as
+     * [signInWithPastedJson], persisting on success. The exchanged tokens are web-client tokens,
+     * so the existing [refresh] proxy keeps working unchanged.
+     */
+    suspend fun signInWithServerAuthCode(authCode: String, useTestDb: Boolean): SignInOutcome = withContext(Dispatchers.IO) {
+        val exchanged = try {
+            client.exchangeServerAuthCode(authCode)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Timber.d(e, "BTIDALPOOL serverAuthCode exchange failed")
+            return@withContext SignInOutcome.Invalid(e.message ?: "Sign-in failed.")
+        } ?: return@withContext SignInOutcome.Invalid("The sign-in server did not return tokens.")
+
+        val verified = try {
+            verifyAndRefreshIfNeeded(AuthState(exchanged.token, exchanged.refreshToken, email = null))
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Timber.d(e, "BTIDALPOOL token failed Google validation")
+            return@withContext SignInOutcome.Invalid(e.message ?: "Token validation failed.")
+        }
+        when (probeUploadServer(verified, useTestDb)) {
+            ProbeResult.REJECTED -> SignInOutcome.Invalid("The BTIDALPOOL server rejected these credentials.")
+            ProbeResult.ACCEPTED -> {
+                persist(verified)
+                SignInOutcome.Valid(verified, serverReachable = true)
+            }
+            ProbeResult.UNREACHABLE -> {
+                persist(verified)
+                SignInOutcome.Valid(verified, serverReachable = false)
+            }
+        }
+    }
+
+    private enum class ProbeResult { ACCEPTED, REJECTED, UNREACHABLE }
+
+    /**
+     * End-to-end credential probe against the BTIDALPOOL upload server (a check-hash query for
+     * an all-zeros digest, which a working token always gets "not present" back for):
+     *  - [ProbeResult.ACCEPTED]    the server authenticated us ("not present"/"already exists").
+     *  - [ProbeResult.REJECTED]    an explicit "Invalid OAuth" — the credentials are bad.
+     *  - [ProbeResult.UNREACHABLE] a connect/read failure or any other HTTP error. These are
+     *                              server-availability problems, NOT bad credentials, so they
+     *                              must not be reported as a rejection.
+     */
+    private suspend fun probeUploadServer(state: AuthState, useTestDb: Boolean): ProbeResult {
+        return try {
+            when (client.checkHash(ALL_ZERO_SHA1, state.token, state.refreshToken, useTestDb)) {
+                BtidalpoolClient.CheckHashResult.NotPresent,
+                BtidalpoolClient.CheckHashResult.AlreadyPresent -> ProbeResult.ACCEPTED
+                BtidalpoolClient.CheckHashResult.AuthFailed -> ProbeResult.REJECTED
+                is BtidalpoolClient.CheckHashResult.Failed -> ProbeResult.UNREACHABLE
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Timber.w(e, "BTIDALPOOL check-hash probe could not reach the upload server")
+            ProbeResult.UNREACHABLE
         }
     }
 
@@ -192,8 +299,12 @@ class BtidalpoolAuthRepository(
     }
 
     companion object {
-        // BTIDALPOOL's Google OAuth web client (mirrors oauth_helper.AuthClient.client_id).
-        const val CLIENT_ID = "934838710114-hrn5hafisthr3eqh7gnr1jka5c5hmjli.apps.googleusercontent.com"
+        // BTIDALPOOL's Google OAuth **web** client. Must equal the CLIENT_ID the 7653 server
+        // exchanges with (google-SSO-redirect-and-token-print-server.py) — it's the serverClientId
+        // for the native serverAuthCode flow AND the client_id for the browser/paste + /refresh
+        // flows. (The separate *Android* OAuth client is matched by Google via package + signing
+        // SHA-1, not referenced here.) Project moved 934838710114 → 6849068466 on 2026-06-20.
+        const val CLIENT_ID = "6849068466-1sone95u0ihio99646tn60s234d88hge.apps.googleusercontent.com"
         const val AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
         const val REDIRECT_URI = "https://btidalpool.ddns.net:7653/oauth2callback"
         const val SCOPES =
@@ -202,5 +313,10 @@ class BtidalpoolAuthRepository(
         private const val KEY_TOKEN = "btidalpool_token"
         private const val KEY_REFRESH_TOKEN = "btidalpool_refresh_token"
         private const val KEY_EMAIL = "btidalpool_email"
+
+        // A 40-hex-char (160-bit) all-zeros SHA1 — the digest used by the post-sign-in
+        // credential probe. No real BTIDES export hashes to this, so the server reliably
+        // answers "not present" for any valid token.
+        private const val ALL_ZERO_SHA1 = "0000000000000000000000000000000000000000"
     }
 }

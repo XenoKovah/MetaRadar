@@ -150,6 +150,28 @@ class DevicesRepository(
         result
     }
 
+    /**
+     * Candidate snapshot for the Devices-tab PARTIAL-pushdown path. Applies only the SQL-
+     * pushable subset of [filters] (via [DeviceFilterSqlBuilder.pushableWhere]) — e.g. a "Dual"
+     * chip collapses ~M rows to the dual-mode handful — ordered by recency and capped at [limit]
+     * (clamped to [DEVICE_LIST_LIMIT]). The caller re-runs the FULL in-Kotlin filter chain over
+     * this bounded set, so the expensive non-pushable checks (VendorIdentifier, location, GATT)
+     * never scan the whole table. Used in place of [getDevices] for the non-pushable fallback in
+     * [com.darkmentor.ui.devicelist.DeviceListViewModel]; the cap means a lone non-pushable
+     * filter still only materialises the most-recent [limit] rows rather than all M.
+     */
+    suspend fun snapshotNarrowedDevices(
+        filters: List<DeviceFilter>,
+        limit: Int = DEVICE_LIST_LIMIT,
+        withAirdropInfo: Boolean = true,
+    ): List<DeviceData> = withContext(Dispatchers.IO) {
+        val pushable = DeviceFilterSqlBuilder.pushableWhere(filters)
+        val where = if (pushable.whereClause == null) "" else " WHERE ${pushable.whereClause}"
+        val effectiveLimit = limit.coerceIn(1, DEVICE_LIST_LIMIT)
+        val sql = "SELECT * FROM device$where ORDER BY last_detect_time_ms DESC LIMIT $effectiveLimit"
+        deviceDao.queryFiltered(SimpleSQLiteQuery(sql, pushable.args.toTypedArray())).toDomain(withAirdropInfo)
+    }
+
     suspend fun observeLastBatch(): StateFlow<List<DeviceData>> {
         return lastBatch.apply {
             if (lastBatch.value.isEmpty()) {

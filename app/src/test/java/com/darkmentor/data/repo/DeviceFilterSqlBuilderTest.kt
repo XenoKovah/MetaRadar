@@ -265,4 +265,50 @@ class DeviceFilterSqlBuilderTest {
             DeviceFilterSqlBuilder.toSql(DeviceFilter.HasGatt(hasGatt = true)),
         )
     }
+
+    // ---- pushableWhere (PARTIAL pushdown: SQL-translatable subset of a flat AND filter list)
+
+    @Test
+    fun `pushableWhere keeps only the SQL-translatable filter in a mixed combo`() {
+        // "Dual + Not Samsung": the transport filter pushes; Not(Manufacturer(SAMSUNG)) doesn't.
+        // Only the transport clause + its args survive — the Samsung part is left for the
+        // in-Kotlin residual chain, but the SQL still narrows to dual-mode rows.
+        val dual = DeviceFilter.TransportFilter(Transport.DUAL.ordinal, includeDual = false)
+        val notSamsung = DeviceFilter.Not(DeviceFilter.Manufacturer(ManufacturerInfo.SAMSUNG_ID))
+        val pushable = DeviceFilterSqlBuilder.pushableWhere(listOf(dual, notSamsung))
+
+        val dualSql = DeviceFilterSqlBuilder.toSql(dual) as DeviceFilterSqlBuilder.Result.Pushable
+        assertEquals(dualSql.whereClause, pushable.whereClause)
+        assertEquals(dualSql.args, pushable.args)
+    }
+
+    @Test
+    fun `pushableWhere AND-joins multiple pushable filters in order`() {
+        val pushable = DeviceFilterSqlBuilder.pushableWhere(
+            listOf(
+                DeviceFilter.IsConnectable(isConnectable = true),
+                DeviceFilter.IsPaired(isPaired = false),
+            )
+        )
+        assertEquals("is_connectable = ? AND is_paired = ?", pushable.whereClause)
+        assertEquals(listOf<Any?>(1, 0), pushable.args)
+    }
+
+    @Test
+    fun `pushableWhere returns a null clause when nothing is pushable`() {
+        // Lone "Not Apple": no SQL-translatable part, so the caller scans the recency-capped
+        // candidate set in Kotlin (still bounded, unlike the old full-table getDevices()).
+        val pushable = DeviceFilterSqlBuilder.pushableWhere(
+            listOf(DeviceFilter.Not(DeviceFilter.Manufacturer(ManufacturerInfo.APPLE_ID)))
+        )
+        assertEquals(null, pushable.whereClause)
+        assertTrue(pushable.args.isEmpty())
+    }
+
+    @Test
+    fun `pushableWhere on an empty filter list yields a null clause`() {
+        val pushable = DeviceFilterSqlBuilder.pushableWhere(emptyList())
+        assertEquals(null, pushable.whereClause)
+        assertTrue(pushable.args.isEmpty())
+    }
 }
