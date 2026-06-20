@@ -20,9 +20,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.darkmentor.data.btides.BTIDESRepository
+import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.data.repo.SettingsRepository
 import com.darkmentor.domain.interactor.VendorIdentifier
 import com.darkmentor.domain.model.BleScanDevice
+import com.darkmentor.domain.model.LocationModel
 import com.darkmentor.toBase64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,9 +50,29 @@ class BleScannerHelper(
     private val settingsRepository: SettingsRepository,
     private val btidesRepository: BTIDESRepository,
     private val vendorIdentifier: VendorIdentifier,
+    private val locationProvider: LocationProvider,
+    private val locationRepository: LocationRepository,
 ) {
 
     private val btidesScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Best-effort per-connection GPS point for [address]: capture the freshest fix at connect time
+     * and write a location + device_to_location row keyed by the connect instant. Runs off the BLE
+     * binder thread. A missing fix records nothing — we care what a device is, not strictly where.
+     */
+    private fun recordConnectionLocation(address: String) {
+        btidesScope.launch {
+            val now = System.currentTimeMillis()
+            val fix = locationProvider.getFreshLocation() ?: locationProvider.lastKnownLocation() ?: return@launch
+            runCatching {
+                locationRepository.saveLocation(
+                    LocationModel(lat = fix.latitude, lng = fix.longitude, time = now),
+                    mapOf(address to null),
+                )
+            }.onFailure { Timber.tag(TAG_CONNECT).w(it, "Failed to record connection location for $address") }
+        }
+    }
 
     private fun inferBdaddrRand(addressType: Int?, address: String): Int {
         // Android BluetoothDevice address types: PUBLIC = 0, RANDOM = 1, UNKNOWN = 0xFFFF.
@@ -413,6 +435,9 @@ class BleScannerHelper(
                         BluetoothProfile.STATE_CONNECTED -> {
                             Timber.tag(TAG_CONNECT).d("Connected to device $address")
                             trySend(DeviceConnectResult.Connected(gatt))
+                            // Record where/when we connected to THIS device (Connect All + Device
+                            // Details both flow through here), keyed by the connect instant.
+                            recordConnectionLocation(address)
                         }
 
                         BluetoothProfile.STATE_DISCONNECTING -> {

@@ -5,9 +5,9 @@ import com.darkmentor.data.repo.DevicesRepository
 import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.domain.model.AppleAirDrop
 import com.darkmentor.domain.model.BleScanDevice
+import com.darkmentor.domain.model.LocationModel
 import com.darkmentor.domain.model.ManufacturerInfo
 import com.darkmentor.domain.model.SavedDeviceHandle
-import com.darkmentor.domain.toDomain
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -59,17 +59,20 @@ class SaveOrMergeBatchInteractor(
                 )
             }
 
-            val location = locationProvider.getFreshLocation()
-
-            val detectTime = batch.firstOrNull()?.scanTimeMs
-            if (location != null && detectTime != null) {
-                // Per-detection RSSI: if the same address appears multiple times in the same
-                // batch (rare but possible), keep the strongest sample — that's what the
-                // trilateration weighted-centroid (best-fit marker) wants.
-                val rssiByAddress: Map<String, Int?> = batch
-                    .groupBy { it.address }
-                    .mapValues { (_, samples) -> samples.mapNotNull { it.rssi }.maxOrNull() }
-                locationRepository.saveLocation(location.toDomain(detectTime), rssiByAddress)
+            // Per-device location: tag EACH device with the GPS fix nearest in time to when THAT
+            // device was seen, keyed by the device's own scanTimeMs — instead of collapsing the
+            // whole batch onto one coordinate keyed by the first device's time (which piled
+            // hundreds of devices onto a single point). A device with no fresh fix nearby simply
+            // gets no location row (we care what a device is, not strictly where). The strongest
+            // RSSI per device is kept for the trilateration weighted-centroid best-fit marker.
+            batch.groupBy { it.address }.forEach { (address, samples) ->
+                val seenAt = samples.first().scanTimeMs
+                val fix = locationProvider.getFreshLocationAt(seenAt) ?: return@forEach
+                val strongestRssi = samples.mapNotNull { it.rssi }.maxOrNull()
+                locationRepository.saveLocation(
+                    LocationModel(lat = fix.latitude, lng = fix.longitude, time = seenAt),
+                    mapOf(address to strongestRssi),
+                )
             }
 
             val knownDevicesCount = mergedDevices.count(isKnownDeviceInteractor::execute)

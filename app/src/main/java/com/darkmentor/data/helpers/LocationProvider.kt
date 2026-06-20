@@ -30,6 +30,13 @@ class LocationProvider(
 
     private val locationState = MutableStateFlow<LocationHandle?>(null)
 
+    // Short rolling history of recent fixes so a scan batch can tag EACH device with the fix
+    // nearest in time to when that device was seen (see [getFreshLocationAt]). Written on the main
+    // executor (the consumer) and read off Dispatchers.Default (SaveOrMergeBatchInteractor), so all
+    // access goes through [fixHistoryLock]. Bounded by age (ALLOWED_LOCATION_LIVETIME_MS) + size.
+    private val fixHistory = ArrayDeque<LocationHandle>()
+    private val fixHistoryLock = Any()
+
     private val locationManager: LocationManager? = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
     private val consumer = Consumer<Location?> { newLocation ->
@@ -57,7 +64,9 @@ class LocationProvider(
 
         Timber.d("New location: lat=${newLocation.latitude}, lng=${newLocation.longitude} (provider: $provider)")
 
-        locationState.tryEmit(LocationHandle(newLocation, System.currentTimeMillis()))
+        val handle = LocationHandle(newLocation, System.currentTimeMillis())
+        locationState.tryEmit(handle)
+        recordFix(handle)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -102,6 +111,25 @@ class LocationProvider(
             .firstOrNull()
             ?.takeIf { it.isFresh() }
             ?.location
+    }
+
+    /**
+     * The buffered fix closest in time to [timestampMs], or null if the nearest one is outside the
+     * freshness window ([ALLOWED_LOCATION_LIVETIME_MS]). [timestampMs] and a fix's emitTime share
+     * the same wall-clock base (System.currentTimeMillis), so they're directly comparable. Lets a
+     * scan batch tag each device with the fix nearest to when THAT device was seen.
+     */
+    fun getFreshLocationAt(timestampMs: Long): Location? = synchronized(fixHistoryLock) {
+        val idx = nearestWithinWindow(fixHistory.map { it.emitTime }, timestampMs, ALLOWED_LOCATION_LIVETIME_MS)
+        if (idx >= 0) fixHistory[idx].location else null
+    }
+
+    /** Append [handle] to the bounded fix history, trimming entries older than the freshness window. */
+    private fun recordFix(handle: LocationHandle) = synchronized(fixHistoryLock) {
+        fixHistory.addLast(handle)
+        val cutoff = handle.emitTime - ALLOWED_LOCATION_LIVETIME_MS
+        while (fixHistory.isNotEmpty() && fixHistory.first().emitTime < cutoff) fixHistory.removeFirst()
+        while (fixHistory.size > MAX_FIX_HISTORY) fixHistory.removeFirst()
     }
 
     /**
@@ -237,6 +265,9 @@ class LocationProvider(
         private const val MAX_ALLOWED_ACCURACY_METERS = 100F
         private const val ALLOWED_LOCATION_LIVETIME_MS = 2L * 60L * 1000L // 2 min
         private const val RESTART_SERVICE_TIMER = 10L * 60L * 1000L // 10 min
+        // At 1 fix/s (DEFAULT) the 2-min age window holds ~120 entries; this is a hard backstop so
+        // a stuck clock / burst of emits can't grow the history unbounded.
+        private const val MAX_FIX_HISTORY = 256
     }
 }
 
@@ -247,3 +278,22 @@ class LocationProvider(
  */
 internal fun locationPositionsDiffer(newLat: Double, newLng: Double, oldLat: Double, oldLng: Double): Boolean =
     newLat != oldLat || newLng != oldLng
+
+/**
+ * Index into [emitTimes] of the entry closest to [timestampMs], or -1 if the list is empty or the
+ * closest entry is more than [windowMs] away. Pure top-level function so the nearest-fix selection
+ * in [LocationProvider.getFreshLocationAt] can be unit-tested without Android's
+ * [android.location.Location].
+ */
+internal fun nearestWithinWindow(emitTimes: List<Long>, timestampMs: Long, windowMs: Long): Int {
+    var bestIdx = -1
+    var bestDelta = Long.MAX_VALUE
+    for (i in emitTimes.indices) {
+        val delta = kotlin.math.abs(emitTimes[i] - timestampMs)
+        if (delta < bestDelta) {
+            bestDelta = delta
+            bestIdx = i
+        }
+    }
+    return if (bestIdx >= 0 && bestDelta <= windowMs) bestIdx else -1
+}

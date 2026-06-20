@@ -49,7 +49,7 @@ class DataModule(
         }
         single { CluesRepository(get()) }
         single { OuiRepository(get()) }
-        single { BleScannerHelper(get(), get(), get(), get(), get(), get()) }
+        single { BleScannerHelper(get(), get(), get(), get(), get(), get(), get(), get()) }
         single { BrEdrDiscoveryHelper(get()) }
         single { SdpEnumerationHelper(get()) }
         single { BleFiltersProvider(get()) }

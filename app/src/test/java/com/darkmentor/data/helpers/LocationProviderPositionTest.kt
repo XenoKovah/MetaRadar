@@ -1,5 +1,6 @@
 package com.darkmentor.data.helpers
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,5 +33,28 @@ class LocationProviderPositionTest {
     fun `swapped lat-lng counts as a move, not a match`() {
         // old(10,20) vs new(20,10): same numbers, different point — must be "different".
         assertTrue(locationPositionsDiffer(20.0, 10.0, 10.0, 20.0))
+    }
+
+    @Test
+    fun `nearestWithinWindow returns the closest in-window index`() {
+        // times 1000/2000/5000, target 2200 -> index 1 (2000) is closest, delta 200 <= 1000.
+        assertEquals(1, nearestWithinWindow(listOf(1000L, 2000L, 5000L), 2200L, 1000L))
+    }
+
+    @Test
+    fun `nearestWithinWindow returns -1 when the closest is outside the window`() {
+        // target 9000, closest is 5000 (delta 4000) > window 1000 -> no usable fix.
+        assertEquals(-1, nearestWithinWindow(listOf(1000L, 2000L, 5000L), 9000L, 1000L))
+    }
+
+    @Test
+    fun `nearestWithinWindow returns -1 for an empty history`() {
+        assertEquals(-1, nearestWithinWindow(emptyList(), 1234L, 120_000L))
+    }
+
+    @Test
+    fun `nearestWithinWindow honors an exact match and picks the nearer side`() {
+        assertEquals(2, nearestWithinWindow(listOf(0L, 100L, 200L), 200L, 60_000L)) // exact hit
+        assertEquals(0, nearestWithinWindow(listOf(100L, 400L), 200L, 60_000L))     // 100 (d=100) < 400 (d=200)
     }
 }

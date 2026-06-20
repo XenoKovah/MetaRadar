@@ -102,7 +102,7 @@ class PowerModeHelper(
             scanDuration = 5_000L,
             scanInterval = 5_000L,
             useLocation = true,
-            locationUpdateInterval = 10_000L,
+            locationUpdateInterval = 1_000L, // 1 s: track per-device GPS closely (intentional power trade-off)
             useRestrictedBleConfig = false,
             filterCacheExpirationTime = 3 * 60 * 1000L, // 3 minutes
             tryToTurnOnScreen = false,
@@ -111,7 +111,7 @@ class PowerModeHelper(
             scanDuration = 5_000L,
             scanInterval = 10_000L,
             useLocation = true,
-            locationUpdateInterval = 10_000L,
+            locationUpdateInterval = 1_000L, // 1 s: track per-device GPS closely (intentional power trade-off)
             useRestrictedBleConfig = true,
             filterCacheExpirationTime = 5 * 60 * 1000L, // 5 minutes
             tryToTurnOnScreen = true,
