@@ -22,7 +22,7 @@ object InteractorsModule {
         factory { SelectBackupFileInteractor(get(), get()) }
         factory { RestoreDatabaseInteractor(get(), get()) }
         factory { CreateBTIDESFileInteractor(get(), get()) }
-        factory { ExportBTIDESInteractor(get(), get()) }
+        factory { ExportBTIDESInteractor(get(), get(), get()) }
         factory { ClearBTIDESLogInteractor(get()) }
         factory { UploadToBtidalpoolInteractor(get(), get(), get(), get(), get()) }
         single { VendorIdentifier(get()) }

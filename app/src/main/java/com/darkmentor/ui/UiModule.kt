@@ -5,6 +5,7 @@ import com.darkmentor.ui.connectall.ConnectAllSession
 import com.darkmentor.ui.connectall.ConnectAllViewModel
 import com.darkmentor.ui.devicedetails.DeviceDetailsViewModel
 import com.darkmentor.ui.devicelist.DeviceListViewModel
+import com.darkmentor.ui.exclusionzones.ExclusionZonesViewModel
 import com.darkmentor.ui.journal.JournalViewModel
 import com.darkmentor.ui.main.MainViewModel
 import com.darkmentor.ui.map.MapViewModel
@@ -33,5 +34,6 @@ object UiModule {
         viewModel { ConnectAllViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
         viewModel { MapViewModel(get(), get(), get()) }
         viewModel { BackgroundLocationRequestViewModel(get(), get()) }
+        viewModel { ExclusionZonesViewModel(get(), get(), get()) }
     }
 }

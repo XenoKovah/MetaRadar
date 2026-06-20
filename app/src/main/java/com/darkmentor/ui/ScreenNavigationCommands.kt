@@ -7,6 +7,7 @@ import com.darkmentor.domain.model.ManufacturerInfo
 import com.darkmentor.ui.about.AboutScreen
 import com.darkmentor.ui.backgroundlocationrequest.BackgroundLocationRequestScreen
 import com.darkmentor.ui.devicedetails.DeviceDetailsScreen
+import com.darkmentor.ui.exclusionzones.ExclusionZonesScreen
 import com.darkmentor.ui.filter.FilterUiState
 import com.darkmentor.ui.filter.SelectFilterScreen
 import com.darkmentor.ui.journal.JournalScreen
@@ -58,6 +59,10 @@ object ScreenNavigationCommands {
 
     object OpenJournalScreen : AddToStackCommand(screenFunction = { key, router ->
         JournalScreen.Screen(router)
+    })
+
+    object OpenExclusionZonesScreen : AddToStackCommand(screenFunction = { key, router ->
+        ExclusionZonesScreen.Screen(router)
     })
 
     class OpenSelectLocationScreen(

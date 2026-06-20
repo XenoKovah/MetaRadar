@@ -4,8 +4,13 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.darkmentor.BuildConfig
 import com.darkmentor.TheAppConfig
+import com.darkmentor.domain.model.ExclusionZone
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import timber.log.Timber
 
 class SettingsRepository(
     private val sharedPreferences: SharedPreferences,
@@ -13,6 +18,10 @@ class SettingsRepository(
 
     private val silentModeState = MutableStateFlow(getSilentMode())
     private val hideBackgroundLocationWarning = MutableStateFlow(getHideBackgroundLocationWarning())
+
+    // Polymorphic JSON round-trip for the sealed ExclusionZone hierarchy. ignoreUnknownKeys mirrors
+    // the app-wide DataMappers Json so a forward-compat field added later won't crash an older read.
+    private val zonesJson = Json { ignoreUnknownKeys = true }
 
     fun setGarbagingTime(time: Long) {
         sharedPreferences.edit().putLong(KEY_GARBAGING_TIME, time).apply()
@@ -142,6 +151,37 @@ class SettingsRepository(
     }
 
     /**
+     * User-defined GPS exclusion zones (max [ExclusionZone.MAX_ZONES]). Devices whose strongest-RSSI
+     * location falls inside any of these are omitted from BTIDALPOOL uploads. Stored as a JSON array
+     * of polymorphic [ExclusionZone] objects under [KEY_EXCLUSION_ZONES]. Empty list ⇒ key absent ⇒
+     * the upload path behaves exactly as before this feature.
+     */
+    fun getExclusionZones(): List<ExclusionZone> {
+        val raw = sharedPreferences.getString(KEY_EXCLUSION_ZONES, null) ?: return emptyList()
+        return try {
+            zonesJson.decodeFromString<List<ExclusionZone>>(raw)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to decode exclusion zones; treating as none")
+            emptyList()
+        }
+    }
+
+    /**
+     * Persist [zones], truncated to the first [ExclusionZone.MAX_ZONES] (defensive — the UI also
+     * enforces the cap). An empty list removes the key so [getExclusionZones] short-circuits.
+     */
+    fun setExclusionZones(zones: List<ExclusionZone>) {
+        val capped = zones.take(ExclusionZone.MAX_ZONES)
+        sharedPreferences.edit {
+            if (capped.isEmpty()) {
+                remove(KEY_EXCLUSION_ZONES)
+            } else {
+                putString(KEY_EXCLUSION_ZONES, zonesJson.encodeToString(capped))
+            }
+        }
+    }
+
+    /**
      * Independent toggles for the two discovery transports — both default to true so out-of-the-
      * box behaviour matches today's app (LE-only) plus opt-in BR/EDR. Each can be turned off
      * independently to test one transport in isolation.
@@ -212,6 +252,7 @@ class SettingsRepository(
         private const val KEY_WAKE_UP_SCREEN_WHILE_SCANNING = "key_wake_up_screen_while_scanning"
         private const val KEY_BULK_SKIP_APPLE = "key_bulk_skip_apple"
         private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
+        private const val KEY_EXCLUSION_ZONES = "key_exclusion_zones"
         private const val KEY_SCAN_START_MODE = "key_scan_start_mode"
         private const val KEY_DISCOVER_LE_ENABLED = "key_discover_le_enabled"
         private const val KEY_DISCOVER_BR_EDR_ENABLED = "key_discover_br_edr_enabled"

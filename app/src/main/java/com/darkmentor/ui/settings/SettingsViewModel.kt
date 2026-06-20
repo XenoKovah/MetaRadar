@@ -691,6 +691,10 @@ class SettingsViewModel(
         router.navigate(ScreenNavigationCommands.OpenJournalScreen)
     }
 
+    fun onOpenExclusionZonesClick() {
+        router.navigate(ScreenNavigationCommands.OpenExclusionZonesScreen)
+    }
+
     private fun observeLocationData() {
         viewModelScope.launch {
             locationProvider.observeLocation()

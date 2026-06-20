@@ -154,6 +154,20 @@
     <string name="menu_connect_all">Connect All</string>
     <string name="journal_open_button">Open Error Logs</string>
     <string name="journal_block_description">View background errors recorded by the scanner / GATT / export pipelines.</string>
+    <!-- Upload exclusion zones -->
+    <string name="exclusion_zones_block_title">Upload exclusion zones</string>
+    <string name="exclusion_zones_block_description">Define up to 3 map areas (circles or squares) whose detections are excluded from BTIDALPOOL uploads. Manual exports are unaffected.</string>
+    <string name="exclusion_zones_open_button">Manage exclusion zones</string>
+    <string name="exclusion_zones_screen_title">Exclusion zones</string>
+    <string name="exclusion_zones_adjust_label">Adjust exclusion zone</string>
+    <string name="exclusion_zones_save">Save zone</string>
+    <string name="exclusion_zones_cancel">Cancel exclusion zone</string>
+    <string name="exclusion_zones_address_hint">Search address…</string>
+    <string name="exclusion_zones_size_label">Size: %1$d m</string>
+    <string name="exclusion_zones_max_reached">Maximum of 3 exclusion zones reached. Delete or edit an existing zone to make further changes.</string>
+    <string name="exclusion_zones_address_not_found">Couldn\'t find that address (address search needs a network connection).</string>
+    <string name="exclusion_zones_zone_options_title">Exclusion zone</string>
+    <string name="exclusion_zones_zone_options_message">Edit this zone\'s size or delete it.</string>
     <string name="clear_all_location_history_dialog_title">Clear all location history?</string>
     <string name="launch_on_system_startup_title">Launch device scan at system startup</string>
     <string name="launch_connect_all_on_startup_title">Launch Connect All at system startup</string>

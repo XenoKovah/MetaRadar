@@ -4,11 +4,13 @@ import android.net.Uri
 import com.darkmentor.data.btides.BTIDESRepository
 import com.darkmentor.data.btides.StrongestRssiLocation
 import com.darkmentor.data.repo.LocationRepository
+import com.darkmentor.data.repo.SettingsRepository
 import java.io.File
 
 class ExportBTIDESInteractor(
     private val btidesRepository: BTIDESRepository,
     private val locationRepository: LocationRepository,
+    private val settingsRepository: SettingsRepository,
 ) {
 
     /** Per-device "strongest sample" lookup, passed into the export flow. */
@@ -48,8 +50,17 @@ class ExportBTIDESInteractor(
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Int {
         target.parentFile?.mkdirs()
+        // Upload path only: honor the user's GPS exclusion zones. The other export paths
+        // (manual SAF export, external-dir dump) intentionally stay complete.
+        val exclusionZones = settingsRepository.getExclusionZones()
         return target.outputStream().use {
-            btidesRepository.exportTo(it, strongestRssiLookup, onProgress, sourceFile = logFile)
+            btidesRepository.exportTo(
+                it,
+                strongestRssiLookup,
+                onProgress,
+                sourceFile = logFile,
+                exclusionZones = exclusionZones,
+            )
         }
     }
 

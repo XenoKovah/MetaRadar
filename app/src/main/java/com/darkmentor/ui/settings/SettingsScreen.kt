@@ -79,6 +79,8 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(8.dp))
             LocationBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
+            ExclusionZonesBlock(viewModel = viewModel)
+            Spacer(modifier = Modifier.height(8.dp))
             JournalBlock(viewModel = viewModel)
             Spacer(modifier = Modifier.height(8.dp))
             AppInfo()
@@ -471,6 +473,19 @@ object SettingsScreen {
             Spacer(modifier = Modifier.height(8.dp))
             Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onOpenJournalClick() }) {
                 Text(text = stringResource(R.string.journal_open_button), color = MaterialTheme.colorScheme.onPrimary)
+            }
+        }
+    }
+
+    @Composable
+    private fun ExclusionZonesBlock(viewModel: SettingsViewModel) {
+        RoundedBox {
+            Text(text = stringResource(R.string.exclusion_zones_block_title), fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = stringResource(R.string.exclusion_zones_block_description), fontWeight = FontWeight.Light)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { viewModel.onOpenExclusionZonesClick() }) {
+                Text(text = stringResource(R.string.exclusion_zones_open_button), color = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }

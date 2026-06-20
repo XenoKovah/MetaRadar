@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.content.Context
 import android.net.Uri
+import com.darkmentor.domain.model.ExclusionZone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -792,6 +793,9 @@ class BTIDESRepository(
         strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
         sourceFile: File? = null,
+        // User GPS exclusion zones (BTIDALPOOL upload path only). Devices whose strongest-RSSI GPS
+        // is inside any zone are dropped. Default empty ⇒ every other caller is unaffected.
+        exclusionZones: List<ExclusionZone> = emptyList(),
     ): Int = withContext(Dispatchers.IO) {
         // Snapshot the log size at export start. Live capture continues writing past this
         // boundary; we just don't see those new records in the export. The previous design
@@ -823,10 +827,11 @@ class BTIDESRepository(
             val devFiles = routeLogToPerDeviceTempFiles(src, tempDir, sourceSize) { bytes ->
                 onProgress?.invoke(bytes.coerceAtMost(sourceSize), totalBytes)
             }
+            // Hoisted to the outer try so the written-device count is in scope for the return below.
+            var idx = 0
             val writer = out.bufferedWriter()
             try {
                 writer.write("[")
-                var idx = 0
                 var pass2Bytes = 0L
                 for ((key, devFile) in devFiles) {
                     val acc = mergeOneDeviceFromFile(devFile, key) { lineBytes ->
@@ -837,19 +842,28 @@ class BTIDESRepository(
                     // failure or missing data is silently ignored (older detections pre-migration
                     // 21→22 have no RSSI; offline-mode users have no locations at all).
                     val strongest = runCatching { strongestRssiLookup(acc.bdaddr) }.getOrNull()
+                    // GPS upload-exclusion (privacy): if this device's strongest-RSSI sample — the
+                    // only coordinate we'd emit for it — falls inside any user exclusion zone, drop
+                    // the WHOLE device record. A device with no location can't be in a zone, so it's
+                    // kept. Empty zone list (every caller except the upload path) makes this a no-op.
+                    if (strongest != null && exclusionZones.any { it.contains(strongest.lat, strongest.lng) }) {
+                        continue
+                    }
                     if (idx > 0) writer.write(",")
                     writer.write("\n  ")
                     writer.writeJsonObjectStreaming(acc.toJsonObject(strongest), INDENT_UNIT, INDENT_UNIT)
                     idx++
                 }
-                if (devFiles.isNotEmpty()) writer.write("\n")
+                if (idx > 0) writer.write("\n")
                 writer.write("]\n")
                 writer.flush()
                 onProgress?.invoke(totalBytes, totalBytes)
             } finally {
                 writer.close()
             }
-            devFiles.size
+            // Return the count actually WRITTEN (idx), not devFiles.size — so when every device is
+            // excluded, uploadOneLog sees 0 and its EmptyLog short-circuit fires correctly.
+            idx
         } finally {
             runCatching { tempDir.deleteRecursively() }
         }
