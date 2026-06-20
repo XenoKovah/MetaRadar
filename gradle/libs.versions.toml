@@ -21,6 +21,7 @@ horologist = "0.1.13"
 serialization-json = "1.6.3"
 wear = "1.2.0"
 wear-gms = "18.0.0"
+play-auth = "21.3.0"
 wear-interaction-phone = "1.1.0-alpha03"
 wear-interaction-remote = "1.0.0"
 room = "2.8.4"
@@ -226,6 +227,8 @@ mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 # Wear
 wear = { module = "androidx.wear:wear", version.ref = "wear" }
 wear-gms = { module = "com.google.android.gms:play-services-wearable", version.ref = "wear-gms" }
+# Google Identity Services — native "Sign in with Google" + serverAuthCode (BTIDALPOOL seamless SSO)
+play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "play-auth" }
 wear-interaction-phone = { module = "androidx.wear:wear-phone-interactions", version.ref = "wear-interaction-phone" }
 wear-interaction-remote = { module = "androidx.wear:wear-remote-interactions", version.ref = "wear-interaction-remote" }
 

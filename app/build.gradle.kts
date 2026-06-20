@@ -204,6 +204,10 @@ dependencies {
     // Map
     implementation(libs.map)
 
+    // Native "Sign in with Google" (Google Identity Services AuthorizationClient) for the
+    // seamless BTIDALPOOL serverAuthCode flow.
+    implementation(libs.play.services.auth)
+
     // app restart
     implementation(libs.process.phoenix)
 

@@ -67,7 +67,12 @@ class BtidalpoolClient(
             put("refresh_token", refreshToken)
             put("use_test_db", useTestDb)
         }.toString()
-        val (code, respBody) = postPinned(UPLOAD_URL, body)
+        val (code, respBody) = postPinned(
+            UPLOAD_URL,
+            body,
+            connectTimeoutMs = CHECK_CONNECT_TIMEOUT_MS,
+            readTimeoutMs = CHECK_READ_TIMEOUT_MS,
+        )
         when {
             code == 200 -> CheckHashResult.NotPresent
             // Server returns 400 + a specific message both when content already exists AND when
@@ -211,13 +216,62 @@ class BtidalpoolClient(
     }
 
     /**
+     * Exchange a one-time Google serverAuthCode — obtained natively by the app via Google
+     * Identity Services (`AuthorizationClient.requestOfflineAccess`) — for the access + refresh
+     * tokens, through the BTIDALPOOL OAuth helper's `/exchange_app` endpoint. The helper holds
+     * the web client_secret and performs the Google token exchange server-side, then returns
+     * `{"token","refresh_token"}` directly over TLS (no token ever transits a browser URL).
+     * Uses the LetsEncrypt-validated trust store, like [refreshToken]. Returns null on any error.
+     */
+    suspend fun exchangeServerAuthCode(authCode: String): RefreshedTokens? = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("auth_code", authCode)
+        }.toString()
+        try {
+            val url = URL(EXCHANGE_URL)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            try {
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                if (code != 200) {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    Timber.w("exchange_app returned HTTP %d: %s", code, err)
+                    return@withContext null
+                }
+                val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                val obj: JsonObject = Json.parseToJsonElement(resp).jsonObject
+                val newToken = obj["token"]?.jsonPrimitive?.contentOrNull
+                val newRefresh = obj["refresh_token"]?.jsonPrimitive?.contentOrNull
+                if (newToken.isNullOrBlank() || newRefresh.isNullOrBlank()) null
+                else RefreshedTokens(newToken, newRefresh)
+            } finally {
+                conn.disconnect()
+            }
+        } catch (t: Throwable) {
+            Timber.w(t, "exchange_app request failed")
+            null
+        }
+    }
+
+    /**
      * POST a JSON body to the upload server, validating the server's TLS cert against the
      * pinned `btidalpool_server.crt` shipped in assets. Returns (status code, response body).
      */
     @Throws(IOException::class)
-    private suspend fun postPinned(urlStr: String, body: String): Pair<Int, String> {
+    private suspend fun postPinned(
+        urlStr: String,
+        body: String,
+        connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
+    ): Pair<Int, String> {
         val bytes = body.toByteArray(Charsets.UTF_8)
-        return postPinnedStreaming(urlStr, bytes.size.toLong()) { out -> out.write(bytes) }
+        return postPinnedStreaming(urlStr, bytes.size.toLong(), connectTimeoutMs, readTimeoutMs) { out -> out.write(bytes) }
     }
 
     /**
@@ -234,6 +288,8 @@ class BtidalpoolClient(
     private suspend fun postPinnedStreaming(
         urlStr: String,
         contentLength: Long,
+        connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
         writer: suspend (java.io.OutputStream) -> Unit,
     ): Pair<Int, String> {
         val url = URL(urlStr)
@@ -241,10 +297,8 @@ class BtidalpoolClient(
             sslSocketFactory = pinnedSocketFactory()
             hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
             requestMethod = "POST"
-            connectTimeout = 30_000
-            // Long enough for a 100 MB upload over slow Wi-Fi to finish without the connection
-            // dropping mid-stream.
-            readTimeout = 5 * 60_000
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setFixedLengthStreamingMode(contentLength)
@@ -292,7 +346,18 @@ class BtidalpoolClient(
     companion object {
         private const val UPLOAD_URL = "https://btidalpool.ddns.net:3567/"
         private const val REFRESH_URL = "https://btidalpool.ddns.net:7653/refresh"
+        // Phone-app SSO: exchanges a native Google serverAuthCode for tokens (see [exchangeServerAuthCode]).
+        private const val EXCHANGE_URL = "https://btidalpool.ddns.net:7653/exchange_app"
         private const val USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
         private const val PINNED_CERT_ASSET = "btidalpool_server.crt"
+
+        // Upload-path timeouts: a 100 MB upload over slow Wi-Fi needs a long read window, and a
+        // cold radio can be slow to connect.
+        private const val DEFAULT_CONNECT_TIMEOUT_MS = 30_000
+        private const val DEFAULT_READ_TIMEOUT_MS = 5 * 60_000
+        // check_hash is a tiny request/response that runs inline during sign-in. Fail fast when
+        // the upload server is unreachable rather than blocking the user behind the 30s default.
+        private const val CHECK_CONNECT_TIMEOUT_MS = 10_000
+        private const val CHECK_READ_TIMEOUT_MS = 15_000
     }
 }

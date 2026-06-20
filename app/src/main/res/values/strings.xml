@@ -91,7 +91,13 @@
     <string name="btidalpool_sign_out_button">Sign out</string>
     <string name="btidalpool_signed_in_as">Signed in as %1$s</string>
     <string name="btidalpool_signed_out">BTIDALPOOL signed out</string>
-    <string name="btidalpool_signin_failed">BTIDALPOOL sign-in failed</string>
+    <string name="btidalpool_credentials_dialog_title">BTIDALPOOL credentials</string>
+    <string name="btidalpool_credentials_valid">Credentials valid</string>
+    <string name="btidalpool_credentials_invalid">Credentials invalid</string>
+    <string name="btidalpool_credentials_valid_server_unreachable">Credentials valid.\n\nBut the BTIDALPOOL upload server (port 3567) couldn\'t be reached, so it may be temporarily down. You\'re signed in — uploads will work once it\'s reachable again.</string>
+    <string name="btidalpool_google_signin_failed">Google sign-in failed. Check your connection and that Google Play services is up to date, then try again.</string>
+    <string name="btidalpool_sign_in_manual_button">Paste token manually</string>
+    <string name="btidalpool_validating">Validating credentials…</string>
     <string name="btidalpool_paste_dialog_title">Paste BTIDALPOOL token</string>
     <string name="btidalpool_paste_dialog_subtitle">Open the link in your browser, finish Google sign-in, then copy the JSON token shown on the redirect page and paste it here.</string>
     <string name="btidalpool_paste_field_hint">{\"token\":\"…\",\"refresh_token\":\"…\"}</string>
