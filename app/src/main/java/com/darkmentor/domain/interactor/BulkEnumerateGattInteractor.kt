@@ -397,6 +397,7 @@ class BulkEnumerateGattInteractor(
                                 }
                             }
                             is BleScannerHelper.DeviceConnectResult.CharacteristicRead -> {
+                                var abortForVendor = false
                                 // GATT 0x2A00 ("Device Name", part of Generic Access service): when a peer
                                 // doesn't advertise a Local Name but exposes the GAP Device Name
                                 // characteristic, decode it and promote it into the device row's `name`
@@ -414,6 +415,14 @@ class BulkEnumerateGattInteractor(
                                         val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
                                         if (name.isNotEmpty()) {
                                             devicesRepository.setNameIfBetter(device.address, name)
+                                            // A Galaxy device that didn't advertise its "Galaxy" Local
+                                            // Name can only be recognised as Samsung once its GAP Device
+                                            // Name is read here. Honour Skip Samsung at this point too,
+                                            // otherwise it enumerates to completion and shows up as a
+                                            // connected "Galaxy ..." despite the toggle being on.
+                                            if (vendorIdentifier.shouldSkipByName(name, skipApple, skipSamsung)) {
+                                                abortForVendor = true
+                                            }
                                         }
                                     }.onFailure {
                                         Timber.tag(TAG).w(it, "Failed to decode 0x2A00 value for ${device.address}")
@@ -437,8 +446,18 @@ class BulkEnumerateGattInteractor(
                                         Timber.tag(TAG).w(it, "Failed to decode 0x2A29 value for ${device.address}")
                                     }
                                 }
-                                pendingChars = pendingChars.drop(1)
-                                gattRef?.let { startNextReadOrDisconnect(it) }
+                                if (abortForVendor) {
+                                    // Same teardown as the service-UUID vendor match above: flag it,
+                                    // discard the buffered GATT records, and disconnect (the Disconnected
+                                    // event ends collectUntil, giving the SKIPPED_VENDOR outcome below).
+                                    vendorMatched = true
+                                    Timber.tag(TAG).i("Vendor name seen on ${device.address}; aborting")
+                                    btidesRepository.markGattSessionForDiscard(device.address)
+                                    gattRef?.let { bleScannerHelper.disconnect(it) }
+                                } else {
+                                    pendingChars = pendingChars.drop(1)
+                                    gattRef?.let { startNextReadOrDisconnect(it) }
+                                }
                                 false
                             }
                             is BleScannerHelper.DeviceConnectResult.FailedReadCharacteristic -> {

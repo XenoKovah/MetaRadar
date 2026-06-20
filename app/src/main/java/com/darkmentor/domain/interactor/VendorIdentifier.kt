@@ -81,6 +81,16 @@ class VendorIdentifier(
     }
 
     /**
+     * Name-only vendor skip, used after a GATT 0x2A00 ("Device Name") read surfaces a name that
+     * wasn't present in the advertisement. Only Samsung has a name-based rule (the "Galaxy"
+     * brand) — Apple has no comparable name convention — so [skipApple] never matches here; it's
+     * accepted purely so the call site reads symmetrically with [shouldSkip] /
+     * [shouldSkipByServiceUuids].
+     */
+    fun shouldSkipByName(name: String?, skipApple: Boolean, skipSamsung: Boolean): Boolean =
+        skipSamsung && isSamsungLocalName(name)
+
+    /**
      * Same idea as [shouldSkip], but starting from raw advertisement bytes plus the BD address.
      * Used at scan-ingest time (before a [DeviceData] has been built) to decide whether the
      * current advertisement should be omitted from the BTIDES log when the user has Connect

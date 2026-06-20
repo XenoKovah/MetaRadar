@@ -77,6 +77,18 @@ class VendorIdentifierSamsungNameTest {
     }
 
     @Test
+    fun `shouldSkipByName skips a Galaxy GATT-read name only when skipSamsung is on`() {
+        // The post-connect GATT 0x2A00 path: a Galaxy device that didn't advertise its name is
+        // only recognisable as Samsung once the GAP Device Name characteristic is read.
+        assertTrue(identifier.shouldSkipByName("Galaxy S24", skipApple = false, skipSamsung = true))
+        assertFalse(identifier.shouldSkipByName("Galaxy S24", skipApple = false, skipSamsung = false))
+        // skipApple has no name rule; a non-Galaxy or null name is never name-skipped.
+        assertFalse(identifier.shouldSkipByName("Galaxy S24", skipApple = true, skipSamsung = false))
+        assertFalse(identifier.shouldSkipByName("Pixel 9 Pro", skipApple = true, skipSamsung = true))
+        assertFalse(identifier.shouldSkipByName(null, skipApple = true, skipSamsung = true))
+    }
+
+    @Test
     fun `shouldSkipByScanRecord detects Galaxy from a Complete Local Name frame`() {
         // [02 01 06] Flags, then [len, 0x09, <utf8>] Complete Local Name = "Galaxy Watch".
         val name = "Galaxy Watch".toByteArray(Charsets.UTF_8)
