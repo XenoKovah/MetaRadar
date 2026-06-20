@@ -793,9 +793,13 @@ class BTIDESRepository(
         strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
         sourceFile: File? = null,
-        // User GPS exclusion zones (BTIDALPOOL upload path only). Devices whose strongest-RSSI GPS
-        // is inside any zone are dropped. Default empty ⇒ every other caller is unaffected.
+        // User GPS exclusion zones (BTIDALPOOL upload path only). A device is dropped if ANY GPS
+        // coordinate it was ever seen at (via [exclusionCoordsLookup]) falls inside any zone — not
+        // just its strongest/uploaded sample. Default empty ⇒ every other caller is unaffected.
         exclusionZones: List<ExclusionZone> = emptyList(),
+        // All recorded (lat,lng) coordinates for a device, used only for the exclusion-zone check.
+        // Defaulted so non-upload callers (and tests) that don't set zones are unaffected.
+        exclusionCoordsLookup: suspend (String) -> List<Pair<Double, Double>> = { emptyList() },
     ): Int = withContext(Dispatchers.IO) {
         // Snapshot the log size at export start. Live capture continues writing past this
         // boundary; we just don't see those new records in the export. The previous design
@@ -842,12 +846,17 @@ class BTIDESRepository(
                     // failure or missing data is silently ignored (older detections pre-migration
                     // 21→22 have no RSSI; offline-mode users have no locations at all).
                     val strongest = runCatching { strongestRssiLookup(acc.bdaddr) }.getOrNull()
-                    // GPS upload-exclusion (privacy): if this device's strongest-RSSI sample — the
-                    // only coordinate we'd emit for it — falls inside any user exclusion zone, drop
-                    // the WHOLE device record. A device with no location can't be in a zone, so it's
-                    // kept. Empty zone list (every caller except the upload path) makes this a no-op.
-                    if (strongest != null && exclusionZones.any { it.contains(strongest.lat, strongest.lng) }) {
-                        continue
+                    // GPS upload-exclusion (privacy): drop the WHOLE device record if ANY coordinate
+                    // it was ever seen at — not just its strongest/uploaded sample — falls inside any
+                    // user exclusion zone. The device's presence ANYWHERE in a zone is what's
+                    // sensitive, so a stray weak-signal fix inside a zone excludes it even when its
+                    // strongest sample is elsewhere. A device with no recorded location can't be in a
+                    // zone, so it's kept. Empty zone list (every caller but the upload path) ⇒ no-op.
+                    if (exclusionZones.isNotEmpty()) {
+                        val coords = runCatching { exclusionCoordsLookup(acc.bdaddr) }.getOrNull().orEmpty()
+                        if (coords.any { (lat, lng) -> exclusionZones.any { it.contains(lat, lng) } }) {
+                            continue
+                        }
                     }
                     if (idx > 0) writer.write(",")
                     writer.write("\n  ")

@@ -68,6 +68,11 @@ class ExclusionZoneRealDataExportTest {
                 StrongestRssiLocation(lat = it.lat, lng = it.lng, rssi = it.rssi, timeMs = it.time)
             }
         }
+        // ALL recorded coordinates per device — exclusion now drops a device if ANY of these (not
+        // just the strongest) is inside a zone.
+        val coordsLookup: suspend (String) -> List<Pair<Double, Double>> = { addr ->
+            locationRepo.getAllLocationsByAddress(addr).map { it.lat to it.lng }
+        }
 
         // Find a real log with >= 4 GPS-tagged devices.
         var sourceLog: File? = null
@@ -97,13 +102,19 @@ class ExclusionZoneRealDataExportTest {
             ExclusionZone.Circle(b.lat, b.lon, radius),
             ExclusionZone.Square(c.lat, c.lon, radius),
         )
-        // Control: a captured GPS device outside every zone.
-        val control = gpsDevices.firstOrNull { d -> zones.none { it.contains(d.lat, d.lon) } }
-        assumeTrue("Need a GPS device outside all three zones as a control.", control != null)
+        // Control: a device EVERY recorded coordinate of which is outside all zones, so the
+        // any-coordinate rule must keep it.
+        var control: GpsDev? = null
+        for (d in gpsDevices) {
+            if (coordsLookup(d.bdaddr).none { (la, ln) -> zones.any { it.contains(la, ln) } }) {
+                control = d; break
+            }
+        }
+        assumeTrue("Need a GPS device with no coordinate in any zone as a control.", control != null)
 
         // Re-export the SAME log WITH the zones — exactly the file the upload path would build.
         val filtered = ByteArrayOutputStream()
-        btides.exportTo(filtered, lookup, null, sourceFile = sourceLog, exclusionZones = zones)
+        btides.exportTo(filtered, lookup, null, sourceFile = sourceLog, exclusionZones = zones, exclusionCoordsLookup = coordsLookup)
         val out = filtered.toString(Charsets.UTF_8.name())
 
         assertFalse("circle-zone device A (${a.bdaddr}) must be excluded from the upload file", out.contains(a.bdaddr))

@@ -13,11 +13,20 @@ class ExportBTIDESInteractor(
     private val settingsRepository: SettingsRepository,
 ) {
 
-    /** Per-device "strongest sample" lookup, passed into the export flow. */
+    /** Per-device "strongest sample" lookup, passed into the export flow (the uploaded coordinate). */
     private val strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { address ->
         locationRepository.getStrongestRssiLocation(address)?.let {
             StrongestRssiLocation(lat = it.lat, lng = it.lng, rssi = it.rssi, timeMs = it.time)
         }
+    }
+
+    /**
+     * All recorded (lat,lng) coordinates for a device — used for the GPS exclusion-zone check so a
+     * device is kept out of the upload if ANY coordinate it was seen at falls in a zone, not just
+     * its strongest/trilaterated one.
+     */
+    private val exclusionCoordsLookup: suspend (String) -> List<Pair<Double, Double>> = { address ->
+        locationRepository.getAllLocationsByAddress(address).map { it.lat to it.lng }
     }
 
     /**
@@ -60,6 +69,7 @@ class ExportBTIDESInteractor(
                 onProgress,
                 sourceFile = logFile,
                 exclusionZones = exclusionZones,
+                exclusionCoordsLookup = exclusionCoordsLookup,
             )
         }
     }
