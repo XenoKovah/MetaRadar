@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import com.darkmentor.R
 import com.darkmentor.data.helpers.LocationProvider
 import com.darkmentor.data.helpers.PermissionHelper
+import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.ui.devicedetails.MapConfig
 import com.darkmentor.ui.exclusionzones.ExclusionZonesViewModel.Mode
 import com.darkmentor.ui.exclusionzones.ExclusionZonesViewModel.ShapeKind
@@ -256,6 +257,7 @@ object ExclusionZonesScreen {
     private fun ExclusionMap(modifier: Modifier, onMapReady: (MapView) -> Unit) {
         val locationProvider = getKoin().get<LocationProvider>()
         val permissionHelper = getKoin().get<PermissionHelper>()
+        val locationRepository = getKoin().get<LocationRepository>()
         val scope = androidx.compose.runtime.rememberCoroutineScope()
         MapView(
             modifier = modifier,
@@ -268,16 +270,22 @@ object ExclusionZonesScreen {
                 // map is never stuck at whole-world min zoom while waiting for a live fix — which
                 // indoors can be slow or filtered out entirely (accuracy/freshness limits).
                 val allowed = permissionHelper.locationAllowed()
-                val seed = if (allowed) locationProvider.lastKnownLocation() else null
-                mapView.controller.setZoom(if (seed != null) MapConfig.DEFAULT_MAP_ZOOM else MapConfig.MIN_MAP_ZOOM)
-                if (seed != null) mapView.controller.setCenter(GeoPoint(seed))
-                if (allowed) {
-                    scope.launch {
-                        // Then request a fresh fix and refine the center once it arrives. fetchOnce()
-                        // must run BEFORE collect(): observeLocation() is a MutableStateFlow(null), so
-                        // collect() suspends until the first non-null location — the old code called
-                        // fetchOnce() *after* the collect, so nothing ever requested a fix and the map
-                        // sat at min zoom forever.
+                // Instant synchronous seed from the system's cached fix so the map never flashes
+                // whole-world while the recorded-location DB query runs.
+                val sysSeed = if (allowed) locationProvider.lastKnownLocation() else null
+                mapView.controller.setZoom(if (sysSeed != null) MapConfig.DEFAULT_MAP_ZOOM else MapConfig.MIN_MAP_ZOOM)
+                sysSeed?.let { mapView.controller.setCenter(GeoPoint(it)) }
+                scope.launch {
+                    // Default the camera to the user's LAST RECORDED GPS location — where they
+                    // actually collected data, which is where they'll want to draw exclusion zones.
+                    val recorded = locationRepository.getLastRecordedLocation()
+                    if (recorded != null) {
+                        mapView.controller.setZoom(MapConfig.DEFAULT_MAP_ZOOM)
+                        mapView.controller.setCenter(GeoPoint(recorded.lat, recorded.lng))
+                    } else if (allowed) {
+                        // Nothing recorded yet — request a live fix and center on the first one.
+                        // fetchOnce() must run BEFORE collect(): observeLocation() is a
+                        // MutableStateFlow(null), so collect() suspends until a non-null fix arrives.
                         locationProvider.fetchOnce()
                         locationProvider.observeLocation()
                             .filterNotNull()

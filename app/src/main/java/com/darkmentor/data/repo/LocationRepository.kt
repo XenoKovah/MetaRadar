@@ -83,6 +83,16 @@ class LocationRepository(
         }
     }
 
+    /**
+     * The most recently recorded GPS fix (max `time`), or null if none has ever been saved. Used
+     * to seed the exclusion-zone map on the place the user last collected data.
+     */
+    suspend fun getLastRecordedLocation(): LocationModel? {
+        return withContext(Dispatchers.IO) {
+            locationDao.getLatestLocation()?.toDomain()
+        }
+    }
+
     suspend fun removeAllLocations() {
         withContext(Dispatchers.IO) {
             locationDao.removeAllLocations()

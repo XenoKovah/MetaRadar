@@ -58,6 +58,9 @@ interface LocationDao {
     @Query("SELECT * FROM location")
     fun observeAllLocations(): Flow<List<LocationEntity>>
 
+    @Query("SELECT * FROM location ORDER BY time DESC LIMIT 1")
+    fun getLatestLocation(): LocationEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun saveLocation(locationEntity: LocationEntity)
 

@@ -222,7 +222,7 @@ class LocationProvider(
 
     private fun Location.isRelevant(oldLocation: Location?): Boolean {
         return oldLocation == null
-                || ((latitude != oldLocation.longitude || longitude != oldLocation.longitude)
+                || ((latitude != oldLocation.latitude || longitude != oldLocation.longitude)
                 && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && elapsedRealtimeAgeMillis <= ALLOWED_LOCATION_LIVETIME_MS)
                 && accuracy <= MAX_ALLOWED_ACCURACY_METERS)
     }
