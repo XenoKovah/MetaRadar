@@ -74,7 +74,7 @@ class ExclusionZonesViewModelTest {
 
         vm.onEditZone(0)
         assertEquals(0, (vm.mode as ExclusionZonesViewModel.Mode.Adjust).editIndex)
-        vm.onResizeDrag(123.0)
+        vm.onSizeChanged(123.0)
         vm.onSaveZone()
 
         assertEquals(1, vm.zones.size) // replaced, not appended
@@ -107,13 +107,13 @@ class ExclusionZonesViewModelTest {
     }
 
     @Test
-    fun `resize drag clamps to the min and max radius`() {
+    fun `size change clamps to the min and max radius`() {
         val vm = vm()
         vm.onAddShape(ExclusionZonesViewModel.ShapeKind.SQUARE, GeoPoint(0.0, 0.0))
 
-        vm.onResizeDrag(99_999.0)
+        vm.onSizeChanged(99_999.0)
         assertEquals(ExclusionZonesViewModel.MAX_ZONE_METERS, (vm.mode as ExclusionZonesViewModel.Mode.Adjust).sizeMeters, 0.0)
-        vm.onResizeDrag(0.5)
+        vm.onSizeChanged(0.5)
         assertEquals(ExclusionZonesViewModel.MIN_ZONE_METERS, (vm.mode as ExclusionZonesViewModel.Mode.Adjust).sizeMeters, 0.0)
     }
 
