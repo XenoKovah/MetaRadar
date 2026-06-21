@@ -20,9 +20,10 @@ import org.osmdroid.util.GeoPoint
 
 /**
  * Drives the "Create Upload Exclusion Zone" screen. Two modes: BROWSE (pan/zoom the map, search an
- * address, drop a new circle/square at the crosshair) and ADJUST (multi-touch disabled; drag to
- * resize the in-progress shape, then Save or Cancel). Up to [ExclusionZone.MAX_ZONES] zones, mirrored
- * in memory for instant overlay updates and persisted to [SettingsRepository] on every change.
+ * address, drop a new circle/square at the crosshair) and ADJUST (map frozen; a bottom "Size" slider
+ * resizes the in-progress shape around the fixed crosshair center, then Save or Cancel). Up to
+ * [ExclusionZone.MAX_ZONES] zones, mirrored in memory for instant overlay updates and persisted to
+ * [SettingsRepository] on every change.
  */
 class ExclusionZonesViewModel(
     private val context: Application,
@@ -86,9 +87,10 @@ class ExclusionZonesViewModel(
         settingsRepository.setExclusionZones(updated)
     }
 
-    fun onResizeDrag(distanceMeters: Double) {
+    /** Size slider moved: set the in-progress zone's radius / half-size (clamped MIN..MAX). */
+    fun onSizeChanged(sizeMeters: Double) {
         val adj = mode as? Mode.Adjust ?: return
-        mode = adj.copy(sizeMeters = distanceMeters.coerceIn(MIN_ZONE_METERS, MAX_ZONE_METERS))
+        mode = adj.copy(sizeMeters = sizeMeters.coerceIn(MIN_ZONE_METERS, MAX_ZONE_METERS))
     }
 
     fun onSaveZone() {

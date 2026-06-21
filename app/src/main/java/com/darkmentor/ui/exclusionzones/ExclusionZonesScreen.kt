@@ -1,7 +1,6 @@
 package com.darkmentor.ui.exclusionzones
 
-import android.view.MotionEvent
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -31,6 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,15 +41,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -64,6 +61,8 @@ import com.darkmentor.ui.exclusionzones.ExclusionZonesViewModel.Mode
 import com.darkmentor.ui.exclusionzones.ExclusionZonesViewModel.ShapeKind
 import com.darkmentor.ui.map.MapView
 import com.darkmentor.utils.navigation.Router
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
@@ -122,24 +121,18 @@ object ExclusionZonesScreen {
             ExclusionMap(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInteropFilter { event ->
-                        val m = map.value
-                        val adj = viewModel.mode as? Mode.Adjust
-                        if (m != null && adj != null) {
-                            if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
-                                val p = m.projection.fromPixels(event.x.toInt(), event.y.toInt())
-                                viewModel.onResizeDrag(adj.center.distanceToAsDouble(GeoPoint(p.latitude, p.longitude)))
-                            }
-                            true // consume — no pan/zoom while adjusting
-                        } else {
-                            false // browse — let osmdroid handle the gesture
-                        }
+                    .pointerInteropFilter { _ ->
+                        // ADJUST: the map is frozen (size comes from the Size slider, center is fixed
+                        // at the crosshair), so consume touches to block pan/zoom. BROWSE: let
+                        // osmdroid handle pan/zoom.
+                        viewModel.mode is Mode.Adjust
                     },
                 onMapReady = { map.value = it },
             )
 
-            // Center crosshair marks where a NEW zone will be placed (BROWSE only).
-            if (map.value != null && viewModel.mode is Mode.Browse) {
+            // Center crosshair marks the zone center — where a NEW zone is dropped (BROWSE) and the
+            // fixed center the in-progress shape is sized around (ADJUST). Always at screen center.
+            if (map.value != null) {
                 CenterCrosshair()
             }
 
@@ -176,6 +169,7 @@ object ExclusionZonesScreen {
                 AdjustBottomBar(
                     modifier = Modifier.align(Alignment.BottomCenter),
                     sizeMeters = (viewModel.mode as Mode.Adjust).sizeMeters,
+                    onSizeChange = { viewModel.onSizeChanged(it) },
                     onSave = { viewModel.onSaveZone() },
                     onCancel = { viewModel.onCancelAdjust() },
                 )
@@ -301,26 +295,25 @@ object ExclusionZonesScreen {
         )
     }
 
+    /** Targeting reticle centered on the map: a ring + center dot + four ticks, so it's clear the
+     *  zone is built around the EXACT center point (not the bottom of a pin). */
     @Composable
     private fun CenterCrosshair() {
+        val color = MaterialTheme.colorScheme.primary
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Box(
-                modifier = Modifier.size(width = 20.dp, height = 10.dp).blur(2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 10.dp, height = 5.dp)
-                        .background(color = Color.DarkGray, shape = RoundedCornerShape(10.dp)),
-                )
+            Canvas(modifier = Modifier.size(56.dp)) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val stroke = 2.5.dp.toPx()
+                val ring = size.minDimension * 0.28f
+                val gap = ring + 3.dp.toPx()
+                val end = size.minDimension / 2f
+                drawCircle(color = color, radius = ring, center = c, style = Stroke(width = stroke))
+                drawCircle(color = color, radius = 2.dp.toPx(), center = c)
+                drawLine(color, Offset(c.x, c.y - gap), Offset(c.x, c.y - end), strokeWidth = stroke)
+                drawLine(color, Offset(c.x, c.y + gap), Offset(c.x, c.y + end), strokeWidth = stroke)
+                drawLine(color, Offset(c.x - gap, c.y), Offset(c.x - end, c.y), strokeWidth = stroke)
+                drawLine(color, Offset(c.x + gap, c.y), Offset(c.x + end, c.y), strokeWidth = stroke)
             }
-            Image(
-                modifier = Modifier.height(60.dp).width(60.dp),
-                contentScale = ContentScale.FillWidth,
-                painter = painterResource(R.drawable.ic_location),
-                contentDescription = null,
-                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary),
-            )
         }
     }
 
@@ -379,12 +372,33 @@ object ExclusionZonesScreen {
     }
 
     @Composable
-    private fun AdjustBottomBar(modifier: Modifier, sizeMeters: Double, onSave: () -> Unit, onCancel: () -> Unit) {
-        Column(modifier = modifier.fillMaxWidth().padding(16.dp)) {
+    private fun AdjustBottomBar(
+        modifier: Modifier,
+        sizeMeters: Double,
+        onSizeChange: (Double) -> Unit,
+        onSave: () -> Unit,
+        onCancel: () -> Unit,
+    ) {
+        val minM = ExclusionZonesViewModel.MIN_ZONE_METERS
+        val maxM = ExclusionZonesViewModel.MAX_ZONE_METERS
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                .padding(16.dp),
+        ) {
             Text(
                 text = stringResource(R.string.exclusion_zones_size_label, sizeMeters.toInt()),
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
+            // Size slider: left = smallest (MIN_ZONE_METERS), right = largest (MAX). Exponential
+            // mapping so small house-sized zones get usable travel across the 10 m – 5 km range, and
+            // it lives at the bottom so a finger never covers the shape being sized.
+            Slider(
+                value = sizeFraction(sizeMeters, minM, maxM),
+                onValueChange = { onSizeChange(fractionToMeters(it, minM, maxM)) },
+                valueRange = 0f..1f,
             )
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -397,6 +411,14 @@ object ExclusionZonesScreen {
             }
         }
     }
+
+    /** Slider fraction [0,1] for [meters], exponential across [minM]..[maxM] (more travel for small sizes). */
+    private fun sizeFraction(meters: Double, minM: Double, maxM: Double): Float =
+        (ln(meters / minM) / ln(maxM / minM)).toFloat().coerceIn(0f, 1f)
+
+    /** Inverse of [sizeFraction]: slider fraction [f] → meters, exponential across [minM]..[maxM]. */
+    private fun fractionToMeters(f: Float, minM: Double, maxM: Double): Double =
+        (minM * (maxM / minM).pow(f.toDouble())).coerceIn(minM, maxM)
 
     // ---- osmdroid overlay helpers -------------------------------------------------------------
 
