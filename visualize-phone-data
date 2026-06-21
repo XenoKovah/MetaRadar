@@ -1,0 +1,1683 @@
+#!/usr/bin/env python3
+"""visualize-phone-data — pull device/GPS data + GPS exclusion zones off an
+attached XenoMetaRadar phone and visualize them on OpenStreetMap.
+
+The app stores, on the phone (app-private storage of the debug build
+``com.darkmentor.debug``):
+
+  * databases/app-database          Room SQLite DB with the `device`,
+                                    `location` and `device_to_location` tables.
+  * shared_prefs/app-prefs.xml      SharedPreferences; the GPS exclusion zones
+                                    live under the `key_exclusion_zones` key as
+                                    a JSON array of {circle|square} objects.
+
+This script copies those files off the phone *read-only* (``adb exec-out
+run-as <pkg> cat ...`` — it never writes to or wipes the device), reads them
+locally, then serves a single-page Leaflet/OpenStreetMap visualization from a
+local web server and opens it in your browser. Two views:
+
+  * "Raw data"                 — every GPS coordinate any device was seen at,
+                                 with the exclusion zones drawn as DOTTED
+                                 outlines (no fill).
+  * "Data after GPS exclusions"— the same map but every device that *ever* had
+                                 a coordinate inside any exclusion zone is
+                                 removed entirely; zones drawn as SOLID lines.
+
+Usage:
+    ./visualize-phone-data                       # auto-pick the only device
+    ./visualize-phone-data -s 1234ABCD     # choose a device by serial
+    ./visualize-phone-data -s P1                 # ...or by alias (device-aliases.json)
+    ./visualize-phone-data --no-serve --out viz.html   # just build the HTML
+    ./visualize-phone-data --db app-database --prefs app-prefs.xml  # offline
+
+Device aliases: put a JSON map of friendly-name -> serial in `device-aliases.json`
+next to this script, e.g. {"P1": "1234ABCD", "P2": "5678WXYZ"}. Then
+`-s P1` resolves to that serial (matching is case-insensitive).
+
+Requires: python3 (stdlib only), adb on PATH, and internet access (for the
+OpenStreetMap map tiles + the Leaflet library from a CDN).
+"""
+
+import argparse
+import base64
+import binascii
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import uuid as uuidlib
+import webbrowser
+import xml.etree.ElementTree as ET
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+# --- constants mirrored from the app -----------------------------------------
+DEFAULT_PACKAGE = "com.darkmentor.debug"
+DB_REL = "databases/app-database"
+PREFS_REL = "shared_prefs/app-prefs.xml"
+EXCLUSION_KEY = "key_exclusion_zones"
+# ExclusionZone.kt: Square containment uses these exact constants; we replicate
+# them so the drawn box == the hit-test, identical to the on-device code.
+METERS_PER_DEG_LAT = 111_320.0
+MIN_COS_LAT = 1e-6
+EARTH_R = 6_371_008.8  # mean Earth radius (m), for the circle distance test
+
+# Vendor identification — mirrors com.darkmentor.domain.interactor.VendorIdentifier
+# so "Hide Apple"/"Hide Samsung" classify devices exactly like the phone does.
+APPLE_COMPANY_ID = 0x004C
+SAMSUNG_COMPANY_ID = 0x0075
+ADDR_TYPE_PUBLIC = 0
+TYPE_MSD = 0xFF
+APPLE_SUBTYPE_IBEACON = 0x02  # Apple MSD submessage subtype for iBeacon (Blue2thprinting)
+AD_TYPE_SHORTENED_LOCAL_NAME = 0x08
+AD_TYPE_COMPLETE_LOCAL_NAME = 0x09
+SAMSUNG_NAME_PREFIX = "galaxy"
+SIG_BASE_SUFFIX = "-0000-1000-8000-00805f9b34fb"
+VENDOR_REGISTRY_REL = "app/src/main/java/com/darkmentor/domain/interactor/VendorRegistry.kt"
+CLUES_ASSET_REL = "app/src/main/assets/CLUES_data.json"
+
+# GATT/SDP hierarchy (read from the phone's BTIDES log, named via the app's SIG tables).
+BTIDES_REL = "files/btides/btides_log.jsonl"
+SIG_SERVICE_KT = "app/src/main/java/com/darkmentor/domain/interactor/GetServiceNameFromBluetoothService.kt"
+SIG_CHAR_KT = "app/src/main/java/com/darkmentor/domain/interactor/GetCharacteristicNameFromUUID.kt"
+GATT_PROPS = (
+    (0x01, "Broadcast"), (0x02, "Read"), (0x04, "WriteNoRsp"), (0x08, "Write"),
+    (0x10, "Notify"), (0x20, "Indicate"), (0x40, "SignedWrite"), (0x80, "ExtProps"),
+)
+
+# Advertisement (EIR/AD) parsing — mirrors ParseBleAdRecord.kt + Tell_Me_Everything.py.
+BLUETOOTH_SIG_KT = "app/src/main/java/com/darkmentor/data/helpers/BluetoothSIG.kt"
+AD_TYPE_NAMES = {
+    0x01: "Flags",
+    0x02: "Incomplete List of 16-bit Service UUIDs",
+    0x03: "Complete List of 16-bit Service UUIDs",
+    0x04: "Incomplete List of 32-bit Service UUIDs",
+    0x05: "Complete List of 32-bit Service UUIDs",
+    0x06: "Incomplete List of 128-bit Service UUIDs",
+    0x07: "Complete List of 128-bit Service UUIDs",
+    0x08: "Shortened Local Name", 0x09: "Complete Local Name",
+    0x0A: "TX Power Level", 0x0D: "Class of Device",
+    0x10: "Device ID", 0x12: "Peripheral Connection Interval Range",
+    0x14: "List of 16-bit Service Solicitation UUIDs",
+    0x15: "List of 128-bit Service Solicitation UUIDs",
+    0x16: "Service Data - 16-bit UUID",
+    0x17: "Public Target Address", 0x18: "Random Target Address",
+    0x19: "Appearance", 0x1A: "Advertising Interval",
+    0x1B: "LE Bluetooth Device Address", 0x1C: "LE Role",
+    0x1F: "List of 32-bit Service Solicitation UUIDs",
+    0x20: "Service Data - 32-bit UUID", 0x21: "Service Data - 128-bit UUID",
+    0x24: "URI", 0x30: "Broadcast Name", 0x3D: "3D Information Data",
+    0xFF: "Manufacturer Specific Data",
+}
+FLAG_BITS = (
+    (0x01, "LE Limited Discoverable Mode"), (0x02, "LE General Discoverable Mode"),
+    (0x04, "BR/EDR Not Supported"), (0x08, "Simultaneous LE and BR/EDR (Controller)"),
+    (0x10, "Simultaneous LE and BR/EDR (Host)"),
+)
+APPLE_MSD_SUBTYPES = {
+    0x01: "Overflow Area", 0x02: "iBeacon", 0x05: "AirDrop", 0x07: "AirPods",
+    0x09: "AirPlay Sink", 0x0A: "AirPlay Source", 0x0B: "Watch_C", 0x0C: "Handoff",
+    0x0D: "Tethering Source", 0x0E: "Tethering Target", 0x0F: "Nearby Action",
+    0x10: "Nearby Info", 0x12: "Find My",
+}
+URI_SCHEMES = {0x01: "", 0x15: "http:", 0x16: "https:", 0x17: "ftp:", 0x44: "tel:"}
+
+
+def die(msg):
+    print(f"visualize-phone-data: error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+# --- adb / device handling ---------------------------------------------------
+def adb_devices():
+    """Return list of (serial, model) for attached devices in `device` state."""
+    try:
+        out = subprocess.run(
+            ["adb", "devices", "-l"], capture_output=True, text=True, check=True
+        ).stdout
+    except FileNotFoundError:
+        die("`adb` not found on PATH. Install platform-tools or add adb to PATH.")
+    except subprocess.CalledProcessError as e:
+        die(f"`adb devices` failed: {e.stderr or e}")
+    devices = []
+    for line in out.splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            model = next(
+                (p.split(":", 1)[1] for p in parts if p.startswith("model:")), "?"
+            )
+            devices.append((parts[0], model))
+    return devices
+
+
+def load_aliases():
+    """Read friendly device-name -> serial mappings from `device-aliases.json`
+    next to this script (e.g. {"P1": "1234ABCD"}). Returns {} if absent."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "device-aliases.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        return {str(k): str(v) for k, v in raw.items()}
+    except (json.JSONDecodeError, OSError, AttributeError) as e:
+        print(f"[!] could not read {path}: {e} — ignoring aliases.")
+        return {}
+
+
+def resolve_serial(requested):
+    aliases = load_aliases()
+    if requested:
+        # Translate a friendly alias (case-insensitive) like "P1" to its serial.
+        for name, serial in aliases.items():
+            if name.lower() == requested.strip().lower():
+                print(f"[*] device alias {requested!r} -> {serial} (as {name})")
+                return serial
+        return requested  # not an alias — assume it's a literal serial
+    devs = adb_devices()
+    if not devs:
+        die("no devices in `device` state. Plug in / authorize a phone, or use --db/--prefs.")
+    if len(devs) == 1:
+        print(f"[*] using the only attached device: {devs[0][0]} ({devs[0][1]})")
+        return devs[0][0]
+    rev = {serial: name for name, serial in aliases.items()}
+    listing = "\n".join(
+        f"    {s}  ({m})" + (f"   [alias: {rev[s]}]" if s in rev else "") for s, m in devs
+    )
+    hint = next(iter(aliases), devs[0][0])  # suggest an alias if one is defined
+    die(
+        "multiple devices attached — pass -s/--serial to choose one:\n"
+        + listing
+        + f"\n  e.g.  ./visualize-phone-data -s {hint}"
+    )
+
+
+def pull_appfile(serial, package, relpath, dest, required):
+    """`adb exec-out run-as <pkg> cat <relpath>` -> dest (binary-safe). Returns
+    True on success. If `required` and it fails, exits with a helpful message."""
+    with open(dest, "wb") as fh:
+        p = subprocess.run(
+            ["adb", "-s", serial, "exec-out", "run-as", package, "cat", relpath],
+            stdout=fh,
+            stderr=subprocess.PIPE,
+        )
+    err = (p.stderr or b"").decode("utf-8", "replace").strip()
+    ok = p.returncode == 0 and os.path.getsize(dest) > 0
+    if not ok:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        if not required:
+            return False
+        hint = ""
+        if "not debuggable" in err or "unknown" in err or "run-as:" in err:
+            hint = (
+                f"\n  `run-as {package}` was refused. The app must be a *debuggable* "
+                "build installed under that exact package id.\n"
+                "  Check `adb -s %s shell pm list packages | grep darkmentor` and pass "
+                "--package if it differs." % serial
+            )
+        die(f"could not read {relpath} from {package} on {serial}: {err or 'empty output'}{hint}")
+    return True
+
+
+def pull_from_phone(serial, package, workdir):
+    """Pull the DB (+ -wal/-shm) and prefs into workdir. Returns (db, prefs)."""
+    print(f"[*] pulling data from {serial} ({package}) — read-only ...")
+    db_path = os.path.join(workdir, "app-database")
+    pull_appfile(serial, package, DB_REL, db_path, required=True)
+    # The Room DB runs in WAL mode; grab the sidecar files too so committed-but-
+    # not-yet-checkpointed rows are visible when we open the DB. Best-effort.
+    for suffix in ("-wal", "-shm"):
+        pull_appfile(
+            serial, package, DB_REL + suffix, db_path + suffix, required=False
+        )
+    prefs_path = os.path.join(workdir, "app-prefs.xml")
+    if not pull_appfile(serial, package, PREFS_REL, prefs_path, required=False):
+        print("[!] no app-prefs.xml found — assuming no exclusion zones are set.")
+        prefs_path = None
+    btides_path = os.path.join(workdir, "btides_log.jsonl")
+    if not pull_appfile(serial, package, BTIDES_REL, btides_path, required=False):
+        print("[!] no BTIDES log found — GATT/SDP hierarchy will be unavailable.")
+        btides_path = None
+    return db_path, prefs_path, btides_path
+
+
+# --- parsing -----------------------------------------------------------------
+def parse_exclusion_zones(prefs_path):
+    """Read the `key_exclusion_zones` JSON array out of the prefs XML."""
+    if not prefs_path or not os.path.exists(prefs_path):
+        return []
+    try:
+        root = ET.parse(prefs_path).getroot()
+    except ET.ParseError as e:
+        print(f"[!] could not parse {prefs_path}: {e} — assuming no zones.")
+        return []
+    for el in root.findall("string"):
+        if el.get("name") == EXCLUSION_KEY:
+            raw = (el.text or "").strip()  # ElementTree already decoded &quot;
+            if not raw:
+                return []
+            try:
+                zones = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(f"[!] exclusion-zones JSON is malformed: {e} — ignoring.")
+                return []
+            return [z for z in zones if z.get("type") in ("circle", "square")]
+    return []
+
+
+def load_device_points(db_path):
+    """Return {address: {address, label, name, manuf, points:[{lat,lng,...}]}}.
+
+    Points are deduped per-device by coordinate; `count` tallies how many
+    detections collapsed into each point."""
+    import sqlite3
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            """
+            SELECT dtl.device_address AS addr,
+                   l.lat  AS lat,
+                   l.lng  AS lng,
+                   l.time AS time,
+                   dtl.rssi AS rssi,
+                   d.name AS name,
+                   d.custom_name AS custom_name,
+                   d.manufacturer_name AS manuf
+            FROM device_to_location dtl
+            JOIN location l ON l.time = dtl.location_time
+            LEFT JOIN device d ON d.address = dtl.device_address
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    devices = {}
+    for r in rows:
+        if r["lat"] is None or r["lng"] is None:
+            continue
+        d = devices.get(r["addr"])
+        if d is None:
+            label = (r["custom_name"] or r["name"] or "").strip() or "(unnamed)"
+            d = {
+                "address": r["addr"],
+                "label": label,
+                "manuf": (r["manuf"] or "").strip(),
+                "points": {},
+            }
+            devices[r["addr"]] = d
+        key = (round(r["lat"], 7), round(r["lng"], 7))
+        pt = d["points"].get(key)
+        if pt is None:
+            d["points"][key] = {
+                "lat": r["lat"],
+                "lng": r["lng"],
+                "count": 1,
+                "best_rssi": r["rssi"],
+            }
+        else:
+            pt["count"] += 1
+            if r["rssi"] is not None and (
+                pt["best_rssi"] is None or r["rssi"] > pt["best_rssi"]
+            ):
+                pt["best_rssi"] = r["rssi"]
+    # flatten points dict -> list
+    for d in devices.values():
+        d["points"] = list(d["points"].values())
+    return devices
+
+
+# --- exclusion geometry (mirrors ExclusionZone.kt) ---------------------------
+def haversine_m(lat1, lng1, lat2, lng2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * EARTH_R * math.asin(min(1.0, math.sqrt(a)))
+
+
+def zone_contains(zone, lat, lng):
+    clat, clng = zone["centerLat"], zone["centerLng"]
+    if zone["type"] == "circle":
+        return haversine_m(clat, clng, lat, lng) <= zone["radiusMeters"]
+    if zone["type"] == "square":
+        half = zone["halfSizeMeters"]
+        d_lat = half / METERS_PER_DEG_LAT
+        cos_lat = max(math.cos(math.radians(clat)), MIN_COS_LAT)
+        d_lng = half / (METERS_PER_DEG_LAT * cos_lat)
+        return abs(lat - clat) <= d_lat and abs(lng - clng) <= d_lng
+    return False
+
+
+def mark_excluded(devices, zones):
+    """Per the spec: a device is excluded if ANY of its coordinates lies inside
+    ANY exclusion zone. (Note: the app's *upload* filter is narrower — it only
+    tests each device's single strongest-RSSI coordinate.) Each point is also
+    flagged with `in_zone` so the UI can show which coordinate(s) triggered it."""
+    for d in devices.values():
+        any_in = False
+        for p in d["points"]:
+            p["in_zone"] = any(zone_contains(z, p["lat"], p["lng"]) for z in zones)
+            any_in = any_in or p["in_zone"]
+        d["excluded"] = any_in
+
+
+# --- vendor classification (mirrors VendorIdentifier.kt) ---------------------
+def load_vendor_registry(repo_dir):
+    """Parse the Apple/Samsung OUI + UUID sets straight out of VendorRegistry.kt
+    so they stay in lockstep with the app instead of being hand-copied."""
+    reg = {k: set() for k in (
+        "apple_ouis", "samsung_ouis", "apple_uuid16", "samsung_uuid16",
+        "apple_clues", "samsung_clues")}
+    path = os.path.join(repo_dir, VENDOR_REGISTRY_REL)
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        print("[!] VendorRegistry.kt not found — OUI/UUID vendor matching disabled "
+              "(company-id + Galaxy-name still apply).")
+        return reg
+    # Each set is `val NAME: Set<...> = setOf( <hex ints | "uuid strings"> )`.
+    for m in re.finditer(r'val\s+(\w+)\s*:\s*Set<[^>]+>\s*=\s*setOf\((.*?)\n\s*\)', text, re.S):
+        name, body = m.group(1), m.group(2)
+        ints = {int(h, 16) for h in re.findall(r'0x[0-9A-Fa-f]+', body)}
+        strs = {s.lower() for s in re.findall(r'"([^"]*)"', body)}
+        if name == "APPLE_OUIS":
+            reg["apple_ouis"] = ints
+        elif name == "SAMSUNG_OUIS":
+            reg["samsung_ouis"] = ints
+        elif name == "APPLE_SIG_UUID16S":
+            reg["apple_uuid16"] = ints
+        elif name == "SAMSUNG_SIG_UUID16S":
+            reg["samsung_uuid16"] = ints
+        elif name == "APPLE_CLUES_UUIDS":
+            reg["apple_clues"] = strs
+        elif name == "SAMSUNG_CLUES_UUIDS":
+            reg["samsung_clues"] = strs
+    return reg
+
+
+def load_clues_companies(repo_dir):
+    """normalized-UUID -> lowercased company, from the bundled CLUES_data.json."""
+    out = {}
+    path = os.path.join(repo_dir, CLUES_ASSET_REL)
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    for e in data:
+        u = e.get("UUID")
+        if u:
+            out[u.lower().strip()] = (e.get("company") or "").lower()
+    return out
+
+
+def _decode_rde(rde):
+    if not rde:
+        return None
+    s = rde + "=" * (-len(rde) % 4)  # tolerate missing padding
+    try:
+        return base64.b64decode(s)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _parse_adv_frames(raw):
+    """`[len][type][data...]` EIR/AD frames; stop on any malformed frame."""
+    out = []
+    i, n = 0, len(raw)
+    while i < n:
+        length = raw[i]
+        if length == 0 or i + 1 + length > n:
+            break
+        out.append((raw[i + 1], raw[i + 2:i + 1 + length]))  # (type, data)
+        i += 1 + length
+    return out
+
+
+def _is_ibeacon(d):
+    return len(d) >= 4 and d[0] == 0x4C and d[1] == 0x00 and d[2] == 0x02 and d[3] == 0x15
+
+
+def _parse_ibeacon(frames):
+    """Extract iBeacon UUID/major/minor from the advertisement, or None.
+
+    Mirrors Blue2thprinting's scapy iBeacon layer (scapy/contrib/ibeacon.py): an Apple
+    (company id 0x004C) MSD frame is a sequence of submessages `[subtype][len][payload]`;
+    subtype 0x02 is iBeacon, whose payload is uuid(16, big-endian) + major(2) + minor(2)
+    + tx_power(1). Walks every submessage so an iBeacon after another submessage is found."""
+    for typ, data in frames:
+        if typ != TYPE_MSD or len(data) < 2:
+            continue
+        if ((data[0] & 0xFF) | ((data[1] & 0xFF) << 8)) != APPLE_COMPANY_ID:
+            continue
+        pos = 2
+        while pos + 2 <= len(data):
+            subtype = data[pos] & 0xFF
+            sublen = data[pos + 1] & 0xFF
+            payload = data[pos + 2:pos + 2 + sublen]
+            if subtype == APPLE_SUBTYPE_IBEACON and len(payload) >= 21:
+                tx = payload[20] - 256 if payload[20] >= 128 else payload[20]
+                return {
+                    "uuid": str(uuidlib.UUID(bytes=bytes(payload[0:16]))),  # big-endian
+                    "major": (payload[16] << 8) | payload[17],
+                    "minor": (payload[18] << 8) | payload[19],
+                    "tx_power": tx,
+                }
+            pos += 2 + sublen
+    return None
+
+
+def _read_uuids(data, size):
+    out, p = [], 0
+    while p + size <= len(data):
+        v = 0
+        for k in range(size):
+            v |= (data[p + k] & 0xFF) << (k * 8)
+        out.append(v)
+        p += size
+    return out
+
+
+def _bytes_to_uuid128(data, off):
+    be = bytes(data[off + 15 - k] for k in range(16))  # BLE wire is little-endian
+    return str(uuidlib.UUID(bytes=be)).lower()
+
+
+def _read_uuid128s(data):
+    out, p = [], 0
+    while p + 16 <= len(data):
+        out.append(_bytes_to_uuid128(data, p))
+        p += 16
+    return out
+
+
+def _le16(d, o):
+    return (d[o] & 0xFF) | ((d[o + 1] & 0xFF) << 8)
+
+
+def _le32(d, o):
+    return ((d[o] & 0xFF) | ((d[o + 1] & 0xFF) << 8)
+            | ((d[o + 2] & 0xFF) << 16) | ((d[o + 3] & 0xFF) << 24))
+
+
+def _extract_adv_uuids(frames):
+    out = []
+    for typ, data in frames:
+        t = typ & 0xFF
+        if t in (0x02, 0x03, 0x14):
+            out += ["%04x" % (v & 0xFFFF) for v in _read_uuids(data, 2)]
+        elif t in (0x04, 0x05, 0x1F):
+            out += ["%08x" % (v & 0xFFFFFFFF) for v in _read_uuids(data, 4)]
+        elif t in (0x06, 0x07, 0x15):
+            out += _read_uuid128s(data)
+        elif t == 0x16 and len(data) >= 2:
+            out.append("%04x" % (_le16(data, 0) & 0xFFFF))
+        elif t == 0x20 and len(data) >= 4:
+            out.append("%08x" % (_le32(data, 0) & 0xFFFFFFFF))
+        elif t == 0x21 and len(data) >= 16:
+            out.append(_bytes_to_uuid128(data, 0))
+    return out
+
+
+def _parse_local_name(frames):
+    data = None
+    for typ, d in frames:
+        if (typ & 0xFF) == AD_TYPE_COMPLETE_LOCAL_NAME:
+            data = d
+            break
+    if data is None:
+        for typ, d in frames:
+            if (typ & 0xFF) == AD_TYPE_SHORTENED_LOCAL_NAME:
+                data = d
+                break
+    if data is None:
+        return None
+    try:
+        s = data.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    return s or None
+
+
+def _short_uuid(u):
+    s = u.lower()
+    if len(s) == 4:
+        try:
+            return int(s, 16)
+        except ValueError:
+            return None
+    if len(s) == 36 and s.startswith("0000") and s.endswith(SIG_BASE_SUFFIX):
+        try:
+            return int(s[4:8], 16)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_oui(address):
+    parts = address.split(":")
+    if len(parts) < 3:
+        return -1
+    try:
+        return (int(parts[0], 16) << 16) | (int(parts[1], 16) << 8) | int(parts[2], 16)
+    except ValueError:
+        return -1
+
+
+def _identify(company_id, oui, uuids, msd_ids, local_name, reg, clues):
+    # 1. resolved manufacturer company id
+    if company_id == APPLE_COMPANY_ID:
+        return "apple"
+    if company_id == SAMSUNG_COMPANY_ID:
+        return "samsung"
+    # 2. any (non-iBeacon) MSD frame company id
+    for cid in msd_ids:
+        if cid == APPLE_COMPANY_ID:
+            return "apple"
+        if cid == SAMSUNG_COMPANY_ID:
+            return "samsung"
+    # 3. public-address OUI
+    if oui is not None:
+        if oui in reg["apple_ouis"]:
+            return "apple"
+        if oui in reg["samsung_ouis"]:
+            return "samsung"
+    # 4. advertised / discovered UUIDs (SIG member, CLUES set, then CLUES company)
+    for raw in uuids:
+        short = _short_uuid(raw)
+        if short is not None:
+            if short in reg["apple_uuid16"]:
+                return "apple"
+            if short in reg["samsung_uuid16"]:
+                return "samsung"
+        lo = raw.lower()
+        if lo in reg["apple_clues"]:
+            return "apple"
+        if lo in reg["samsung_clues"]:
+            return "samsung"
+        company = clues.get(lo.strip(), "")
+        if company.startswith("apple"):
+            return "apple"
+        if "samsung" in company:
+            return "samsung"
+    # 5. Samsung "Galaxy" advertised local name (Samsung-only signal, checked last)
+    if local_name and local_name.strip().lower().startswith(SAMSUNG_NAME_PREFIX):
+        return "samsung"
+    return None
+
+
+def classify_vendor(attr, reg, clues):
+    raw = _decode_rde(attr.get("row_data_encoded"))
+    frames = _parse_adv_frames(raw) if raw else []
+
+    adv_uuids = list(attr.get("service_uuids_list") or [])
+    adv_uuids += _extract_adv_uuids(frames)
+
+    # iBeacon carve-out: an Apple company id that only ever appears in iBeacon-shaped
+    # MSD frames (Tesla/Estimote/etc. also broadcast iBeacons) is not "Apple".
+    apple_non_ibeacon = any(
+        typ == TYPE_MSD and len(data) >= 2 and not _is_ibeacon(data)
+        and ((data[0] & 0xFF) | ((data[1] & 0xFF) << 8)) == APPLE_COMPANY_ID
+        for typ, data in frames
+    )
+    mid = attr.get("manufacturer_id")
+    company_id = None if (mid == APPLE_COMPANY_ID and not apple_non_ibeacon) else mid
+
+    msd_ids = [
+        (data[0] & 0xFF) | ((data[1] & 0xFF) << 8)
+        for typ, data in frames
+        if typ == TYPE_MSD and len(data) >= 2 and not _is_ibeacon(data)
+    ]
+    oui = _parse_oui(attr["address"]) if attr.get("system_address_type") == ADDR_TYPE_PUBLIC else None
+    return _identify(company_id, oui, adv_uuids, msd_ids, attr.get("name"), reg, clues)
+
+
+def load_device_attrs(db_path):
+    """Per-device fields the vendor classifier needs (keyed by MAC address)."""
+    import sqlite3
+
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT address, name, manufacturer_id, system_address_type, "
+            "service_uuids, row_data_encoded FROM device"
+        ).fetchall()
+    finally:
+        con.close()
+    out = {}
+    for r in rows:
+        su = r["service_uuids"]
+        su_list = [] if not su or not su.strip() else su.split(",")  # Converters.toStringList
+        out[r["address"]] = {
+            "address": r["address"],
+            "name": r["name"],
+            "manufacturer_id": r["manufacturer_id"],
+            "system_address_type": r["system_address_type"],
+            "service_uuids_list": su_list,
+            "row_data_encoded": r["row_data_encoded"],
+        }
+    return out
+
+
+def classify_vendors(devices, attrs, reg, clues):
+    for addr, d in devices.items():
+        a = attrs.get(addr)
+        if not a:
+            d["vendor"] = None
+            d["ibeacon"] = None
+            continue
+        d["vendor"] = classify_vendor(a, reg, clues)
+        raw = _decode_rde(a.get("row_data_encoded"))
+        frames = _parse_adv_frames(raw) if raw else []
+        d["ibeacon"] = _parse_ibeacon(frames)
+        # A device carrying Apple's company id (0x004C) but NOT classified as a genuine
+        # Apple device is just using the iBeacon advertising format, which is multi-vendor
+        # (Tesla, Govee, Estimote, ...). Relabel it "iBeacon" instead of "Apple, Inc." so it
+        # reads honestly — and so it's clear why "Hide Apple" (correctly) doesn't hide it.
+        carries_apple_id = (a.get("manufacturer_id") == APPLE_COMPANY_ID
+                            or d.get("manuf", "").lower().startswith("apple"))
+        if carries_apple_id and d["vendor"] != "apple":
+            d["manuf"] = "iBeacon"
+
+
+# --- GATT / SDP hierarchy (from the phone's BTIDES log) ----------------------
+def _parse_sig_map(path):
+    """Pull `"XXXX" to "Name"` pairs out of one of the app's hardcoded SIG tables."""
+    out = {}
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return out
+    for m in re.finditer(r'"([0-9A-Fa-f]{4})"\s*to\s*"((?:[^"\\]|\\.)*)"', text):
+        out[m.group(1).upper()] = m.group(2).encode().decode("unicode_escape")
+    return out
+
+
+def load_sig_name_tables(repo_dir):
+    return (_parse_sig_map(os.path.join(repo_dir, SIG_SERVICE_KT)),   # GATT services
+            _parse_sig_map(os.path.join(repo_dir, SIG_CHAR_KT)))      # GATT characteristics
+
+
+def load_clues_full(repo_dir):
+    """uuid(lower) -> {company, name, purpose} from CLUES_data.json (for UUID naming)."""
+    out = {}
+    try:
+        data = json.load(open(os.path.join(repo_dir, CLUES_ASSET_REL), encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    for e in data:
+        u = e.get("UUID")
+        if u:
+            out[u.lower().strip()] = {
+                "company": e.get("company"),
+                "name": e.get("UUID_name"),
+                "purpose": e.get("UUID_purpose"),
+            }
+    return out
+
+
+def _uuid16_hex(u):
+    """The 4-hex SIG short form of a UUID ("2A00"/"0000180a-...-base"), else None."""
+    s = _short_uuid(u)
+    return ("%04X" % s) if s is not None else None
+
+
+def resolve_uuid_name(uuid, sig_table, clues_full):
+    """Name precedence mirrors the app: SIG assigned-numbers, then CLUES, then None.
+    Returns (name, company)."""
+    h = _uuid16_hex(uuid)
+    name = sig_table.get(h) if h else None
+    info = clues_full.get(uuid.lower().strip())
+    if not name and info:
+        name = info.get("name")
+    company = info.get("company") if info else None
+    return name, company
+
+
+def _printable_text(b):
+    """UTF-8 decode iff the bytes look like text (the app's fallback for char values)."""
+    if not b:
+        return None
+    try:
+        s = b.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(c) < 0x20 and c not in "\t\r\n" for c in s):
+        return None
+    s = s.strip()
+    return s or None
+
+
+def _props_list(p):
+    return [label for bit, label in GATT_PROPS if p & bit]
+
+
+def _decode_char_value(cv):
+    """(text, '0x..HEX') for a characteristic's most recent ATT_READ_RSP value, or (None, None)."""
+    if not isinstance(cv, dict):
+        return None, None
+    io = cv.get("io_array")
+    if not isinstance(io, list):
+        return None, None
+    hexstr = None
+    for e in io:
+        if isinstance(e, dict) and "READ" in (e.get("io_type_str") or "").upper():
+            v = e.get("value_hex_str")
+            if v:
+                hexstr = v  # keep the last READ response
+    if not hexstr:
+        return None, None
+    try:
+        b = bytes.fromhex(hexstr)
+    except ValueError:
+        b = None
+    return _printable_text(b), "0x" + hexstr.upper()
+
+
+def _hkey(k):
+    return k if isinstance(k, int) else (1 << 62)  # sort handles asc; Nones last
+
+
+def _iter_btides_records(path):
+    """Yield BTIDES device records from either the live JSONL log (one object per line) or a
+    pretty-printed `.btides` archive (a single JSON array of the same objects)."""
+    try:
+        text = open(path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return
+    if text.lstrip().startswith("["):
+        try:
+            records = json.loads(text)
+        except json.JSONDecodeError:
+            records = []
+        for rec in records:
+            if isinstance(rec, dict):
+                yield rec
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+
+def load_gatt(btides_path, sig_svc, sig_char, clues_full):
+    """Parse the BTIDES log into {BDADDR: [service, ...]} with UUIDs named.
+
+    A device is enumerated across MANY `GATTArray` records (a structure-only first pass,
+    then later passes that carry the read values), so this MERGES all records per device:
+    services keyed by begin-handle, characteristics by value-handle, taking the latest read
+    value, OR-ing properties, and unioning descriptors. Mirrors how the app's BTIDES cache
+    accumulates a device's GATT before DeviceDetailsViewModel renders it."""
+    raw = {}  # addr -> {svc_handle: {"uuid", "chars": {char_handle: {...}}}}
+    if not btides_path or not os.path.exists(btides_path):
+        return {}
+    for rec in _iter_btides_records(btides_path):
+        ga = rec.get("GATTArray")
+        if ga and (rec.get("bdaddr")):
+            dev = raw.setdefault(rec["bdaddr"].upper(), {})
+            for s in ga:
+                svc = dev.setdefault(s.get("begin_handle"),
+                                     {"uuid": s.get("UUID", ""), "chars": {}})
+                for c in s.get("characteristics", []):
+                    ch = svc["chars"].setdefault(
+                        c.get("value_handle"),
+                        {"uuid": c.get("value_uuid", ""), "props": 0, "cv": None, "descs": {}})
+                    ch["props"] |= c.get("properties", 0)
+                    if c.get("char_value"):
+                        ch["cv"] = c["char_value"]  # a later read pass wins
+                    for de in c.get("descriptors", []):
+                        ch["descs"].setdefault(de.get("handle"), de)
+
+    out = {}
+    for addr, dev in raw.items():
+        services = []
+        for sk in sorted(dev, key=_hkey):
+            svc = dev[sk]
+            s_name, s_company = resolve_uuid_name(svc["uuid"], sig_svc, clues_full)
+            chars = []
+            for ck in sorted(svc["chars"], key=_hkey):
+                ch = svc["chars"][ck]
+                c_name, c_company = resolve_uuid_name(ch["uuid"], sig_char, clues_full)
+                text, hex_str = _decode_char_value(ch["cv"])
+                descs = []
+                for dk in sorted(ch["descs"], key=_hkey):
+                    de = ch["descs"][dk]
+                    ud = de.get("user_description_hex_str")
+                    descs.append({
+                        "uuid": de.get("UUID", ""),
+                        "type": de.get("type_str") or "",
+                        "user_desc": _printable_text(bytes.fromhex(ud)) if ud else None,
+                    })
+                chars.append({
+                    "uuid": ch["uuid"], "name": c_name, "company": c_company,
+                    "props": _props_list(ch["props"]),
+                    "value": text, "hex": hex_str, "descriptors": descs,
+                })
+            services.append({"uuid": svc["uuid"], "name": s_name,
+                             "company": s_company, "chars": chars})
+        out[addr] = services
+    return out
+
+
+def attach_gatt(devices, attrs, gatt_by_addr, sig_svc, clues_full):
+    """Give each device its GATT services (enumerated) plus any advertised service UUIDs
+    not already enumerated (shown as bare service rows, like the phone's merge)."""
+    for addr, d in devices.items():
+        enumerated = gatt_by_addr.get(addr, [])
+        d["has_gatt"] = bool(enumerated)  # actually connected + read a GATT table
+        services = [dict(s) for s in enumerated]
+        present = {(_uuid16_hex(s["uuid"]) or s["uuid"].lower()) for s in services}
+        for u in (attrs.get(addr, {}).get("service_uuids_list") or []):
+            k = _uuid16_hex(u) or u.lower()
+            if k and k not in present:
+                name, company = resolve_uuid_name(u, sig_svc, clues_full)
+                services.append({"uuid": u, "name": name, "company": company,
+                                 "chars": [], "advertised": True})
+                present.add(k)
+        d["gatt"] = services
+
+
+# --- advertisement (EIR/AD) parsing ------------------------------------------
+def load_company_ids(repo_dir):
+    """16-bit company id -> name, parsed from the app's BluetoothSIG.kt table."""
+    out = {}
+    try:
+        text = open(os.path.join(repo_dir, BLUETOOTH_SIG_KT), encoding="utf-8").read()
+    except OSError:
+        return out
+    for m in re.finditer(r'0x([0-9A-Fa-f]+)\s*to\s*"((?:[^"\\]|\\.)*)"', text):
+        out[int(m.group(1), 16) & 0xFFFF] = m.group(2).encode().decode("unicode_escape")
+    return out
+
+
+def _hexstr(b):
+    return ("0x" + b.hex().upper()) if b else ""
+
+
+def _named_uuid(u, sig_svc, clues_full):
+    name, _ = resolve_uuid_name(u, sig_svc, clues_full)
+    return {"uuid": u, "name": name}
+
+
+def _decode_uri(data):
+    if not data:
+        return ""
+    prefix = URI_SCHEMES.get(data[0], "[scheme 0x%02X]" % data[0] if data[0] not in URI_SCHEMES else "")
+    return prefix + (_printable_text(data[1:]) or _hexstr(data[1:]))
+
+
+def _parse_msd(data, company_ids):
+    """Manufacturer-Specific Data: company name + raw hex, and Apple Continuity/iBeacon decode."""
+    if len(data) < 2:
+        return {"hex": _hexstr(data)}
+    cid = (data[0] & 0xFF) | ((data[1] & 0xFF) << 8)
+    rows = [["Company", "%s (0x%04X)" % (company_ids.get(cid, "Unknown"), cid)]]
+    if cid == APPLE_COMPANY_ID:
+        subs, pos = [], 2
+        while pos + 2 <= len(data):
+            st, sl = data[pos], data[pos + 1]
+            subs.append(APPLE_MSD_SUBTYPES.get(st, "Subtype 0x%02X" % st))
+            pos += 2 + sl
+        if subs:
+            rows.append(["Apple submessages", ", ".join(subs)])
+        ib = _parse_ibeacon([(TYPE_MSD, data)])
+        if ib:
+            rows += [["iBeacon UUID", ib["uuid"]], ["Major", str(ib["major"])],
+                     ["Minor", str(ib["minor"])], ["TX Power", "%d dBm" % ib["tx_power"]]]
+    return {"rows": rows, "hex": _hexstr(data[2:])}
+
+
+def parse_advertisement(rde, sig_svc, clues_full, company_ids):
+    """Parse the raw advertisement bytes into labeled AD records, like the phone /
+    Tell_Me_Everything.py. Each record is {name, ...} where the extra keys depend on type:
+    `bits`/`hex` (Flags), `uuids` (UUID lists & service data), `text` (names/URI),
+    `rows` (key/value pairs, incl. MSD company + Apple/iBeacon), `hex` (raw bytes)."""
+    raw = _decode_rde(rde)
+    if not raw:
+        return []
+    out = []
+    for typ, data in _parse_adv_frames(raw):
+        t = typ & 0xFF
+        rec = {"name": AD_TYPE_NAMES.get(t, "AD Type 0x%02X" % t)}
+        if t == 0x01:
+            f = data[0] if data else 0
+            rec["hex"] = "0x%02X" % f
+            rec["bits"] = [label for bit, label in FLAG_BITS if f & bit]
+        elif t in (0x02, 0x03, 0x14):
+            rec["uuids"] = [_named_uuid("%04x" % v, sig_svc, clues_full) for v in _read_uuids(data, 2)]
+        elif t in (0x04, 0x05, 0x1F):
+            rec["uuids"] = [_named_uuid("%08x" % v, sig_svc, clues_full) for v in _read_uuids(data, 4)]
+        elif t in (0x06, 0x07, 0x15):
+            rec["uuids"] = [_named_uuid(u, sig_svc, clues_full) for u in _read_uuid128s(data)]
+        elif t in (0x08, 0x09, 0x30):
+            rec["text"] = _printable_text(data) or _hexstr(data)
+        elif t == 0x0A and data:
+            rec["rows"] = [["Power", "%d dBm" % (data[0] - 256 if data[0] >= 128 else data[0])]]
+        elif t == 0x19 and len(data) >= 2:
+            rec["rows"] = [["Value", "0x%04X" % _le16(data, 0)]]
+        elif t == 0x16 and len(data) >= 2:
+            rec["uuids"] = [_named_uuid("%04x" % _le16(data, 0), sig_svc, clues_full)]
+            rec["hex"] = _hexstr(data[2:])
+        elif t == 0x20 and len(data) >= 4:
+            rec["uuids"] = [_named_uuid("%08x" % _le32(data, 0), sig_svc, clues_full)]
+            rec["hex"] = _hexstr(data[4:])
+        elif t == 0x21 and len(data) >= 16:
+            rec["uuids"] = [_named_uuid(_bytes_to_uuid128(data, 0), sig_svc, clues_full)]
+            rec["hex"] = _hexstr(data[16:])
+        elif t == 0x24:
+            rec["text"] = _decode_uri(data)
+        elif t == 0xFF:
+            rec.update(_parse_msd(data, company_ids))
+        else:
+            rec["hex"] = _hexstr(data)
+        out.append(rec)
+    return out
+
+
+def attach_adv(devices, attrs, sig_svc, clues_full, company_ids):
+    for addr, d in devices.items():
+        d["adv"] = parse_advertisement(
+            attrs.get(addr, {}).get("row_data_encoded"), sig_svc, clues_full, company_ids)
+
+
+# --- HTML --------------------------------------------------------------------
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XenoMetaRadar — Phone Data</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+  #header { background: #1f2933; color: #fff; padding: 8px 12px; flex: none; }
+  #tabs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tab { background: #3e4c59; color: #cbd2d9; border: 0; padding: 8px 14px;
+         font-size: 14px; border-radius: 6px 6px 0 0; cursor: pointer; }
+  .tab.active { background: #fff; color: #1f2933; font-weight: 600; }
+  .spacer { flex: 1 1 12px; }
+  .vtoggle { color: #cbd2d9; font-size: 13px; cursor: pointer; user-select: none;
+             display: inline-flex; align-items: center; gap: 4px; }
+  .vtoggle input { cursor: pointer; margin: 0; }
+  #info { font-size: 12.5px; color: #cbd2d9; margin-top: 6px; line-height: 1.5; }
+  #info b { color: #fff; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+            vertical-align: middle; margin: 0 3px 2px 10px; }
+  .hint { color: #9aa5b1; margin-left: 6px; }
+  #map { flex: 1 1 auto; }
+  .leaflet-popup-content { font-size: 12.5px; }
+  /* Draggable info panel (replaces the anchored popup so it can be moved off points). */
+  #infopanel { position: absolute; z-index: 1500; width: 320px; top: 90px; right: 16px;
+    background: #fff; border-radius: 8px; box-shadow: 0 3px 16px rgba(0,0,0,.35);
+    font-size: 12.5px; overflow: hidden; display: none;
+    flex-direction: column; resize: both;             /* drag bottom-right corner to resize */
+    min-width: 230px; min-height: 130px; max-width: 92vw; max-height: 88vh; }
+  /* visible grip hint at the resize corner (decorative; native resize handle does the work) */
+  #infopanel::after { content: ""; position: absolute; right: 2px; bottom: 2px;
+    width: 12px; height: 12px; pointer-events: none; opacity: 0.5;
+    background: linear-gradient(135deg, transparent 44%, #5b6772 44% 52%, transparent 52% 66%,
+      #5b6772 66% 74%, transparent 74%); }
+  #infopanel-bar { background: #1f2933; color: #fff; padding: 6px 6px 6px 10px;
+    cursor: move; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  #infopanel-title { font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  #infopanel-grip { color: #7b8794; font-size: 12px; }
+  #infopanel-close { background: transparent; border: 0; color: #cbd2d9; font-size: 18px;
+    line-height: 1; cursor: pointer; padding: 0 4px; }
+  #infopanel-close:hover { color: #fff; }
+  #infopanel-body { padding: 8px 10px; flex: 1 1 auto; overflow-y: auto; }
+  /* Stacked-point chooser (when several points sit under the cursor). */
+  .chooser { max-height: 250px; overflow-y: auto; margin: 0 -4px; }
+  .choice { display: flex; align-items: flex-start; gap: 6px; padding: 5px 6px;
+    border-radius: 5px; cursor: pointer; }
+  .choice:hover { background: #eef2f6; }
+  .cdot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 3px; }
+  .cmain { line-height: 1.3; }
+  .csub { color: #777; font-size: 11px; }
+  .ventag { font-size: 10px; background: #e4e7eb; color: #3e4c59; border-radius: 3px;
+    padding: 0 4px; text-transform: capitalize; }
+  .choosehint { color: #999; font-size: 11px; margin-top: 6px; }
+  .backlink { color: #2c7fb8; text-decoration: none; font-size: 12px; cursor: pointer; }
+  .backlink:hover { text-decoration: underline; }
+  /* GATT/SDP hierarchy (collapsible service -> characteristic -> descriptor tree). */
+  details.gatt { margin-top: 6px; }
+  details.gatt > summary { cursor: pointer; font-weight: 600; color: #1f2933; }
+  details.svc { margin: 3px 0; border-left: 3px solid #41a7d6; padding: 2px 0 2px 6px;
+    background: #eef6fb; border-radius: 0 4px 4px 0; }
+  details.svc > summary { cursor: pointer; word-break: break-all; }
+  .gatt .char { margin: 4px 0 4px 8px; border-left: 3px solid #66bb6a; padding: 2px 6px;
+    background: #eef7ee; border-radius: 0 4px 4px 0; }
+  .gatt .charhead { font-weight: 600; word-break: break-all; }
+  .gatt .company { color: #555; }
+  .gatt .props { color: #2c7fb8; font-size: 11px; }
+  .gatt .val { word-break: break-word; }
+  .gatt .hex { color: #888; font-size: 11px; word-break: break-all; }
+  .gatt .desc { color: #777; font-size: 11px; margin: 1px 0 1px 8px; word-break: break-all; }
+  .gatt .muted { color: #999; font-size: 11px; }
+  .gatt .advtag, .gatt .untag { font-size: 10px; background: #e4e7eb; color: #3e4c59;
+    border-radius: 3px; padding: 0 4px; font-weight: 400; }
+  .gatt .advrec { margin: 3px 0; border-left: 3px solid #b388d6; padding: 2px 6px;
+    background: #f4eefb; border-radius: 0 4px 4px 0; }
+  .gatt .advname { font-weight: 600; }
+  .gatt .advuuid { word-break: break-all; margin-left: 4px; }
+  .gatt .advkv { word-break: break-word; }
+  .gatt .advk { color: #555; }
+  .nogatt { color: #777; font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="header">
+    <div id="tabs">
+      <button id="tab-raw" class="tab active" onclick="showView('raw')">Raw data</button>
+      <button id="tab-filtered" class="tab" onclick="showView('filtered')">Data after GPS exclusions</button>
+      <span class="spacer"></span>
+      <label class="vtoggle"><input type="checkbox" id="hide-apple" onchange="onVendorToggle()"> Hide Apple (<span id="n-apple">0</span>)</label>
+      <label class="vtoggle"><input type="checkbox" id="hide-samsung" onchange="onVendorToggle()"> Hide Samsung (<span id="n-samsung">0</span>)</label>
+      <label class="vtoggle"><input type="checkbox" id="has-gatt" onchange="onVendorToggle()"> Has GATT (<span id="n-gatt">0</span>)</label>
+    </div>
+    <div id="info"></div>
+  </div>
+  <div id="map"></div>
+  <div id="infopanel">
+    <div id="infopanel-bar">
+      <span id="infopanel-grip">✥</span>
+      <span id="infopanel-title">Device</span>
+      <button id="infopanel-close" onclick="hidePanel()" title="Close">&times;</button>
+    </div>
+    <div id="infopanel-body"></div>
+  </div>
+</div>
+<script>
+const DATA = __DATA_JSON__;
+
+const map = L.map('map', { preferCanvas: true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+const rawPoints = L.layerGroup();
+const filteredPoints = L.layerGroup();
+const rawZones = L.layerGroup();
+const filteredZones = L.layerGroup();
+
+const bounds = [];
+
+function deviceInfoHtml(d, p) {
+  const total = d.points.length;
+  const inZone = d.points.filter(q => q.in_zone).length;
+  let h = '';
+  if (d.label && d.label !== '(unnamed)') h += escapeHtml(d.label) + '<br>';
+  if (d.manuf) h += '<i>' + escapeHtml(d.manuf) + '</i><br>';
+  if (d.ibeacon) {
+    h += '<span style="color:#777;font-size:11px">iBeacon UUID ' + escapeHtml(d.ibeacon.uuid)
+       + '<br>major ' + d.ibeacon.major + ' · minor ' + d.ibeacon.minor + '</span><br>';
+  }
+  h += p.count + ' detection' + (p.count === 1 ? '' : 's') + ' at this point';
+  if (p.best_rssi !== null && p.best_rssi !== undefined) h += '<br>best RSSI: ' + p.best_rssi + ' dBm';
+  h += '<hr style="border:0;border-top:1px solid #ddd;margin:5px 0">';
+  h += '<b>' + total + '</b> GPS coordinate' + (total === 1 ? '' : 's') + ' for this device';
+  if (inZone > 0) {
+    h += '<br><span style="color:#c0392b">' + inZone + ' inside an exclusion zone &rarr; excluded</span>';
+  } else {
+    h += '<br><span style="color:#157f3b">none inside a zone</span>';
+  }
+  h += '<br><span style="color:#777;font-size:11px">highlighted on map — orange ring = this device, '
+     + 'red ring = coordinate in a zone</span>';
+  h += '<hr style="border:0;border-top:1px solid #ddd;margin:5px 0">';
+  h += renderAdv(d);
+  h += '<hr style="border:0;border-top:1px solid #ddd;margin:5px 0">';
+  h += renderGatt(d);
+  return h;
+}
+
+// Advertisement (EIR/AD) records — parsed like the phone / Tell_Me_Everything.py (in Python).
+function renderAdv(d) {
+  if (!d.adv || !d.adv.length) return '<div class="nogatt">No advertisement data.</div>';
+  let h = '<details class="gatt"><summary>Advertisement — ' + d.adv.length + ' record'
+        + (d.adv.length === 1 ? '' : 's') + '</summary>';
+  d.adv.forEach(r => {
+    h += '<div class="advrec"><div class="advname">' + escapeHtml(r.name) + '</div>';
+    if (r.bits) {
+      h += '<div class="props">' + escapeHtml(r.hex || '')
+         + (r.bits.length ? ' — ' + r.bits.map(escapeHtml).join(', ') : '') + '</div>';
+    }
+    if (r.text) h += '<div class="val">' + escapeHtml(r.text) + '</div>';
+    (r.uuids || []).forEach(u => { h += '<div class="advuuid">' + uuidTitle(u) + '</div>'; });
+    (r.rows || []).forEach(kv => {
+      h += '<div class="advkv"><span class="advk">' + escapeHtml(kv[0]) + ':</span> '
+         + escapeHtml(kv[1]) + '</div>';
+    });
+    if (r.hex && !('bits' in r)) h += '<div class="hex">' + escapeHtml(r.hex) + '</div>';
+    h += '</div>';
+  });
+  h += '</details>';
+  return h;
+}
+
+// GATT/SDP hierarchy — UUID names come from the app's SIG tables + CLUES (resolved in Python).
+function uuidTitle(x) {
+  return '<b>' + escapeHtml(x.uuid) + '</b> — '
+    + (x.name ? escapeHtml(x.name) : '<span class="untag">Unknown</span>');
+}
+function descLine(de) {
+  const t = (de.type || ('Descriptor ' + de.uuid)).replace(/^Characteristic Descriptor:\s*/, '');
+  let s = '↳ ' + escapeHtml(de.uuid) + ' — ' + escapeHtml(t);
+  if (de.user_desc) s += ': ' + escapeHtml(de.user_desc);
+  return '<div class="desc">' + s + '</div>';
+}
+function renderGatt(d) {
+  if (!d.gatt || !d.gatt.length) {
+    return '<div class="nogatt">No GATT or SDP data captured for this device.</div>';
+  }
+  const enumerated = d.gatt.some(s => !s.advertised);
+  let h = '<details class="gatt"><summary>GATT — ' + d.gatt.length + ' service'
+        + (d.gatt.length === 1 ? '' : 's') + (enumerated ? '' : ' (advertised only)') + '</summary>';
+  d.gatt.forEach(s => {
+    h += '<details class="svc"><summary>' + uuidTitle(s)
+       + (s.advertised ? ' <span class="advtag">advertised</span>' : '') + '</summary>';
+    if (s.company) h += '<div class="company">' + escapeHtml(s.company) + '</div>';
+    if (!s.chars || !s.chars.length) {
+      h += '<div class="muted">' + (s.advertised ? 'not enumerated' : 'no characteristics') + '</div>';
+    } else {
+      s.chars.forEach(c => {
+        h += '<div class="char"><div class="charhead">' + uuidTitle(c) + '</div>';
+        if (c.company) h += '<div class="company">' + escapeHtml(c.company) + '</div>';
+        if (c.props && c.props.length) h += '<div class="props">' + c.props.join(' · ') + '</div>';
+        if (c.value) h += '<div class="val">value: ' + escapeHtml(c.value) + '</div>';
+        if (c.hex) h += '<div class="hex">' + escapeHtml(c.hex) + '</div>';
+        (c.descriptors || []).forEach(de => { h += descLine(de); });
+        h += '</div>';
+      });
+    }
+    h += '</details>';
+  });
+  h += '</details>';
+  return h;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+// --- highlight: a clicked device's full set of coordinates ------------------
+// Drawn non-interactively on top so it never steals clicks from the points
+// underneath. Red ring = that coordinate is inside an exclusion zone.
+const highlightLayer = L.layerGroup().addTo(map);
+let markerClicked = false;
+let hideApple = false, hideSamsung = false, hasGattOnly = false, currentView = 'raw';
+
+function highlightDevice(d, hub, fit = true) {
+  highlightLayer.clearLayers();
+  d.points.forEach(p => {
+    if (hub && (p.lat !== hub[0] || p.lng !== hub[1])) {
+      highlightLayer.addLayer(L.polyline([hub, [p.lat, p.lng]], {
+        color: '#f39c12', weight: 1.5, opacity: 0.7, dashArray: '4 4', interactive: false
+      }));
+    }
+    highlightLayer.addLayer(L.circleMarker([p.lat, p.lng], {
+      radius: 8, weight: 3, fill: false, interactive: false,
+      color: p.in_zone ? '#c0392b' : '#f39c12'
+    }));
+  });
+  highlightLayer.eachLayer(l => l.bringToFront && l.bringToFront());
+  // Only pan/zoom-out if some of this device's coordinates are off-screen, so a
+  // device you can already see fully doesn't make the map jump.
+  const b = L.latLngBounds(d.points.map(p => [p.lat, p.lng]));
+  if (fit && !map.getBounds().contains(b)) map.fitBounds(b, { padding: [60, 60], maxZoom: map.getZoom() });
+}
+
+// Click empty map to clear; the guard stops a point-click from also clearing.
+map.on('click', () => { if (!markerClicked) { highlightLayer.clearLayers(); hidePanel(); } });
+
+// --- draggable info panel (replaces the anchored popup so it can be dragged off points) ---
+const panel = document.getElementById('infopanel');
+
+function showPanel(title, html) {
+  document.getElementById('infopanel-title').textContent = title;
+  document.getElementById('infopanel-body').innerHTML = html;
+  if (!panel.dataset.moved) {  // default spot until the user drags it; then keep their spot
+    panel.style.top = (document.getElementById('header').offsetHeight + 12) + 'px';
+    panel.style.left = 'auto';
+    panel.style.right = '16px';
+  }
+  panel.style.display = 'flex';
+}
+function hidePanel() { panel.style.display = 'none'; }
+
+(function makePanelDraggable() {
+  const bar = document.getElementById('infopanel-bar');
+  let drag = null;
+  bar.addEventListener('mousedown', e => {
+    if (e.target.id === 'infopanel-close') return;
+    panel.dataset.moved = '1';
+    drag = { x: e.clientX, y: e.clientY, left: panel.offsetLeft, top: panel.offsetTop };
+    panel.style.right = 'auto';  // switch from right-anchored to free left/top
+    panel.style.left = panel.offsetLeft + 'px';
+    panel.style.top = panel.offsetTop + 'px';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const app = document.getElementById('app').getBoundingClientRect();
+    const nl = Math.max(0, Math.min(drag.left + e.clientX - drag.x, app.width - panel.offsetWidth));
+    const nt = Math.max(0, Math.min(drag.top + e.clientY - drag.y, app.height - panel.offsetHeight));
+    panel.style.left = nl + 'px';
+    panel.style.top = nt + 'px';
+  });
+  document.addEventListener('mouseup', () => { drag = null; });
+})();
+
+// --- stacked-point selection -------------------------------------------------
+// Many devices share the same coordinate, so a click can land on a pile of
+// markers. Gather every *visible* device whose point sits within a few pixels of
+// the click; if there's more than one, let the user pick from a list.
+const STACK_RADIUS_PX = 8;
+let currentStack = [];
+
+function pointsNear(lat, lng) {
+  const a = map.latLngToContainerPoint([lat, lng]);
+  const byDevice = new Map();
+  DATA.devices.forEach(d => {
+    if (deviceHidden(d)) return;                          // honor Hide Apple/Samsung
+    if (currentView === 'filtered' && d.excluded) return; // honor the GPS-exclusion tab
+    d.points.forEach(p => {
+      const cp = map.latLngToContainerPoint([p.lat, p.lng]);
+      const dist = Math.hypot(cp.x - a.x, cp.y - a.y);
+      if (dist <= STACK_RADIUS_PX) {
+        const prev = byDevice.get(d.address);
+        if (!prev || dist < prev.dist) byDevice.set(d.address, { d, p, dist });
+      }
+    });
+  });
+  return [...byDevice.values()].sort((x, y) => x.dist - y.dist);
+}
+
+function openSelection(stack) {
+  if (!stack.length) return;
+  currentStack = stack;
+  if (stack.length === 1) showDeviceDetail(0);
+  else showChooser();
+}
+
+function showChooser() {
+  const rows = currentStack.map((it, i) => {
+    const d = it.d;
+    const dot = d.excluded ? '#e74c3c' : '#41b6c4';
+    const sub = [d.label !== '(unnamed)' ? escapeHtml(d.label) : '', d.manuf ? escapeHtml(d.manuf) : '']
+      .filter(Boolean).join(' · ');
+    const ven = d.vendor ? ' <span class="ventag">' + d.vendor + '</span>' : '';
+    return '<div class="choice" onclick="selectFromStack(' + i + ')" '
+      + 'onmouseover="previewFromStack(' + i + ')">'
+      + '<span class="cdot" style="background:' + dot + '"></span>'
+      + '<span class="cmain"><b>' + d.address + '</b>' + ven
+      + (sub ? '<br><span class="csub">' + sub + '</span>' : '') + '</span></div>';
+  }).join('');
+  showPanel(currentStack.length + ' devices at this point',
+    '<div class="chooser">' + rows + '</div>'
+    + '<div class="choosehint">click one for details &amp; map highlight (hover to preview)</div>');
+}
+
+function previewFromStack(i) {
+  const it = currentStack[i];
+  if (it) highlightDevice(it.d, [it.p.lat, it.p.lng], false);  // no pan on hover
+}
+
+function selectFromStack(i) { showDeviceDetail(i); }
+
+function showDeviceDetail(i) {
+  const it = currentStack[i];
+  if (!it) return;
+  let html = '';
+  if (currentStack.length > 1) {
+    html += '<span class="backlink" onclick="showChooser()">&lsaquo; back to '
+      + currentStack.length + ' devices here</span>'
+      + '<hr style="border:0;border-top:1px solid #ddd;margin:5px 0">';
+  }
+  html += deviceInfoHtml(it.d, it.p);
+  showPanel(it.d.address, html);
+  highlightDevice(it.d, [it.p.lat, it.p.lng]);
+}
+
+// --- points -----------------------------------------------------------------
+function addPoint(group, d, p, color, fillColor) {
+  const mk = L.circleMarker([p.lat, p.lng], {
+    radius: 4, weight: 1, color, fillColor, fillOpacity: 0.75
+  });
+  mk.on('click', () => {
+    markerClicked = true;
+    setTimeout(() => { markerClicked = false; }, 0);
+    openSelection(pointsNear(p.lat, p.lng));
+  });
+  group.addLayer(mk);
+}
+
+// One-time map framing over ALL points (vendor toggles don't change the frame).
+DATA.devices.forEach(d => d.points.forEach(p => bounds.push([p.lat, p.lng])));
+
+// "Hide Apple"/"Hide Samsung" — same vendor classification as the phone.
+function deviceHidden(d) {
+  return (hideApple && d.vendor === 'apple')
+      || (hideSamsung && d.vendor === 'samsung')
+      || (hasGattOnly && !d.has_gatt);
+}
+
+// (Re)build both point layers honoring the current Hide Apple / Hide Samsung toggles.
+function buildPoints() {
+  rawPoints.clearLayers();
+  filteredPoints.clearLayers();
+  DATA.devices.forEach(d => {
+    if (deviceHidden(d)) return;
+    d.points.forEach(p => {
+      // Raw view: blue = will be kept, red = belongs to a device that will be excluded.
+      addPoint(rawPoints, d, p, d.excluded ? '#c0392b' : '#2c7fb8', d.excluded ? '#e74c3c' : '#41b6c4');
+      if (!d.excluded) addPoint(filteredPoints, d, p, '#2c7fb8', '#41b6c4');
+    });
+  });
+}
+
+function onVendorToggle() {
+  hideApple = document.getElementById('hide-apple').checked;
+  hideSamsung = document.getElementById('hide-samsung').checked;
+  hasGattOnly = document.getElementById('has-gatt').checked;
+  highlightLayer.clearLayers();
+  hidePanel();
+  buildPoints();
+  updateInfo(currentView);
+}
+
+// --- exclusion zones --------------------------------------------------------
+function drawZones(group, dashed) {
+  DATA.zones.forEach(z => {
+    const style = { color: '#111', weight: 2.5, fill: false,
+                    dashArray: dashed ? '6 6' : null };
+    let layer;
+    if (z.type === 'circle') {
+      layer = L.circle([z.centerLat, z.centerLng],
+                       Object.assign({ radius: z.radiusMeters }, style));
+    } else { // square — same meters->deg conversion as the app's hit-test
+      const dLat = z.halfSizeMeters / 111320.0;
+      const cosLat = Math.max(Math.cos(z.centerLat * Math.PI / 180), 1e-6);
+      const dLng = z.halfSizeMeters / (111320.0 * cosLat);
+      layer = L.rectangle([[z.centerLat - dLat, z.centerLng - dLng],
+                           [z.centerLat + dLat, z.centerLng + dLng]], style);
+      bounds.push([z.centerLat - dLat, z.centerLng - dLng]);
+      bounds.push([z.centerLat + dLat, z.centerLng + dLng]);
+    }
+    layer.on('click', () => {
+      markerClicked = true;
+      setTimeout(() => { markerClicked = false; }, 0);
+      highlightLayer.clearLayers();
+      const dims = z.type === 'circle'
+        ? 'Circle &middot; radius ' + Math.round(z.radiusMeters) + ' m'
+        : 'Square &middot; ' + Math.round(z.halfSizeMeters * 2) + ' m per side';
+      showPanel('Exclusion zone', dims
+        + '<br><span style="color:#777;font-size:11px">center '
+        + z.centerLat.toFixed(5) + ', ' + z.centerLng.toFixed(5) + '</span>');
+    });
+    group.addLayer(layer);
+  });
+  // include circle extents in bounds
+  DATA.zones.filter(z => z.type === 'circle').forEach(z => {
+    const dLat = z.radiusMeters / 111320.0;
+    const cosLat = Math.max(Math.cos(z.centerLat * Math.PI / 180), 1e-6);
+    const dLng = z.radiusMeters / (111320.0 * cosLat);
+    bounds.push([z.centerLat - dLat, z.centerLng - dLng]);
+    bounds.push([z.centerLat + dLat, z.centerLng + dLng]);
+  });
+}
+drawZones(rawZones, true);
+drawZones(filteredZones, false);
+
+if (bounds.length) map.fitBounds(bounds, { padding: [40, 40] });
+else map.setView([0, 0], 2);
+
+// --- view switching ---------------------------------------------------------
+const m = DATA.meta;
+function updateInfo(view) {
+  const visible = DATA.devices.filter(d => !deviceHidden(d));
+  const pts = visible.reduce((sum, d) => sum + d.points.length, 0);
+  const hidden = [];
+  if (hideApple) hidden.push('Apple');
+  if (hideSamsung) hidden.push('Samsung');
+  let hideNote = hidden.length
+    ? ' · <span style="color:#f6c177">hiding ' + hidden.join(' + ') + '</span>' : '';
+  if (hasGattOnly) hideNote += ' · <span style="color:#f6c177">GATT only</span>';
+  let s;
+  if (view === 'raw') {
+    s = '<b>' + visible.length + '</b> devices with GPS coordinates · <b>' + pts + '</b> points · '
+      + '<b>' + m.zones + '</b> exclusion zone' + (m.zones === 1 ? '' : 's')
+      + ' (dotted)'
+      + '<span class="swatch" style="background:#41b6c4"></span>kept'
+      + '<span class="swatch" style="background:#e74c3c"></span>in/under a zone → will be excluded'
+      + hideNote
+      + '<span class="hint">— click a point to highlight all of that device’s coordinates</span>';
+  } else {
+    const kept = visible.filter(d => !d.excluded).length;
+    const excl = visible.filter(d => d.excluded).length;
+    s = '<b>' + kept + '</b> of <b>' + visible.length
+      + '</b> devices with GPS coordinates shown · '
+      + '<b>' + excl + '</b> excluded (any coordinate inside a zone) · '
+      + 'zones drawn solid' + hideNote;
+  }
+  document.getElementById('info').innerHTML = s;
+}
+
+function showView(view) {
+  currentView = view;
+  const raw = view === 'raw';
+  document.getElementById('tab-raw').classList.toggle('active', raw);
+  document.getElementById('tab-filtered').classList.toggle('active', !raw);
+  highlightLayer.clearLayers();
+  hidePanel();
+  [rawPoints, rawZones, filteredPoints, filteredZones].forEach(l => map.removeLayer(l));
+  // Zones first, points last → points sit on top of the (no-fill) zones on the
+  // shared canvas, so a point inside a zone is still the one that gets clicked.
+  if (raw) { rawZones.addTo(map); rawPoints.addTo(map); }
+  else { filteredZones.addTo(map); filteredPoints.addTo(map); }
+  updateInfo(view);
+}
+
+document.getElementById('n-apple').textContent = DATA.devices.filter(d => d.vendor === 'apple').length;
+document.getElementById('n-samsung').textContent = DATA.devices.filter(d => d.vendor === 'samsung').length;
+document.getElementById('n-gatt').textContent = DATA.devices.filter(d => d.has_gatt).length;
+buildPoints();
+showView('raw');
+
+// Debug handle — poke at the data/map from the browser console, e.g. __viz.DATA.
+window.__viz = { map, DATA, highlightLayer, highlightDevice, showView, buildPoints,
+                 setHide: (a, s) => { hideApple = a; hideSamsung = s; buildPoints(); updateInfo(currentView); } };
+</script>
+</body>
+</html>
+"""
+
+
+def build_html(devices, zones):
+    dev_list = []
+    total_points = 0
+    excluded = 0
+    for d in devices.values():
+        total_points += len(d["points"])
+        if d.get("excluded"):
+            excluded += 1
+        dev_list.append(
+            {
+                "address": d["address"],
+                "label": d["label"],
+                "manuf": d["manuf"],
+                "vendor": d.get("vendor"),
+                "ibeacon": d.get("ibeacon"),
+                "adv": d["adv"] if d.get("adv") else None,
+                "gatt": d["gatt"] if d.get("gatt") else None,
+                "has_gatt": bool(d.get("has_gatt")),
+                "excluded": bool(d.get("excluded")),
+                "points": [
+                    {
+                        "lat": p["lat"],
+                        "lng": p["lng"],
+                        "count": p["count"],
+                        "best_rssi": p["best_rssi"],
+                        "in_zone": bool(p.get("in_zone")),
+                    }
+                    for p in d["points"]
+                ],
+            }
+        )
+    data = {
+        "devices": dev_list,
+        "zones": zones,
+        "meta": {
+            "devices": len(dev_list),
+            "points": total_points,
+            "excluded": excluded,
+            "zones": len(zones),
+            "apple": sum(1 for x in dev_list if x["vendor"] == "apple"),
+            "samsung": sum(1 for x in dev_list if x["vendor"] == "samsung"),
+        },
+    }
+    payload = json.dumps(data).replace("<", "\\u003c")  # never break out of <script>
+    return HTML_TEMPLATE.replace("__DATA_JSON__", payload), data["meta"]
+
+
+# --- web server --------------------------------------------------------------
+class _Handler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def log_message(self, *_):  # keep the console quiet
+        pass
+
+
+def make_server(directory, preferred_port):
+    handler = partial(_Handler, directory=directory)
+    candidates = [preferred_port, 0] if preferred_port else [8765, 8766, 8080, 0]
+    last = None
+    for c in candidates:
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", c), handler)
+        except OSError as e:
+            last = e
+    die(f"could not bind a local port: {last}")
+
+
+# --- main --------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(
+        prog="visualize-phone-data",
+        description="Pull device/GPS data + exclusion zones off a XenoMetaRadar "
+        "phone and visualize them on OpenStreetMap.",
+    )
+    ap.add_argument(
+        "-s",
+        "--serial",
+        help="adb device serial, or a friendly alias from device-aliases.json "
+        "(e.g. P1). Auto-picks if only one device is attached.",
+    )
+    ap.add_argument("--package", default=DEFAULT_PACKAGE, help="app package id (default: %(default)s)")
+    ap.add_argument("--port", type=int, default=0, help="local web-server port (default: auto)")
+    ap.add_argument("--db", help="use a local app-database file instead of pulling from a phone")
+    ap.add_argument("--prefs", help="use a local app-prefs.xml file instead of pulling from a phone")
+    ap.add_argument("--btides", help="GATT source: a BTIDES log/archive (.jsonl/.btides). "
+                    "Overrides the on-phone log even during a live pull (the phone's log rotates).")
+    ap.add_argument("--out", help="also write the generated HTML to this path")
+    ap.add_argument("--no-serve", action="store_true", help="build the HTML and exit (no server/browser)")
+    ap.add_argument("--no-browser", action="store_true", help="serve but don't auto-open the browser")
+    args = ap.parse_args()
+
+    tmp = tempfile.mkdtemp(prefix="xmr-viz-")
+
+    # 1. obtain the data files (from a phone, or from local files)
+    if args.db:
+        db_path = args.db
+        prefs_path = args.prefs
+        btides_path = args.btides
+        if not os.path.exists(db_path):
+            die(f"--db file not found: {db_path}")
+    else:
+        serial = resolve_serial(args.serial)
+        db_path, prefs_path, btides_path = pull_from_phone(serial, args.package, tmp)
+        if args.btides:  # a pulled archive overrides the on-phone log (which rotates/clears)
+            print(f"[*] using BTIDES archive for GATT: {args.btides}")
+            btides_path = args.btides
+
+    # 2. read + compute
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    zones = parse_exclusion_zones(prefs_path)
+    devices = load_device_points(db_path)
+    mark_excluded(devices, zones)
+    attrs = load_device_attrs(db_path)
+
+    # Vendor classification (same rules as the phone's Hide/Skip Apple/Samsung).
+    registry = load_vendor_registry(repo_dir)
+    clues = load_clues_companies(repo_dir)
+    classify_vendors(devices, attrs, registry, clues)
+
+    # GATT/SDP hierarchy from the BTIDES log, UUIDs named via the app's SIG tables + CLUES.
+    sig_svc, sig_char = load_sig_name_tables(repo_dir)
+    clues_full = load_clues_full(repo_dir)
+    attach_gatt(devices, attrs, load_gatt(btides_path, sig_svc, sig_char, clues_full),
+                sig_svc, clues_full)
+
+    # Advertisement (EIR/AD) parsing from the stored raw advert bytes (like the phone).
+    attach_adv(devices, attrs, sig_svc, clues_full, load_company_ids(repo_dir))
+
+    html, meta = build_html(devices, zones)
+    print(
+        f"[*] {meta['devices']} devices with GPS, {meta['points']} unique points, "
+        f"{meta['zones']} exclusion zone(s); "
+        f"{meta['excluded']} excluded by zones, {meta['devices'] - meta['excluded']} remain; "
+        f"vendor: {meta['apple']} Apple, {meta['samsung']} Samsung."
+    )
+    if meta["devices"] == 0:
+        print("[!] no devices have GPS coordinates — the map will be empty.")
+
+    # 3. write index.html into the served dir
+    index_path = os.path.join(tmp, "index.html")
+    with open(index_path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        print(f"[*] wrote HTML to {args.out}")
+
+    if args.no_serve:
+        print(f"[*] --no-serve: HTML is at {index_path}")
+        return
+
+    # 4. serve + open browser
+    httpd = make_server(tmp, args.port)
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/index.html"
+    print(f"[*] serving at {url}   (Ctrl-C to stop)")
+    if not args.no_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[*] stopped.")
+    finally:
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    main()
