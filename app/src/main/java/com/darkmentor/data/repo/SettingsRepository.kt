@@ -150,6 +150,12 @@ class SettingsRepository(
         sharedPreferences.edit { putBoolean(KEY_BULK_SKIP_SAMSUNG, value) }
     }
 
+    /** Debug-only override: re-upload BTIDES archives already marked uploaded. Default false. */
+    fun getReuploadAlreadyUploaded(): Boolean = sharedPreferences.getBoolean(KEY_REUPLOAD_UPLOADED, false)
+    fun setReuploadAlreadyUploaded(value: Boolean) {
+        sharedPreferences.edit { putBoolean(KEY_REUPLOAD_UPLOADED, value) }
+    }
+
     /**
      * User-defined GPS exclusion zones (max [ExclusionZone.MAX_ZONES]). Devices whose strongest-RSSI
      * location falls inside any of these are omitted from BTIDALPOOL uploads. Stored as a JSON array
@@ -252,6 +258,7 @@ class SettingsRepository(
         private const val KEY_WAKE_UP_SCREEN_WHILE_SCANNING = "key_wake_up_screen_while_scanning"
         private const val KEY_BULK_SKIP_APPLE = "key_bulk_skip_apple"
         private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
+        private const val KEY_REUPLOAD_UPLOADED = "key_reupload_already_uploaded"
         private const val KEY_EXCLUSION_ZONES = "key_exclusion_zones"
         private const val KEY_SCAN_START_MODE = "key_scan_start_mode"
         private const val KEY_DISCOVER_LE_ENABLED = "key_discover_le_enabled"

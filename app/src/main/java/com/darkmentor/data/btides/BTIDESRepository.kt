@@ -356,6 +356,45 @@ class BTIDESRepository(
         runCatching { idx.delete() }
     }
 
+    private val uploadedMarkerFile: File get() = File(btidesDir, UPLOADED_MARKER_NAME)
+    private val uploadedMarkerLock = Mutex()
+
+    /**
+     * Basenames of archives already uploaded to BTIDALPOOL. The upload path skips these so a
+     * successful upload no longer deletes the on-device data — it just records that the log was
+     * sent and won't re-send it. Recorded in a sidecar marker file alongside the logs.
+     */
+    suspend fun uploadedLogNames(): Set<String> = withContext(Dispatchers.IO) {
+        uploadedMarkerLock.withLock {
+            runCatching {
+                uploadedMarkerFile.readLines().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.toSet()
+            }.getOrDefault(emptySet())
+        }
+    }
+
+    /**
+     * Record [archive] as uploaded WITHOUT deleting it — the file and its sidecar index stay on the
+     * device, so the data is preserved and still exportable / re-uploadable. Idempotent; never
+     * marks the live active log.
+     */
+    suspend fun markUploaded(archive: File) = withContext(Dispatchers.IO) {
+        if (archive.name == logFile.name) return@withContext
+        uploadedMarkerLock.withLock {
+            val existing = runCatching { uploadedMarkerFile.readLines().map { it.trim() } }.getOrDefault(emptyList())
+            if (archive.name !in existing) {
+                runCatching {
+                    uploadedMarkerFile.parentFile?.mkdirs()
+                    uploadedMarkerFile.appendText(archive.name + "\n")
+                }
+            }
+        }
+    }
+
+    /** Forget all upload marks (e.g. when the user clears every log). */
+    suspend fun clearUploadedMarks() = withContext(Dispatchers.IO) {
+        uploadedMarkerLock.withLock { runCatching { uploadedMarkerFile.delete() } }
+    }
+
     /** Total bytes across the active log + every rotated archive. */
     suspend fun totalLogSizeBytes(): Long = withContext(Dispatchers.IO) {
         listLogs().sumOf { it.file.length() }
@@ -1370,6 +1409,9 @@ class BTIDESRepository(
         private const val FIRST_CAPTURE_FILE_NAME = "btides_log.first_capture_ms"
         private const val ARCHIVE_LOG_EXT = "jsonl"
         private const val ARCHIVE_IDX_EXT = "idx.jsonl"
+        // Sidecar marker: basenames of archives already uploaded to BTIDALPOOL (one per line). The
+        // upload path skips these instead of deleting them, so uploaded data stays on the device.
+        private const val UPLOADED_MARKER_NAME = "uploaded_logs.txt"
         private const val EXPORT_EXT = "btides"
         private const val MS_PER_DAY = 86_400_000L
         // Auto-rotate the active BTIDES log once it crosses this byte threshold. Sized to

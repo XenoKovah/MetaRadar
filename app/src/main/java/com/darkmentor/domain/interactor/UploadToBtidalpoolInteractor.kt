@@ -12,16 +12,18 @@ import java.io.File
 /**
  * Orchestrates uploads of merged BTIDES files to the BTIDALPOOL pool server. Mirrors the
  * three-step flow in `BTIDES_to_BTIDALPOOL.send_btides_to_btidalpool` but is structured around
- * the per-day rotated log layout: every successful upload deletes the underlying log archive,
- * so the user never re-uploads the same data twice.
+ * the per-day rotated log layout. A successful upload MARKS the underlying archive as uploaded
+ * (via [BTIDESRepository.markUploaded]) and KEEPS it on the device — the data is never deleted —
+ * and future uploads skip already-uploaded archives so the same data isn't re-sent. Pass
+ * [executeAll]'s `allowReupload = true` (the hidden debug override) to re-send them anyway.
  *
  * Two flows:
- *   - [executeCurrent] — rotate the active log, upload the resulting archive, delete on
- *     success. Mid-upload captures continue accumulating in a fresh active log without being
- *     mixed into either side of the upload boundary.
- *   - [executeAll] — rotate first (so current data joins the pending set), then iterate every
- *     archive sequentially. Failures don't abort: each archive's success/failure is reported
- *     independently so the user can decide whether to retry.
+ *   - [executeCurrent] — rotate the active log and upload the resulting (always-fresh) archive,
+ *     marking it on success. Mid-upload captures accumulate in a fresh active log without being
+ *     mixed into the boundary.
+ *   - [executeAll] — rotate first, then iterate every not-yet-uploaded archive sequentially (or
+ *     every archive when `allowReupload`). Failures don't abort: each archive's success/failure
+ *     is reported independently so the user can decide whether to retry.
  */
 class UploadToBtidalpoolInteractor(
     private val btidesRepository: BTIDESRepository,
@@ -78,6 +80,7 @@ class UploadToBtidalpoolInteractor(
      */
     suspend fun executeAll(
         useTestDb: Boolean,
+        allowReupload: Boolean = false,
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
     ): Outcome = withContext(Dispatchers.IO) {
         if (authRepository.current() == null) return@withContext Outcome.NotSignedIn
@@ -86,7 +89,10 @@ class UploadToBtidalpoolInteractor(
         // mid-upload captures land in a fresh, unsent log rather than getting mixed into a
         // batch that's already in flight.
         btidesRepository.rotateActive()
-        val logs = btidesRepository.listLogs()
+        // Skip archives already uploaded (kept on device, just marked) so we don't re-send the
+        // same data — unless the hidden debug [allowReupload] override is on.
+        val uploaded = if (allowReupload) emptySet() else btidesRepository.uploadedLogNames()
+        val logs = btidesRepository.listLogs().filter { it.file.name !in uploaded }
         if (logs.isEmpty()) {
             return@withContext Outcome.WithResults(
                 results = listOf(LogResult.EmptyLog(activeDisplayName())),
@@ -172,11 +178,11 @@ class UploadToBtidalpoolInteractor(
             // a re-upload as AlreadyPresent (handled below), so we just upload and let it decide.
             return when (val up = withTokenRefresh { (t, r) -> client.uploadFile(tempExport, t, r, useTestDb, uploadProgress) }) {
                 is BtidalpoolClient.UploadResult.Success -> {
-                    deleteIfArchive(logFile)
+                    btidesRepository.markUploaded(logFile)
                     LogResult.Success(displayName, deviceCount)
                 }
                 is BtidalpoolClient.UploadResult.AlreadyPresent -> {
-                    deleteIfArchive(logFile)
+                    btidesRepository.markUploaded(logFile)
                     LogResult.AlreadyOnServer(displayName, deviceCount)
                 }
                 is BtidalpoolClient.UploadResult.AuthFailed -> LogResult.AuthFailed(displayName)
@@ -186,17 +192,6 @@ class UploadToBtidalpoolInteractor(
         } finally {
             runCatching { tempExport.delete() }
         }
-    }
-
-    /**
-     * Drop a successfully-uploaded archive from disk. The active log file is never deleted by
-     * this method (only its rotated copies) — execution paths that need to clear the active
-     * log do so via [BTIDESRepository.rotateActive] before calling here.
-     */
-    private suspend fun deleteIfArchive(logFile: File) {
-        // [rotateActive] always renames the active log into an archive before this method
-        // sees it, so every file we get here is safe to delete.
-        btidesRepository.deleteArchive(logFile)
     }
 
     private fun activeDisplayName(): String = "btides_log.jsonl"

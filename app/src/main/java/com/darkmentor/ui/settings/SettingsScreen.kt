@@ -458,6 +458,17 @@ object SettingsScreen {
                     onClick = { viewModel.onUploadAllBtidalpoolClick() },
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                // Hidden-by-default debug override: re-upload archives already marked uploaded.
+                // Debug builds only; release builds (BuildConfig.DEBUG == false) never show it.
+                if (BuildConfig.DEBUG) {
+                    Switcher(
+                        value = viewModel.reuploadAlreadyUploaded,
+                        title = stringResource(R.string.btidalpool_reupload_title),
+                        subtitle = stringResource(R.string.btidalpool_reupload_subtitle),
+                        onClick = { viewModel.onToggleReuploadAlreadyUploaded() },
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 Button(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = { viewModel.onBtidalpoolSignOutClick() },

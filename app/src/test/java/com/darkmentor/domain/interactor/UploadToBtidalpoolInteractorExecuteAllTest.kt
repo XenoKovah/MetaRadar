@@ -68,10 +68,11 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
             BTIDESRepository.LogFile(log2, isActive = false),
             BTIDESRepository.LogFile(log3, isActive = false),
         )
-        // The interactor calls deleteArchive() on every successful upload — relax the mock so
-        // we don't have to enumerate which logs trigger it. The success/failure split itself
-        // is what matters.
-        coEvery { btidesRepo.deleteArchive(any()) } returns Unit
+        // The interactor records a successful upload via markUploaded() (it no longer deletes the
+        // data). Stub the upload-tracking calls so the non-relaxed mock doesn't throw; the
+        // success/failure split itself is what matters here.
+        coEvery { btidesRepo.uploadedLogNames() } returns emptySet()
+        coEvery { btidesRepo.markUploaded(any()) } returns Unit
 
         val exporter = mockk<ExportBTIDESInteractor>()
         // Side effect: write a small JSON blob into the tempExport target so [uploadOneLog]
@@ -168,6 +169,7 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
 
         val btidesRepo = mockk<BTIDESRepository>()
         coEvery { btidesRepo.rotateActive() } returns null
+        coEvery { btidesRepo.uploadedLogNames() } returns emptySet()
         coEvery { btidesRepo.listLogs() } returns emptyList()
 
         val exporter = mockk<ExportBTIDESInteractor>(relaxed = true)
@@ -186,6 +188,47 @@ class UploadToBtidalpoolInteractorExecuteAllTest {
         )
         // No network at all on an empty corpus.
         coVerify(exactly = 0) { client.uploadFile(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `already-uploaded archives are skipped and kept, unless allowReupload`() = runBlocking {
+        val context = mockk<Context>()
+        every { context.cacheDir } returns cacheTempDir
+        val authRepo = mockk<BtidalpoolAuthRepository>()
+        every { authRepo.current() } returns BtidalpoolAuthRepository.AuthState("t", "r", null)
+
+        val btidesRepo = mockk<BTIDESRepository>()
+        coEvery { btidesRepo.rotateActive() } returns null
+        val log1 = createLog("log1.jsonl", """{"s":1}""")
+        val log2 = createLog("log2.jsonl", """{"s":2}""")
+        val log3 = createLog("log3.jsonl", """{"s":3}""")
+        coEvery { btidesRepo.listLogs() } returns listOf(
+            BTIDESRepository.LogFile(log1, isActive = false),
+            BTIDESRepository.LogFile(log2, isActive = false),
+            BTIDESRepository.LogFile(log3, isActive = false),
+        )
+        coEvery { btidesRepo.uploadedLogNames() } returns setOf("log2.jsonl") // log2 already sent
+        coEvery { btidesRepo.markUploaded(any()) } returns Unit
+
+        val exporter = mockk<ExportBTIDESInteractor>()
+        coEvery { exporter.executeForLog(any(), any(), any()) } coAnswers {
+            secondArg<File>().writeText("""{"AdvData":[]}"""); 5
+        }
+        val client = mockk<BtidalpoolClient>()
+        coEvery { client.uploadFile(any(), any(), any(), any(), any()) } returns BtidalpoolClient.UploadResult.Success
+
+        val interactor = UploadToBtidalpoolInteractor(btidesRepo, exporter, client, authRepo, context)
+
+        // Default: log2 is skipped -> only 2 uploads, and NO file is deleted (data is kept).
+        val outcome = interactor.executeAll(useTestDb = true)
+        outcome as UploadToBtidalpoolInteractor.Outcome.WithResults
+        assertEquals(2, outcome.results.size)
+        coVerify(exactly = 2) { client.uploadFile(any(), any(), any(), any(), any()) }
+        assertTrue("uploaded archives must NOT be deleted", log1.exists() && log2.exists() && log3.exists())
+
+        // Debug override: allowReupload re-sends all three (including the already-uploaded log2).
+        interactor.executeAll(useTestDb = true, allowReupload = true)
+        coVerify(exactly = 5) { client.uploadFile(any(), any(), any(), any(), any()) } // 2 + 3
     }
 
     private fun createLog(name: String, content: String): File {

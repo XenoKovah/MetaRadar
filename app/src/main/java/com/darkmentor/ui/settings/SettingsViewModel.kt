@@ -117,6 +117,9 @@ class SettingsViewModel(
     var btidalpoolUploadProgress: Float by mutableStateOf(0f)
     /** Mirrors the `--use-test-db` CLI flag; routes uploads to the server's alternate `bttest` DB. */
     var btidalpoolUseTestDb: Boolean by mutableStateOf(settingsRepository.getBtidalpoolUseTestDb())
+
+    /** Debug-only: when on, "Upload all" re-sends archives already uploaded (normally skipped). */
+    var reuploadAlreadyUploaded: Boolean by mutableStateOf(settingsRepository.getReuploadAlreadyUploaded())
     /**
      * Non-null while a post-upload status dialog should be shown. The user must tap OK to
      * dismiss — this is louder than a toast because uploads are infrequent and the user needs
@@ -260,6 +263,12 @@ class SettingsViewModel(
         btidalpoolUseTestDb = newValue
     }
 
+    fun onToggleReuploadAlreadyUploaded() {
+        val newValue = !settingsRepository.getReuploadAlreadyUploaded()
+        settingsRepository.setReuploadAlreadyUploaded(newValue)
+        reuploadAlreadyUploaded = newValue
+    }
+
     fun onUploadCurrentBtidalpoolClick() {
         // Tap-while-uploading raises a cancel-confirmation dialog instead of starting a
         // second upload (matches the BTIDES ADB-export button's behaviour).
@@ -278,7 +287,7 @@ class SettingsViewModel(
             return
         }
         runUpload { useTestDb, onProgress ->
-            uploadToBtidalpoolInteractor.executeAll(useTestDb, onProgress)
+            uploadToBtidalpoolInteractor.executeAll(useTestDb, reuploadAlreadyUploaded, onProgress)
         }
     }
 
@@ -504,6 +513,7 @@ class SettingsViewModel(
             btidesInProgress = true
             try {
                 clearBTIDESLogInteractor.execute(mode)
+                if (mode == ClearBTIDESLogInteractor.Mode.ALL) btidesRepository.clearUploadedMarks()
                 val msg = when (mode) {
                     ClearBTIDESLogInteractor.Mode.CURRENT -> R.string.btides_current_log_was_cleared
                     ClearBTIDESLogInteractor.Mode.ALL -> R.string.btides_all_logs_were_cleared
