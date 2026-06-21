@@ -190,11 +190,22 @@ class VendorIdentifier(
     }
 
     /**
-     * True when [name] is a Samsung "Galaxy"-branded advertised name (e.g. "Galaxy S24",
-     * "Galaxy Buds3 Pro", "Galaxy Watch7"). Case-insensitive; tolerates leading whitespace.
+     * True when [name] is a Samsung device name. Three signals, all case-insensitive:
+     *  - "Samsung" anywhere (Samsung TVs / fridges, e.g. "[TV] Samsung Q60AA 65 TV");
+     *  - "Galaxy" anywhere ("Galaxy S25 Ultra", "John's Galaxy Watch", "GalaxyBuds");
+     *  - a distinctive Samsung-exclusive phone model token ("Brian's S24 Ultra", "Z Fold6").
+     *
+     * Cross-referenced against captured scan data: Samsung phones advertise the model name with a
+     * rotating RPA address and no Samsung MSD company id, so the name is the only reliable signal.
+     * Bare "S##" is deliberately NOT matched — Sonos (S31/S39/… on UUID 0xFE07) and others use it,
+     * so only the distinctive Ultra / Fan-Edition / Z-Fold / Z-Flip tokens count.
      */
-    private fun isSamsungLocalName(name: String?): Boolean =
-        name?.trim()?.startsWith(SAMSUNG_NAME_PREFIX, ignoreCase = true) == true
+    private fun isSamsungLocalName(name: String?): Boolean {
+        val n = name?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        return n.contains("Samsung", ignoreCase = true) ||
+            n.contains("Galaxy", ignoreCase = true) ||
+            SAMSUNG_MODEL_REGEX.containsMatchIn(n)
+    }
 
     /**
      * True when [name] looks like an Apple product name (e.g. "iPhone", "John's iPad",
@@ -391,8 +402,15 @@ class VendorIdentifier(
         private const val TYPE_MSD: Byte = 0xFF.toByte()
         private const val AD_TYPE_SHORTENED_LOCAL_NAME = 0x08
         private const val AD_TYPE_COMPLETE_LOCAL_NAME = 0x09
-        /** Samsung sells its consumer Bluetooth devices under the "Galaxy" brand. */
-        private const val SAMSUNG_NAME_PREFIX = "Galaxy"
+        /**
+         * Distinctive Samsung-exclusive phone model tokens (Ultra / Fan-Edition flagships and the
+         * Z foldables) as they appear in advertised / user-renamed names. Word-bounded so "S24
+         * Ultra" inside "Brian's S24 Ultra" matches, but a bare "S31"/"S54" (Sonos et al.) does not.
+         */
+        private val SAMSUNG_MODEL_REGEX = Regex(
+            """\b(S\d{2} ?Ultra|S\d{2} ?FE|Z ?Fold\d*|Z ?Flip\d*)\b""",
+            RegexOption.IGNORE_CASE,
+        )
         /**
          * Distinctive Apple product-name markers, matched case-insensitively as substrings of the
          * advertised / GATT Device Name (users rename devices, e.g. "John's iPhone"). Trim or

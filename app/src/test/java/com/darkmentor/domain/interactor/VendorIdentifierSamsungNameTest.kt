@@ -61,9 +61,20 @@ class VendorIdentifierSamsungNameTest {
     }
 
     @Test
-    fun `Galaxy must be a name prefix, not a substring`() {
-        // Avoids matching e.g. a third-party "Cool Galaxy Speaker".
-        assertNull(identifier.identifyVendor(device("Cool Galaxy Speaker")))
+    fun `Samsung brand and distinctive model tokens are matched anywhere in the name`() {
+        // "Galaxy" / "Samsung" anywhere (not just as a prefix) — users rename their devices.
+        assertEquals(VendorIdentifier.Vendor.SAMSUNG, identifier.identifyVendor(device("John's Galaxy Watch")))
+        assertEquals(VendorIdentifier.Vendor.SAMSUNG, identifier.identifyVendor(device("[TV] Samsung Q60AA 65 TV")))
+        // Distinctive phone model tokens with no "Galaxy" — the "Brian's S24 Ultra" case the
+        // request is about, plus FE / foldables.
+        assertEquals(VendorIdentifier.Vendor.SAMSUNG, identifier.identifyVendor(device("Brian's S24 Ultra")))
+        assertEquals(VendorIdentifier.Vendor.SAMSUNG, identifier.identifyVendor(device("S23 FE")))
+        assertTrue(identifier.isSamsung(device("John's Z Fold6")))
+        assertTrue(identifier.isSamsung(device("Z Flip5")))
+        // Bare "S##" is NOT Samsung — Sonos (S31/S54/… on UUID 0xFE07, no Samsung MSD) uses it, and
+        // the numbers are outside Samsung's S6–S25 range. Cross-referenced against captured data.
+        assertNull(identifier.identifyVendor(device("S54 9C80 LE")))
+        assertNull(identifier.identifyVendor(device("S24")))
     }
 
     @Test
