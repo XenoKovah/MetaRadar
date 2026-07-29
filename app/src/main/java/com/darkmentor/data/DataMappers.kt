@@ -77,7 +77,6 @@ fun DeviceData.toData(): DeviceEntity {
         isPaired = isPaired,
         serviceUuids = servicesUuids,
         rowDataEncoded = rowDataEncoded,
-        metadata = null,
         isConnectable = isConnectable,
         transport = transport.ordinal,
         sdpUuids = sdpUuids,

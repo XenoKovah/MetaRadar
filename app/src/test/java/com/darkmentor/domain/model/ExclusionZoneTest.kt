@@ -40,10 +40,26 @@ class ExclusionZoneTest {
     }
 
     @Test
+    fun `circle boundary is excluded inclusively`() {
+        val zone = ExclusionZone.Circle(centerLat = 0.0, centerLng = 0.0, radiusMeters = 100.0)
+        val boundaryDegrees = 100.0 / 111_320.0
+        assertTrue(zone.contains(boundaryDegrees, 0.0))
+        assertFalse(zone.contains(boundaryDegrees * 1.01, 0.0))
+    }
+
+    @Test
     fun `square contains point inside half-size and excludes point outside`() {
         val zone = ExclusionZone.Square(centerLat = 0.0, centerLng = 0.0, halfSizeMeters = 100.0)
         assertTrue(zone.contains(0.0005, 0.0005)) // ~55 m → inside
         assertFalse(zone.contains(0.0, 0.01))     // ~1.1 km east → outside
+    }
+
+    @Test
+    fun `square boundary is excluded inclusively`() {
+        val zone = ExclusionZone.Square(centerLat = 0.0, centerLng = 0.0, halfSizeMeters = 100.0)
+        val boundaryDegrees = 100.0 / 111_320.0
+        assertTrue(zone.contains(boundaryDegrees, boundaryDegrees))
+        assertFalse(zone.contains(boundaryDegrees * 1.01, 0.0))
     }
 
     @Test

@@ -89,10 +89,6 @@ data class DeviceData(
         return lastDetectTimeMs.dateTimeStringFormatLocalized(formatStyle)
     }
 
-    fun hasBeenSeenTimeAgo(): Long {
-        return System.currentTimeMillis() - lastDetectTimeMs
-    }
-
     /**
      * Cached so the device list / details paths don't re-parse the address on every Compose
      * recomposition. The result depends only on `address` + `systemAddressType` + `isPaired`,

@@ -23,7 +23,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -39,7 +38,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.google.accompanist.flowlayout.FlowRow
 import com.darkmentor.R
 import com.darkmentor.utils.graphic.ContentPlaceholder
 import com.darkmentor.utils.graphic.Divider
@@ -109,7 +107,7 @@ object JournalScreen {
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         journal.map {
-                            item { JournalEntry(uiModel = it, viewModel) }
+                            item { JournalEntry(uiModel = it) }
                             item { Divider() }
                         }
                         item { SystemNavbarSpacer() }
@@ -173,12 +171,11 @@ object JournalScreen {
     }
 
     @Composable
-    fun JournalEntry(uiModel: JournalViewModel.JournalEntryUiModel, viewModel: JournalViewModel) {
+    fun JournalEntry(uiModel: JournalViewModel.JournalEntryUiModel) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(uiModel.color())
-                .clickable { viewModel.onEntryClick(uiModel.journalEntry) }
         ) {
             Column(
                 modifier = Modifier
@@ -213,18 +210,6 @@ object JournalScreen {
                     )
                 }
 
-                uiModel.items?.takeIf { it.isNotEmpty() }?.let { items ->
-                    FlowRow(
-                        mainAxisSpacing = 8.dp,
-                    ) {
-                        items.forEach { item ->
-                            SuggestionChip(
-                                onClick = { viewModel.onJournalListItemClick(item.payload) },
-                                label = { Text(text = item.displayName) }
-                            )
-                        }
-                    }
-                }
             }
         }
     }

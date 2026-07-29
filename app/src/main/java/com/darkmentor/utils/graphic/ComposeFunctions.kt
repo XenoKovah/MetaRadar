@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
@@ -66,7 +65,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
-import com.google.accompanist.flowlayout.FlowRow
 import com.vanpra.composematerialdialogs.MaterialDialog
 import com.vanpra.composematerialdialogs.MaterialDialogButtons
 import com.vanpra.composematerialdialogs.MaterialDialogScope
@@ -235,41 +233,6 @@ fun infoDialog(
             if (!content.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(text = content)
-            }
-        }
-    }
-    return dialogState
-}
-
-@Composable
-fun agreementDialog(
-    title: String,
-    content: String,
-    agreement: String,
-    buttons: ((state: MaterialDialogState) -> (@Composable MaterialDialogButtons.() -> Unit)),
-): MaterialDialogState {
-    val dialogState = rememberMaterialDialogState()
-    ThemedDialog(
-        dialogState = dialogState,
-        buttons = buttons.invoke(dialogState),
-    ) {
-        var agreed: Boolean by remember { mutableStateOf(false) }
-        positiveButtonEnabled[0] = agreed
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = title, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(text = content)
-            Spacer(modifier = Modifier.height(8.dp))
-            val agreedClick = {
-                agreed = !agreed
-                positiveButtonEnabled[0] = agreed
-            }
-            Row(Modifier.clickable(onClick = agreedClick), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = agreed,
-                    onCheckedChange = { agreedClick.invoke() }
-                )
-                Text(text = agreement)
             }
         }
     }
@@ -781,14 +744,6 @@ fun dpToPx(dp: Float): Float {
 @Composable
 fun pxToDp(px: Float): Float {
     return LocalContext.current.pxToDp(px)
-}
-
-@Composable
-fun BottomNavigationSpacer() {
-    val bottomOffset = remember { GlobalUiState.navbarOffsetPx }
-    Column {
-        Spacer(modifier = Modifier.height(pxToDp(bottomOffset.value).dp))
-    }
 }
 
 @Composable

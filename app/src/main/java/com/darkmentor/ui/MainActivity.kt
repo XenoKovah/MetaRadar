@@ -1,11 +1,11 @@
 package com.darkmentor.ui
 
-import android.annotation.SuppressLint
 import android.app.ComponentCaller
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.os.Bundle
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -48,7 +48,6 @@ import com.darkmentor.utils.navigation.BackCommand
 import com.darkmentor.utils.navigation.Navigator
 import com.darkmentor.utils.navigation.RouterImpl
 import org.koin.android.ext.android.inject
-import org.koin.compose.KoinContext
 import org.osmdroid.config.Configuration
 
 class MainActivity : AppCompatActivity() {
@@ -71,6 +70,15 @@ class MainActivity : AppCompatActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    router.navigate(BackCommand)
+                }
+            },
+        )
+
         val navigationBarStyle = if (isDarkModeOn()) {
             SystemBarStyle.dark(Color.TRANSPARENT)
         } else {
@@ -88,44 +96,41 @@ class MainActivity : AppCompatActivity() {
             val focusManager = LocalFocusManager.current
             val colors = themeColorScheme()
 
-
-            KoinContext {
-                MaterialTheme(
-                    colorScheme = colors,
-                    typography = Typography(
-                        bodyMedium = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
-                        bodyLarge = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
-                        bodySmall = MaterialTheme.typography.bodySmall.copy(color = colors.onSurface),
-                    )
+            MaterialTheme(
+                colorScheme = colors,
+                typography = Typography(
+                    bodyMedium = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
+                    bodyLarge = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
+                    bodySmall = MaterialTheme.typography.bodySmall.copy(color = colors.onSurface),
+                )
+            ) {
+                var screenSize by remember { mutableStateOf(IntSize(0, 0)) }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { layoutCoordinates ->
+                            screenSize = layoutCoordinates.size
+                        }
                 ) {
-                    var screenSize by remember { mutableStateOf(IntSize(0, 0)) }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onGloballyPositioned { layoutCoordinates ->
-                                screenSize = layoutCoordinates.size
-                            }
-                    ) {
-                        val stack = viewModel.navigator.stack
-                        if (stack.isEmpty()) {
-                            finish()
-                        } else {
-                            focusManager.clearFocus(true)
-                            CompositionLocalProvider(ScreenSizeLocal provides screenSize) {
-                                stack.forEach { screen ->
-                                    screen()
-                                }
+                    val stack = viewModel.navigator.stack
+                    if (stack.isEmpty()) {
+                        finish()
+                    } else {
+                        focusManager.clearFocus(true)
+                        CompositionLocalProvider(ScreenSizeLocal provides screenSize) {
+                            stack.forEach { screen ->
+                                screen()
                             }
                         }
                     }
+                }
 
-                    val preparingDatabaseDialog = rememberProgressDialog(stringResource(R.string.preparing_database))
-                    val loadingDatabase by AppDatabase.loadDatabase.collectAsState(false)
-                    if (loadingDatabase) {
-                        preparingDatabaseDialog.show()
-                    } else {
-                        preparingDatabaseDialog.hide()
-                    }
+                val preparingDatabaseDialog = rememberProgressDialog(stringResource(R.string.preparing_database))
+                val loadingDatabase by AppDatabase.loadDatabase.collectAsState(false)
+                if (loadingDatabase) {
+                    preparingDatabaseDialog.show()
+                } else {
+                    preparingDatabaseDialog.hide()
                 }
             }
         }
@@ -147,12 +152,6 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent, caller: ComponentCaller) {
         super.onNewIntent(intent, caller)
         intentHelper.tryHandleIntent(intent)
-    }
-
-    @SuppressLint("MissingSuperCall")
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        router.navigate(BackCommand)
     }
 
     override fun onDestroy() {

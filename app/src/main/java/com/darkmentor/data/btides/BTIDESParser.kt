@@ -289,7 +289,7 @@ object BTIDESParser {
             put("length", length)
             put("name_hex_str", data.toHexLower())
             try {
-                val str = String(data, Charsets.UTF_8).trimEnd(' ')
+                val str = String(data, Charsets.UTF_8).trimEnd('\u0000')
                 if (str.all { it.isPrintableUtf8() }) {
                     put("utf8_name", str)
                 }

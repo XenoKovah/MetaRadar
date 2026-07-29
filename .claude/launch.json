@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "xmr-viz",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["visualize-phone-data", "-s", "M1", "--port", "8765", "--no-browser"],
+      "port": 8765
+    }
+  ]
+}

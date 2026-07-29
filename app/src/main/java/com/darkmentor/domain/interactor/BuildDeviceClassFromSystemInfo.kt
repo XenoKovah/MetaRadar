@@ -15,9 +15,7 @@ object BuildDeviceClassFromSystemInfo {
     fun execute(deviceData: DeviceData): DeviceClass {
         val systemClass = deviceData.deviceClass
 
-        if (systemClass == null) return DeviceClass.Unknown
-
-        val major = systemClass and MAJOR_BIT_MASK
+        val major = systemClass?.and(MAJOR_BIT_MASK)
         var result = when (major) {
             BluetoothClass.Device.Major.PHONE -> {
                 when (systemClass) {
@@ -90,6 +88,7 @@ object BuildDeviceClassFromSystemInfo {
             BluetoothClass.Device.Major.HEALTH -> {
                 when (systemClass) {
                     BluetoothClass.Device.HEALTH_BLOOD_PRESSURE -> DeviceClass.Health.BloodPressure
+                    BluetoothClass.Device.HEALTH_DATA_DISPLAY -> DeviceClass.Health.HealthDataDisplay
                     BluetoothClass.Device.HEALTH_THERMOMETER -> DeviceClass.Health.Thermometer
                     BluetoothClass.Device.HEALTH_WEIGHING -> DeviceClass.Health.Weighing
                     else -> DeviceClass.Health.Uncategorised
@@ -139,7 +138,7 @@ object BuildDeviceClassFromSystemInfo {
         // Tracking Tags
         "fe2c" to DeviceClass.Beacon.AirTag, // apple find my network
         "feed" to DeviceClass.Beacon.Uncategorised, // tile tracker
-        "fd50" to DeviceClass.Beacon.IBeacon, // samsung smart tag
+        "fd50" to DeviceClass.Beacon.SmartTag, // Samsung SmartTag
         "181a" to DeviceClass.Beacon.Uncategorised,
         "fe9a" to DeviceClass.Beacon.Uncategorised,
         "1843" to DeviceClass.AudioVideo.Uncategorised,// audio input control service
@@ -156,7 +155,7 @@ object BuildDeviceClassFromSystemInfo {
         "1822" to DeviceClass.Health.PulseOximeter,//"Pulse Oximeter",
         "1812" to DeviceClass.Peripheral.Keyboard,//"Human Interface Device (HID - Keyboard, Mouse, Gamepad)",
         "1824" to DeviceClass.Peripheral.Uncategorised,//"Transport Discovery (Smart Remote, Controller)",
-        "183E" to DeviceClass.Health.Uncategorised,//"Physical Activity Monitor",
+        "183e" to DeviceClass.Health.Uncategorised,//"Physical Activity Monitor",
         "1840" to DeviceClass.Health.Uncategorised,//"Generic Health Sensor",
         "1851" to DeviceClass.AudioVideo.Uncategorised, // "Media Control Service",
         "1853" to DeviceClass.AudioVideo.Uncategorised, // Common Audio Service,
@@ -175,7 +174,7 @@ object BuildDeviceClassFromSystemInfo {
         "Xbox" to DeviceClass.AudioVideo.VideoGamingToy,
         "airtag" to DeviceClass.Beacon.AirTag,
         "ibeacon" to DeviceClass.Beacon.IBeacon,
-        "smart tag" to DeviceClass.Beacon.Uncategorised,
+        "smart tag" to DeviceClass.Beacon.SmartTag,
         "\" Odyssey" to DeviceClass.AudioVideo.VideoMonitor,
         "meta quest" to DeviceClass.Wearable.Glasses,
         " TV" to DeviceClass.AudioVideo.VideoDisplayAndLoudspeaker,

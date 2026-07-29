@@ -5,6 +5,7 @@ import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.domain.model.ExclusionZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
@@ -112,10 +113,28 @@ class ExclusionZoneRealDataExportTest {
         }
         assumeTrue("Need a GPS device with no coordinate in any zone as a control.", control != null)
 
-        // Re-export the SAME log WITH the zones — exactly the file the upload path would build.
-        val filtered = ByteArrayOutputStream()
-        btides.exportTo(filtered, lookup, null, sourceFile = sourceLog, exclusionZones = zones, exclusionCoordsLookup = coordsLookup)
-        val out = filtered.toString(Charsets.UTF_8.name())
+        // Re-export the SAME log through the exact chunking method consumed by the v4 uploader.
+        val qaRoot = File(
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+                .targetContext.cacheDir,
+            "btidalpool_gps_shape_qa_${System.nanoTime()}",
+        ).also { it.mkdirs() }
+        val out = try {
+            val chunks = btides.exportUploadChunks(
+                outputDir = qaRoot,
+                strongestRssiLookup = lookup,
+                sourceFile = sourceLog!!,
+                exclusionZones = zones,
+                exclusionCoordsLookup = coordsLookup,
+            )
+            JsonArray(
+                chunks.flatMap { chunk ->
+                    json.parseToJsonElement(chunk.file.readText()).jsonArray
+                },
+            ).toString()
+        } finally {
+            qaRoot.deleteRecursively()
+        }
 
         assertFalse("circle-zone device A (${a.bdaddr}) must be excluded from the upload file", out.contains(a.bdaddr))
         assertFalse("circle-zone device B (${b.bdaddr}) must be excluded from the upload file", out.contains(b.bdaddr))

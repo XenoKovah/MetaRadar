@@ -12,3 +12,4 @@
 local.properties
 app/release/app-release.aab
 signing/release-*.jks
+/.claude/worktrees/

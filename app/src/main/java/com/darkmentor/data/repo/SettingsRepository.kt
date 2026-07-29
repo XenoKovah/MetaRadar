@@ -23,10 +23,6 @@ class SettingsRepository(
     // the app-wide DataMappers Json so a forward-compat field added later won't crash an older read.
     private val zonesJson = Json { ignoreUnknownKeys = true }
 
-    fun setGarbagingTime(time: Long) {
-        sharedPreferences.edit().putLong(KEY_GARBAGING_TIME, time).apply()
-    }
-
     fun getGarbagingTime(): Long {
         return sharedPreferences.getLong(KEY_GARBAGING_TIME, TheAppConfig.DEVICE_GARBAGING_TIME)
     }
@@ -70,14 +66,6 @@ class SettingsRepository(
         sharedPreferences.edit().putBoolean(KEY_RUN_CONNECT_ALL_ON_STARTUP, value).apply()
     }
 
-    fun getFirstAppLaunchTime(): Long {
-        return sharedPreferences.getLong(KEY_FIRST_APP_LAUNCH_TIME, NO_APP_LAUNCH_TIME)
-    }
-
-    fun setFirstAppLaunchTime(value: Long) {
-        sharedPreferences.edit().putLong(KEY_FIRST_APP_LAUNCH_TIME, value).apply()
-    }
-
     fun setHideBackgroundLocationWarning(value: Long) {
         sharedPreferences.edit { putLong(KEY_HIDE_BACKGROUND_LOCATION_WARNING, value) }
         hideBackgroundLocationWarning.tryEmit(value)
@@ -112,22 +100,6 @@ class SettingsRepository(
         sharedPreferences.edit { putInt(KEY_CURRENT_BATCH_SORTING_STRATEGY_ID, value) }
     }
 
-    fun setDisclaimerWasAccepted(value: Boolean) {
-        sharedPreferences.edit { putBoolean(KEY_DISCLAIMER_WAS_ACCEPTED, value) }
-    }
-
-    fun getDisclaimerWasAccepted(): Boolean {
-        return sharedPreferences.getBoolean(KEY_DISCLAIMER_WAS_ACCEPTED, false)
-    }
-
-    fun getWhatIsThisAppForWasShown(): Boolean {
-        return sharedPreferences.getBoolean(KEY_WHAT_IS_THIS_APP_FOR_WAS_SHOWN, false)
-    }
-
-    fun setWhatIsThisAppForWasShown(value: Boolean) {
-        sharedPreferences.edit { putBoolean(KEY_WHAT_IS_THIS_APP_FOR_WAS_SHOWN, value) }
-    }
-
     fun getWakeUpScreenWhileScanning(): Boolean {
         // Default true: Android pauses BLE scans aggressively when the screen is off, and the
         // user-visible cost (the wakelock and the ~10s screen-on burst) is low compared to
@@ -157,8 +129,8 @@ class SettingsRepository(
     }
 
     /**
-     * User-defined GPS exclusion zones (max [ExclusionZone.MAX_ZONES]). Devices whose strongest-RSSI
-     * location falls inside any of these are omitted from BTIDALPOOL uploads. Stored as a JSON array
+     * User-defined GPS exclusion zones (max [ExclusionZone.MAX_ZONES]). Devices with any recorded
+     * location inside any of these are omitted from BTIDALPOOL uploads. Stored as a JSON array
      * of polymorphic [ExclusionZone] objects under [KEY_EXCLUSION_ZONES]. Empty list ⇒ key absent ⇒
      * the upload path behaves exactly as before this feature.
      */
@@ -249,12 +221,9 @@ class SettingsRepository(
         private const val KEY_PERMISSIONS_INTRO_WAS_SHOWN = "key_permissions_intro_was_shown"
         private const val KEY_RUN_ON_STARTUP = "key_run_on_startup"
         private const val KEY_RUN_CONNECT_ALL_ON_STARTUP = "key_run_connect_all_on_startup"
-        private const val KEY_FIRST_APP_LAUNCH_TIME = "key_first_app_launch_time"
         private const val KEY_SILENT_NETWORK_MODE = "silent_network_mode"
         private const val KEY_CURRENT_BATCH_SORTING_STRATEGY_ID = "key_current_batch_sorting_strategy_id"
         private const val KEY_HIDE_BACKGROUND_LOCATION_WARNING = "key_hide_background_location_warning"
-        private const val KEY_DISCLAIMER_WAS_ACCEPTED = "key_disclaimer_was_accepted"
-        private const val KEY_WHAT_IS_THIS_APP_FOR_WAS_SHOWN = "what_is_this_app_for_was_shown"
         private const val KEY_WAKE_UP_SCREEN_WHILE_SCANNING = "key_wake_up_screen_while_scanning"
         private const val KEY_BULK_SKIP_APPLE = "key_bulk_skip_apple"
         private const val KEY_BULK_SKIP_SAMSUNG = "key_bulk_skip_samsung"
@@ -266,6 +235,5 @@ class SettingsRepository(
         private const val KEY_BTIDALPOOL_USE_TEST_DB = "key_btidalpool_use_test_db"
         private const val KEY_AUTO_PAIR_ENABLED = "key_auto_pair_enabled"
 
-        const val NO_APP_LAUNCH_TIME = -1L
     }
 }

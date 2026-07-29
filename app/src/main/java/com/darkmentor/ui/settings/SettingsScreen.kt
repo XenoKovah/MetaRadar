@@ -5,7 +5,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -457,6 +456,14 @@ object SettingsScreen {
                     label = stringResource(R.string.btidalpool_upload_all_button),
                     onClick = { viewModel.onUploadAllBtidalpoolClick() },
                 )
+                viewModel.btidalpoolServerBusyMessage?.let { message ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = message,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 // Hidden-by-default debug override: re-upload archives already marked uploaded.
                 // Debug builds only; release builds (BuildConfig.DEBUG == false) never show it.
@@ -499,12 +506,11 @@ object SettingsScreen {
     ) {
         val inProgress = viewModel.btidalpoolUploadInProgress
         val baseHeight = 40.dp
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(baseHeight),
         ) {
-            val width = maxWidth
             Button(
                 modifier = Modifier
                     .fillMaxSize()
@@ -539,14 +545,13 @@ object SettingsScreen {
                 // Compose Button default.
                 Text(text = label, color = MaterialTheme.colorScheme.onPrimary, fontSize = fontSize)
             }
-            @Suppress("UNUSED_EXPRESSION") width
         }
     }
 
     @Composable
     private fun CancelBtidalpoolUploadDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         // Same shape as [CancelBTIDESExportDialog]: confirm/cancel pair, observe-the-state
-        // hook so a tap-outside also clears the VM flag. "Yes" cancels the upload Job.
+        // hook so a tap-outside also clears the VM flag. "Yes" cancels the WorkManager upload.
         val dialogState = rememberMaterialDialogState(initialValue = true)
         LaunchedEffect(dialogState.showing) {
             if (!dialogState.showing) onDismiss()
@@ -710,12 +715,11 @@ object SettingsScreen {
             )
         }
 
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(baseHeight),
         ) {
-            val width = maxWidth
             Button(
                 modifier = Modifier
                     .fillMaxSize()
@@ -745,7 +749,6 @@ object SettingsScreen {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                 Text(text = stringResource(R.string.btides_export_for_adb), color = MaterialTheme.colorScheme.onPrimary)
             }
-            @Suppress("UNUSED_EXPRESSION") width
         }
     }
 

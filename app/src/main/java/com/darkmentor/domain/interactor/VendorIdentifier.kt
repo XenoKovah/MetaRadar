@@ -226,7 +226,7 @@ class VendorIdentifier(
             ?: return null
         return runCatching { String(frame.data, Charsets.UTF_8) }
             .getOrNull()
-            ?.trim { it.isWhitespace() || it == ' ' }
+            ?.trim { it.isWhitespace() || it == '\u0000' }
             ?.takeIf { it.isNotEmpty() }
     }
 

@@ -1,11 +1,13 @@
 package com.darkmentor.domain.interactor
 
 import android.net.Uri
+import com.darkmentor.data.btidalpool.BtidalpoolGpsExclusionPolicy
 import com.darkmentor.data.btides.BTIDESRepository
 import com.darkmentor.data.btides.StrongestRssiLocation
 import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.data.repo.SettingsRepository
 import java.io.File
+import java.security.MessageDigest
 
 class ExportBTIDESInteractor(
     private val btidesRepository: BTIDESRepository,
@@ -13,21 +15,44 @@ class ExportBTIDESInteractor(
     private val settingsRepository: SettingsRepository,
 ) {
 
-    /** Per-device "strongest sample" lookup, passed into the export flow (the uploaded coordinate). */
-    private val strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { address ->
-        locationRepository.getStrongestRssiLocation(address)?.let {
-            StrongestRssiLocation(lat = it.lat, lng = it.lng, rssi = it.rssi, timeMs = it.time)
-        }
-    }
+    private data class EnrichmentLookups(
+        val strongest: suspend (String) -> StrongestRssiLocation?,
+        val exclusionCoordinates: suspend (String) -> List<Pair<Double, Double>>,
+    )
 
     /**
-     * All recorded (lat,lng) coordinates for a device — used for the GPS exclusion-zone check so a
-     * device is kept out of the upload if ANY coordinate it was seen at falls in a zone, not just
-     * its strongest/trilaterated one.
+     * Load all enrichment rows up front. With exclusion zones disabled this is one Room query;
+     * with zones enabled it is still one query because the full location rows also determine the
+     * strongest sample. The export loop itself performs only map lookups.
      */
-    private val exclusionCoordsLookup: suspend (String) -> List<Pair<Double, Double>> = { address ->
-        locationRepository.getAllLocationsByAddress(address).map { it.lat to it.lng }
+    private suspend fun enrichmentLookups(includeAllCoordinates: Boolean): EnrichmentLookups {
+        if (includeAllCoordinates) {
+            val allRows = locationRepository.getAllRssiLocationsByAddress()
+            val strongest = allRows.mapValues { (_, rows) ->
+                rows.asSequence()
+                    .filter { it.rssi != null }
+                    .maxWithOrNull(compareBy<com.darkmentor.data.database.dao.RssiLocationRow> {
+                        it.rssi
+                    }.thenBy { it.time })
+                    ?.toExportLocation()
+            }
+            return EnrichmentLookups(
+                strongest = { address -> strongest[address.uppercase()] },
+                exclusionCoordinates = { address ->
+                    allRows[address.uppercase()].orEmpty().map { it.lat to it.lng }
+                },
+            )
+        }
+        val strongest = locationRepository.getAllStrongestRssiLocations()
+            .mapValues { (_, row) -> row.toExportLocation() }
+        return EnrichmentLookups(
+            strongest = { address -> strongest[address.uppercase()] },
+            exclusionCoordinates = { emptyList() },
+        )
     }
+
+    private fun com.darkmentor.data.database.dao.RssiLocationRow.toExportLocation() =
+        StrongestRssiLocation(lat = lat, lng = lng, rssi = rssi, timeMs = time)
 
     /**
      * Write the merged BTIDES JSON array (active log only) to the user-selected SAF Uri.
@@ -36,7 +61,10 @@ class ExportBTIDESInteractor(
     suspend fun execute(
         uri: Uri,
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
-    ): Int = btidesRepository.exportTo(uri, strongestRssiLookup, onProgress)
+    ): Int {
+        val lookups = enrichmentLookups(includeAllCoordinates = false)
+        return btidesRepository.exportTo(uri, lookups.strongest, onProgress)
+    }
 
     /**
      * Write each BTIDES log (active + every rotated archive) to its own file under the app's
@@ -45,34 +73,63 @@ class ExportBTIDESInteractor(
      */
     suspend fun execute(
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
-    ): List<ExternalExport> = btidesRepository.exportAllToExternalFilesDir(strongestRssiLookup, onProgress)
-        .map { ExternalExport(it.file, it.deviceCount, it.isActive) }
+    ): List<ExternalExport> {
+        val lookups = enrichmentLookups(includeAllCoordinates = false)
+        return btidesRepository.exportAllToExternalFilesDir(lookups.strongest, onProgress)
+            .map { ExternalExport(it.file, it.deviceCount, it.isActive) }
+    }
 
     /**
-     * Export a single specific log file to the given OutputStream-backed target. Used by the
-     * BTIDALPOOL upload pipeline so it can produce a merged BTIDES file from one log at a
-     * time (active OR a specific archive).
+     * Durable-upload export. Produces compact standalone BTIDES arrays bounded by the server's
+     * raw JSON limit, then hashes the exact bytes that will be sent for outbox identity/dedup.
      */
-    suspend fun executeForLog(
+    suspend fun executeUploadChunks(
         logFile: File,
-        target: File,
+        outputDir: File,
         onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
-    ): Int {
-        target.parentFile?.mkdirs()
-        // Upload path only: honor the user's GPS exclusion zones. The other export paths
-        // (manual SAF export, external-dir dump) intentionally stay complete.
+    ): List<UploadChunk> {
         val exclusionZones = settingsRepository.getExclusionZones()
-        return target.outputStream().use {
-            btidesRepository.exportTo(
-                it,
-                strongestRssiLookup,
-                onProgress,
-                sourceFile = logFile,
-                exclusionZones = exclusionZones,
-                exclusionCoordsLookup = exclusionCoordsLookup,
+        val privacyPolicyFingerprint =
+            BtidalpoolGpsExclusionPolicy.fingerprint(exclusionZones)
+        val lookups = enrichmentLookups(includeAllCoordinates = exclusionZones.isNotEmpty())
+        return btidesRepository.exportUploadChunks(
+            outputDir = outputDir,
+            strongestRssiLookup = lookups.strongest,
+            onProgress = onProgress,
+            sourceFile = logFile,
+            exclusionZones = exclusionZones,
+            exclusionCoordsLookup = lookups.exclusionCoordinates,
+        ).map { chunk ->
+            UploadChunk(
+                file = chunk.file,
+                index = chunk.index,
+                deviceCount = chunk.deviceCount,
+                sha256 = sha256(chunk.file),
+                privacyPolicyFingerprint = privacyPolicyFingerprint,
             )
         }
     }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString(separator = "") { "%02x".format(it) }
+    }
+
+    data class UploadChunk(
+        val file: File,
+        val index: Int,
+        val deviceCount: Int,
+        val sha256: String,
+        val privacyPolicyFingerprint: String,
+    )
 
     data class ExternalExport(val file: File, val deviceCount: Int, val isActive: Boolean)
 }

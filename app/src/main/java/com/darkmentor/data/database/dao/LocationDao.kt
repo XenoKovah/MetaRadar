@@ -55,6 +55,52 @@ interface LocationDao {
     """)
     fun getStrongestRssiLocation(address: String): RssiLocationRow?
 
+    /**
+     * One strongest RSSI row per address in a single query. The explicit tie breakers make the
+     * result deterministic when multiple detections share the same RSSI.
+     */
+    @Query("""
+        SELECT
+            dtl.device_address AS device_address,
+            location.time AS time,
+            location.lat AS lat,
+            location.lng AS lng,
+            dtl.rssi AS rssi
+        FROM device_to_location AS dtl
+        INNER JOIN location ON location.time = dtl.location_time
+        WHERE dtl.rssi IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM device_to_location AS better
+              WHERE better.device_address = dtl.device_address
+                AND better.rssi IS NOT NULL
+                AND (
+                    better.rssi > dtl.rssi
+                    OR (better.rssi = dtl.rssi AND better.location_time > dtl.location_time)
+                    OR (
+                        better.rssi = dtl.rssi
+                        AND better.location_time = dtl.location_time
+                        AND better.id > dtl.id
+                    )
+                )
+          )
+    """)
+    fun getAllStrongestRssiLocations(): List<AddressedRssiLocationRow>
+
+    /** Every address/location join in one query for upload exclusion-zone evaluation. */
+    @Query("""
+        SELECT
+            dtl.device_address AS device_address,
+            location.time AS time,
+            location.lat AS lat,
+            location.lng AS lng,
+            dtl.rssi AS rssi
+        FROM device_to_location AS dtl
+        INNER JOIN location ON location.time = dtl.location_time
+        ORDER BY dtl.device_address, dtl.location_time
+    """)
+    fun getAllAddressedRssiLocations(): List<AddressedRssiLocationRow>
+
     @Query("SELECT * FROM location")
     fun observeAllLocations(): Flow<List<LocationEntity>>
 

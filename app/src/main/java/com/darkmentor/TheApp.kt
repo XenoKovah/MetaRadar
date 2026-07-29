@@ -4,13 +4,11 @@ import android.app.Application
 import com.google.android.material.color.DynamicColors
 import com.darkmentor.data.DataModule
 import com.darkmentor.domain.interactor.InteractorsModule
-import com.darkmentor.domain.interactor.SaveFirstAppLaunchTimeInteractor
 import com.darkmentor.ui.UiModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import org.koin.android.ext.android.getKoin
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
@@ -26,7 +24,6 @@ class TheApp : Application() {
         applyDynamicColors()
         initDi()
         initTimber()
-        saveFirstLaunchTime()
     }
 
     override fun onTerminate() {
@@ -41,10 +38,6 @@ class TheApp : Application() {
 
     private fun applyDynamicColors() {
         DynamicColors.applyToActivitiesIfAvailable(this)
-    }
-
-    private fun saveFirstLaunchTime() {
-        getKoin().get<SaveFirstAppLaunchTimeInteractor>().execute()
     }
 
     private fun initDi() {

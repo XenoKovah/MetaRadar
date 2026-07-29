@@ -303,7 +303,7 @@ object BTIDESGattBuilder {
     private fun tryDecodeUtf8(bytes: ByteArray): String? {
         if (bytes.isEmpty()) return null
         return try {
-            val s = String(bytes, Charsets.UTF_8).trimEnd(' ', ' ')
+            val s = String(bytes, Charsets.UTF_8).trimEnd('\u0000', ' ')
             if (s.all { it.code in 0x20..0x7E || it.code >= 0xA0 || it == '\t' || it == '\n' || it == '\r' }) s else null
         } catch (_: Throwable) {
             null

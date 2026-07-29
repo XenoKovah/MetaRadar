@@ -1,9 +1,12 @@
 package com.darkmentor.domain.interactor
 
-import android.content.Context
 import com.darkmentor.data.btidalpool.BtidalpoolAuthRepository
 import com.darkmentor.data.btidalpool.BtidalpoolClient
+import com.darkmentor.data.btidalpool.BtidalpoolOutboxRepository
+import com.darkmentor.data.btidalpool.BtidalpoolResumableUploader
+import com.darkmentor.data.btidalpool.BtidalpoolUploadPrivacyValidator
 import com.darkmentor.data.btides.BTIDESRepository
+import com.darkmentor.data.database.entity.BtidalpoolUploadEntity
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -11,229 +14,424 @@ import io.mockk.mockk
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertSame
 import junit.framework.TestCase.assertTrue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Pins the per-log try/catch contract of [UploadToBtidalpoolInteractor.executeAll]: when one
- * log's upload throws, the loop must capture the failure as a [UploadToBtidalpoolInteractor.LogResult.Failed]
- * entry and continue with the remaining logs. Without this guarantee, a transient network
- * blip on archive #2 would silently abandon archives #3..N and the user would have to
- * re-trigger the upload — easily missed because the UI shows "upload finished" with the
- * results it does have.
- *
- * The test fakes the BTIDES side (real temp files, mockk-driven exporter that writes a few
- * bytes into the temp target) and the network side (mockk-driven [BtidalpoolClient]). The
- * interactor itself runs unmodified, so the test exercises the actual loop body — not a
- * paraphrased copy.
- *
- * Note on test runner: uses plain `runBlocking` rather than `kotlinx-coroutines-test`'s
- * `runTest`. Adding `coroutines-test` to the JVM-test classpath would be a new dep for one
- * test; the existing JVM tests in this repo all use `runBlocking` or non-suspending helpers
- * (matches the project's stated "don't add test deps unless you need them" rule).
- */
 class UploadToBtidalpoolInteractorExecuteAllTest {
-
-    private val cacheTempDir: File = Files.createTempDirectory("upload_executeAll_test").toFile()
+    private val tempDir = Files.createTempDirectory("btidalpool_outbox_test").toFile()
 
     @After
     fun cleanup() {
-        cacheTempDir.deleteRecursively()
+        tempDir.deleteRecursively()
     }
 
     @Test
-    fun `one log throwing during uploadFile does not abort the rest of the loop`() = runBlocking {
-        // GIVEN: signed-in, three rotated archives, and a BtidalpoolClient whose uploadFile
-        // succeeds, throws, and succeeds in turn.
-        val context = mockk<Context>()
-        every { context.cacheDir } returns cacheTempDir
+    fun `not signed in short-circuits before logs or v4 upload`() = runBlocking {
+        val auth = mockk<BtidalpoolAuthRepository>()
+        every { auth.current() } returns null
+        val btides = mockk<BTIDESRepository>(relaxed = true)
+        val uploader = mockk<BtidalpoolResumableUploader>(relaxed = true)
+        val interactor = interactor(btides = btides, auth = auth, uploader = uploader)
 
-        val authRepo = mockk<BtidalpoolAuthRepository>()
-        every { authRepo.current() } returns BtidalpoolAuthRepository.AuthState(
-            token = "tok",
-            refreshToken = "ref",
-            email = "tester@example.com",
+        val result = interactor.execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = false,
+            allowReupload = false,
         )
 
-        val btidesRepo = mockk<BTIDESRepository>()
-        coEvery { btidesRepo.rotateActive() } returns null
-        val log1 = createLog("log1.jsonl", """{"sentinel":1}""")
-        val log2 = createLog("log2.jsonl", """{"sentinel":2}""")
-        val log3 = createLog("log3.jsonl", """{"sentinel":3}""")
-        coEvery { btidesRepo.listLogs() } returns listOf(
-            BTIDESRepository.LogFile(log1, isActive = false),
-            BTIDESRepository.LogFile(log2, isActive = false),
-            BTIDESRepository.LogFile(log3, isActive = false),
-        )
-        // The interactor records a successful upload via markUploaded() (it no longer deletes the
-        // data). Stub the upload-tracking calls so the non-relaxed mock doesn't throw; the
-        // success/failure split itself is what matters here.
-        coEvery { btidesRepo.uploadedLogNames() } returns emptySet()
-        coEvery { btidesRepo.markUploaded(any()) } returns Unit
-
-        val exporter = mockk<ExportBTIDESInteractor>()
-        // Side effect: write a small JSON blob into the tempExport target so [uploadOneLog]
-        // sees length > 0 and proceeds past the EmptyLog short-circuit. Returns deviceCount=5.
-        coEvery { exporter.executeForLog(any(), any(), any()) } coAnswers {
-            val target = secondArg<File>()
-            target.writeText("""{"AdvData":[]}""")
-            5
+        assertSame(UploadToBtidalpoolInteractor.Execution.NotSignedIn, result)
+        coVerify(exactly = 0) { btides.listLogs() }
+        coVerify(exactly = 0) {
+            uploader.upload(any(), any(), any(), any(), any())
         }
+    }
 
-        val client = mockk<BtidalpoolClient>()
-        // Sequential answers: success → throw → success. Counter inside coAnswers because the
-        // sequence depends on call order, not arg matching.
-        var uploadCallCount = 0
-        coEvery { client.uploadFile(any(), any(), any(), any(), any()) } coAnswers {
-            uploadCallCount += 1
-            when (uploadCallCount) {
-                1 -> BtidalpoolClient.UploadResult.Success
-                2 -> throw RuntimeException("simulated transient network failure on archive 2")
-                3 -> BtidalpoolClient.UploadResult.Success
-                else -> error("uploadFile called more times than the test expected (got $uploadCallCount)")
+    @Test
+    fun `exact chunk completion lookup is scoped to account and test destination`() = runBlocking {
+        val authState = BtidalpoolAuthRepository.AuthState("token", "refresh", "one@example.com")
+        val auth = mockk<BtidalpoolAuthRepository>()
+        every { auth.current() } returns authState
+        val scope = BtidalpoolOutboxRepository.Scope("test", "account-one")
+        val outbox = mockk<BtidalpoolOutboxRepository>()
+        every { outbox.scope(authState, true) } returns scope
+        coEvery { outbox.recoverInterrupted(scope) } returns Unit
+
+        val source = File(tempDir, "archive.jsonl").apply { writeText("""{"bdaddr":"A"}""") }
+        val btides = mockk<BTIDESRepository>()
+        coEvery { btides.rotateActive() } returns null
+        coEvery { btides.listLogs() } returns listOf(BTIDESRepository.LogFile(source, false))
+        coEvery { outbox.sha256(source) } returns "source-hash"
+        coEvery { outbox.incompleteBatchId("source-hash", scope) } returns null
+        val batchDir = File(tempDir, "batch").apply { mkdirs() }
+        every { outbox.newBatchDirectory(any()) } returns ("batch" to batchDir)
+        val chunkFile = File(batchDir, "chunk.btides").apply { writeText("[]") }
+        val exporter = mockk<ExportBTIDESInteractor>()
+        coEvery { exporter.executeUploadChunks(source, batchDir, null) } returns listOf(
+            ExportBTIDESInteractor.UploadChunk(
+                chunkFile,
+                0,
+                1,
+                "exact-chunk-hash",
+                TEST_POLICY,
+            ),
+        )
+        coEvery { outbox.succeededChunkId("exact-chunk-hash", scope) } returns "done-row"
+        coEvery { outbox.readyChunks(scope) } returns emptyList()
+        coEvery { outbox.earliestRetryAt(scope) } returns null
+
+        val result = interactor(
+            btides = btides,
+            auth = auth,
+            outbox = outbox,
+            exporter = exporter,
+        ).execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = true,
+            allowReupload = false,
+        )
+
+        assertTrue(result is UploadToBtidalpoolInteractor.Execution.Finished)
+        result as UploadToBtidalpoolInteractor.Execution.Finished
+        assertEquals(1, result.summary.skippedUploadedLogs)
+        coVerify(exactly = 1) { outbox.succeededChunkId("exact-chunk-hash", scope) }
+    }
+
+    @Test
+    fun `retryable v4 upload records next attempt and asks worker to continue later`() =
+        runBlocking {
+            val fixture = readyFixture("retry.btides")
+            val uploader = mockk<BtidalpoolResumableUploader>()
+            coEvery {
+                uploader.upload(fixture.row, fixture.payload, false, any(), any())
+            } returns BtidalpoolClient.UploadResult.RetryableFailure(
+                httpCode = 503,
+                body = "temporarily unavailable",
+                retryAfterMillis = 60_000,
+            )
+
+            val result = interactor(
+                auth = fixture.auth,
+                outbox = fixture.outbox,
+                uploader = uploader,
+            ).execute(
+                mode = UploadToBtidalpoolInteractor.Mode.ALL,
+                useTestDb = false,
+                allowReupload = false,
+                resumeOnly = true,
+                expectedAccountKey = fixture.scope.accountKey,
+            )
+
+            assertTrue(result is UploadToBtidalpoolInteractor.Execution.RetryRequired)
+            result as UploadToBtidalpoolInteractor.Execution.RetryRequired
+            assertTrue(result.delayMillis >= 60_000)
+            coVerify(exactly = 1) {
+                fixture.outbox.markRetryable(
+                    fixture.row,
+                    match { it.contains("temporarily") },
+                    any(),
+                )
             }
         }
 
-        val interactor = UploadToBtidalpoolInteractor(
-            btidesRepository = btidesRepo,
-            exportBTIDESInteractor = exporter,
-            client = client,
-            authRepository = authRepo,
-            context = context,
-        )
-
-        // WHEN
-        val outcome = interactor.executeAll(useTestDb = true)
-
-        // THEN: three results, second is Failed, third still ran.
-        assertTrue(
-            "executeAll must return WithResults when signed in (got $outcome)",
-            outcome is UploadToBtidalpoolInteractor.Outcome.WithResults,
-        )
-        outcome as UploadToBtidalpoolInteractor.Outcome.WithResults
-        assertEquals("Three input logs must yield three result entries", 3, outcome.results.size)
-        assertTrue(
-            "Log 1 should be Success — got ${outcome.results[0]}",
-            outcome.results[0] is UploadToBtidalpoolInteractor.LogResult.Success,
-        )
-        assertTrue(
-            "Log 2 should be Failed — the loop must catch the throw, not propagate it (got ${outcome.results[1]})",
-            outcome.results[1] is UploadToBtidalpoolInteractor.LogResult.Failed,
-        )
-        assertTrue(
-            "Log 3 should be Success — proves the loop did not break after log 2 threw " +
-                    "(got ${outcome.results[2]})",
-            outcome.results[2] is UploadToBtidalpoolInteractor.LogResult.Success,
-        )
-        // Failed log's message should at least include the simulated cause text or its class
-        // name, so a real-world triage path can find the root cause without re-running.
-        val failedMsg = (outcome.results[1] as UploadToBtidalpoolInteractor.LogResult.Failed).message
-        assertTrue(
-            "Failed.message should contain the exception message (got: $failedMsg)",
-            failedMsg.contains("simulated transient network failure"),
-        )
-        // The biggest behavioural assertion: uploadFile was called exactly 3 times. If the
-        // loop had aborted after the throw on call 2, we'd see only 2 calls.
-        coVerify(exactly = 3) { client.uploadFile(any(), any(), any(), any(), any()) }
-    }
-
     @Test
-    fun `not signed in short-circuits before touching listLogs or the network`() = runBlocking {
-        val context = mockk<Context>(relaxed = true)
-        val authRepo = mockk<BtidalpoolAuthRepository>()
-        every { authRepo.current() } returns null
-        val btidesRepo = mockk<BTIDESRepository>(relaxed = true)
-        val exporter = mockk<ExportBTIDESInteractor>(relaxed = true)
-        val client = mockk<BtidalpoolClient>(relaxed = true)
+    fun `v4 auth rejection keeps payload retryable and requires sign-in`() = runBlocking {
+        val fixture = readyFixture("auth.btides")
+        val uploader = mockk<BtidalpoolResumableUploader>()
+        coEvery {
+            uploader.upload(fixture.row, fixture.payload, false, any(), any())
+        } returns BtidalpoolClient.UploadResult.AuthFailed
 
-        val interactor = UploadToBtidalpoolInteractor(btidesRepo, exporter, client, authRepo, context)
-        val outcome = interactor.executeAll(useTestDb = true)
-
-        assertSame(UploadToBtidalpoolInteractor.Outcome.NotSignedIn, outcome)
-        // No log enumeration and no network calls — both expensive on a slow link, and the
-        // OAuth-prompt UI is the contract for the NotSignedIn path.
-        coVerify(exactly = 0) { btidesRepo.listLogs() }
-        coVerify(exactly = 0) { client.uploadFile(any(), any(), any(), any(), any()) }
-    }
-
-    @Test
-    fun `empty log list returns a single EmptyLog result`() = runBlocking {
-        val context = mockk<Context>()
-        every { context.cacheDir } returns cacheTempDir
-
-        val authRepo = mockk<BtidalpoolAuthRepository>()
-        every { authRepo.current() } returns BtidalpoolAuthRepository.AuthState("t", "r", null)
-
-        val btidesRepo = mockk<BTIDESRepository>()
-        coEvery { btidesRepo.rotateActive() } returns null
-        coEvery { btidesRepo.uploadedLogNames() } returns emptySet()
-        coEvery { btidesRepo.listLogs() } returns emptyList()
-
-        val exporter = mockk<ExportBTIDESInteractor>(relaxed = true)
-        val client = mockk<BtidalpoolClient>(relaxed = true)
-
-        val interactor = UploadToBtidalpoolInteractor(btidesRepo, exporter, client, authRepo, context)
-        val outcome = interactor.executeAll(useTestDb = true)
-
-        assertTrue(outcome is UploadToBtidalpoolInteractor.Outcome.WithResults)
-        outcome as UploadToBtidalpoolInteractor.Outcome.WithResults
-        assertEquals(1, outcome.results.size)
-        assertTrue(
-            "Empty corpus returns exactly one EmptyLog result so the UI can render the " +
-                    "'nothing to upload' state without special-casing on size==0",
-            outcome.results[0] is UploadToBtidalpoolInteractor.LogResult.EmptyLog,
+        val result = interactor(
+            auth = fixture.auth,
+            outbox = fixture.outbox,
+            uploader = uploader,
+        ).execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = false,
+            allowReupload = false,
+            resumeOnly = true,
+            expectedAccountKey = fixture.scope.accountKey,
         )
-        // No network at all on an empty corpus.
-        coVerify(exactly = 0) { client.uploadFile(any(), any(), any(), any(), any()) }
-    }
 
-    @Test
-    fun `already-uploaded archives are skipped and kept, unless allowReupload`() = runBlocking {
-        val context = mockk<Context>()
-        every { context.cacheDir } returns cacheTempDir
-        val authRepo = mockk<BtidalpoolAuthRepository>()
-        every { authRepo.current() } returns BtidalpoolAuthRepository.AuthState("t", "r", null)
-
-        val btidesRepo = mockk<BTIDESRepository>()
-        coEvery { btidesRepo.rotateActive() } returns null
-        val log1 = createLog("log1.jsonl", """{"s":1}""")
-        val log2 = createLog("log2.jsonl", """{"s":2}""")
-        val log3 = createLog("log3.jsonl", """{"s":3}""")
-        coEvery { btidesRepo.listLogs() } returns listOf(
-            BTIDESRepository.LogFile(log1, isActive = false),
-            BTIDESRepository.LogFile(log2, isActive = false),
-            BTIDESRepository.LogFile(log3, isActive = false),
-        )
-        coEvery { btidesRepo.uploadedLogNames() } returns setOf("log2.jsonl") // log2 already sent
-        coEvery { btidesRepo.markUploaded(any()) } returns Unit
-
-        val exporter = mockk<ExportBTIDESInteractor>()
-        coEvery { exporter.executeForLog(any(), any(), any()) } coAnswers {
-            secondArg<File>().writeText("""{"AdvData":[]}"""); 5
+        assertTrue(result is UploadToBtidalpoolInteractor.Execution.AuthRequired)
+        coVerify(exactly = 1) {
+            fixture.outbox.markRetryable(fixture.row, any(), any())
         }
-        val client = mockk<BtidalpoolClient>()
-        coEvery { client.uploadFile(any(), any(), any(), any(), any()) } returns BtidalpoolClient.UploadResult.Success
-
-        val interactor = UploadToBtidalpoolInteractor(btidesRepo, exporter, client, authRepo, context)
-
-        // Default: log2 is skipped -> only 2 uploads, and NO file is deleted (data is kept).
-        val outcome = interactor.executeAll(useTestDb = true)
-        outcome as UploadToBtidalpoolInteractor.Outcome.WithResults
-        assertEquals(2, outcome.results.size)
-        coVerify(exactly = 2) { client.uploadFile(any(), any(), any(), any(), any()) }
-        assertTrue("uploaded archives must NOT be deleted", log1.exists() && log2.exists() && log3.exists())
-
-        // Debug override: allowReupload re-sends all three (including the already-uploaded log2).
-        interactor.executeAll(useTestDb = true, allowReupload = true)
-        coVerify(exactly = 5) { client.uploadFile(any(), any(), any(), any(), any()) } // 2 + 3
     }
 
-    private fun createLog(name: String, content: String): File {
-        val f = File(cacheTempDir, name)
-        f.writeText(content)
-        return f
+    @Test
+    fun `overload retry exhaustion is a final user-facing failure`() = runBlocking {
+        val fixture = readyFixture("exhausted.btides", expectsPermanentFailure = true)
+        val uploader = mockk<BtidalpoolResumableUploader>()
+        coEvery {
+            uploader.upload(fixture.row, fixture.payload, false, any(), any())
+        } returns BtidalpoolClient.UploadResult.RetryExhausted(
+            503,
+            "Server busy; retry limit reached",
+        )
+
+        val result = interactor(
+            auth = fixture.auth,
+            outbox = fixture.outbox,
+            uploader = uploader,
+        ).execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = false,
+            allowReupload = false,
+            resumeOnly = true,
+            expectedAccountKey = fixture.scope.accountKey,
+        )
+
+        assertTrue(result is UploadToBtidalpoolInteractor.Execution.Finished)
+        result as UploadToBtidalpoolInteractor.Execution.Finished
+        assertTrue(result.summary.permanentFailures.single().contains("retry limit reached"))
+    }
+
+    @Test
+    fun `privacy rejection invalidates batch and never enters network uploader`() = runBlocking {
+        val fixture = readyFixture("privacy-blocked.btides", expectsPermanentFailure = true)
+        val uploader = mockk<BtidalpoolResumableUploader>(relaxed = true)
+        val privacy = mockk<BtidalpoolUploadPrivacyValidator>()
+        coEvery {
+            privacy.validate(fixture.payload, TEST_POLICY)
+        } returns BtidalpoolUploadPrivacyValidator.Validation.Blocked(
+            "A queued device now has location history inside an exclusion zone",
+        )
+        coEvery { fixture.outbox.invalidatePrivacyPolicy(fixture.row.batchId) } returns Unit
+
+        val result = interactor(
+            auth = fixture.auth,
+            outbox = fixture.outbox,
+            uploader = uploader,
+            privacy = privacy,
+        ).execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = false,
+            allowReupload = false,
+            resumeOnly = true,
+            expectedAccountKey = fixture.scope.accountKey,
+        )
+
+        assertTrue(result is UploadToBtidalpoolInteractor.Execution.Finished)
+        result as UploadToBtidalpoolInteractor.Execution.Finished
+        assertTrue(result.summary.permanentFailures.single().contains("rebuild it safely"))
+        coVerify(exactly = 1) {
+            fixture.outbox.invalidatePrivacyPolicy(fixture.row.batchId)
+        }
+        coVerify(exactly = 0) {
+            uploader.upload(any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `legacy batch without privacy marker is discarded and re-exported from source`() =
+        runBlocking {
+            val authState =
+                BtidalpoolAuthRepository.AuthState("token", "refresh", "one@example.com")
+            val auth = mockk<BtidalpoolAuthRepository>()
+            every { auth.current() } returns authState
+            val scope = BtidalpoolOutboxRepository.Scope("production", "account-one")
+            val outbox = mockk<BtidalpoolOutboxRepository>()
+            every { outbox.scope(authState, false) } returns scope
+            coEvery { outbox.recoverInterrupted(scope) } returns Unit
+
+            val source = File(tempDir, "legacy.jsonl").apply {
+                writeText("""{"bdaddr":"AA:BB:CC:DD:EE:FF"}""")
+            }
+            val btides = mockk<BTIDESRepository>()
+            coEvery { btides.rotateActive() } returns null
+            coEvery { btides.listLogs() } returns listOf(BTIDESRepository.LogFile(source, false))
+            coEvery { outbox.sha256(source) } returns "source-hash"
+            coEvery { outbox.incompleteBatchId("source-hash", scope) } returns "legacy-batch"
+            every { outbox.privacyPolicyFingerprint("legacy-batch") } returns null
+            coEvery { outbox.discardBatch("legacy-batch") } returns Unit
+
+            val batchDir = File(tempDir, "replacement-batch").apply { mkdirs() }
+            every { outbox.newBatchDirectory(any()) } returns ("replacement-batch" to batchDir)
+            val chunkFile = File(batchDir, "chunk.btides").apply { writeText("[]") }
+            val replacement = ExportBTIDESInteractor.UploadChunk(
+                chunkFile,
+                0,
+                1,
+                "replacement-hash",
+                TEST_POLICY,
+            )
+            val exporter = mockk<ExportBTIDESInteractor>()
+            coEvery {
+                exporter.executeUploadChunks(source, batchDir, null)
+            } returns listOf(replacement)
+            coEvery { outbox.succeededChunkId("replacement-hash", scope) } returns null
+            coEvery {
+                outbox.insertBatch(
+                    "replacement-batch",
+                    source,
+                    "source-hash",
+                    scope,
+                    listOf(replacement),
+                )
+            } returns Unit
+            coEvery { outbox.readyChunks(scope) } returns emptyList()
+            coEvery { outbox.earliestRetryAt(scope) } returns null
+
+            val privacy = mockk<BtidalpoolUploadPrivacyValidator>()
+            every { privacy.currentPolicyFingerprint() } returns TEST_POLICY
+
+            val result = interactor(
+                btides = btides,
+                exporter = exporter,
+                auth = auth,
+                outbox = outbox,
+                privacy = privacy,
+            ).execute(
+                mode = UploadToBtidalpoolInteractor.Mode.ALL,
+                useTestDb = false,
+                allowReupload = false,
+            )
+
+            assertTrue(result is UploadToBtidalpoolInteractor.Execution.Finished)
+            result as UploadToBtidalpoolInteractor.Execution.Finished
+            assertEquals(1, result.summary.preparedLogs)
+            coVerify(exactly = 1) { outbox.discardBatch("legacy-batch") }
+            coVerify(exactly = 1) { exporter.executeUploadChunks(source, batchDir, null) }
+            coVerify(exactly = 0) { outbox.resetBatchForManualRetry(any()) }
+        }
+
+    @Test
+    fun `ready chunks upload through v4 with bounded parallelism of two`() = runBlocking {
+        val authState = BtidalpoolAuthRepository.AuthState("token", "refresh", "one@example.com")
+        val auth = mockk<BtidalpoolAuthRepository>()
+        every { auth.current() } returns authState
+        val scope = BtidalpoolOutboxRepository.Scope("production", "account-one")
+        val outbox = mockk<BtidalpoolOutboxRepository>()
+        every { outbox.scope(authState, false) } returns scope
+        coEvery { outbox.recoverInterrupted(scope) } returns Unit
+
+        val firstPayload = File(tempDir, "parallel_one.btides").apply { writeText("[]") }
+        val secondPayload = File(tempDir, "parallel_two.btides").apply { writeText("[]") }
+        val rows = listOf(
+            row(firstPayload, id = "row-one"),
+            row(secondPayload, id = "row-two"),
+        )
+        coEvery { outbox.readyChunks(scope) } returns rows
+        every { outbox.privacyPolicyFingerprint(any()) } returns TEST_POLICY
+        coEvery { outbox.markInProgress(any()) } returns Unit
+        coEvery { outbox.markSucceeded(any()) } returns Unit
+        coEvery { outbox.earliestRetryAt(scope) } returns null
+
+        val active = AtomicInteger()
+        val maximum = AtomicInteger()
+        val uploader = mockk<BtidalpoolResumableUploader>()
+        coEvery { uploader.upload(any(), any(), false, any(), any()) } coAnswers {
+            val now = active.incrementAndGet()
+            maximum.updateAndGet { current -> maxOf(current, now) }
+            delay(75)
+            active.decrementAndGet()
+            BtidalpoolClient.UploadResult.Success
+        }
+
+        val result = interactor(
+            auth = auth,
+            outbox = outbox,
+            uploader = uploader,
+        ).execute(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = false,
+            allowReupload = false,
+            resumeOnly = true,
+            expectedAccountKey = scope.accountKey,
+        )
+
+        assertTrue(result is UploadToBtidalpoolInteractor.Execution.Finished)
+        assertEquals(2, maximum.get())
+        coVerify(exactly = 2) { outbox.markSucceeded(any()) }
+    }
+
+    @Test
+    fun `retry policy honors Retry-After and grows exponentially`() {
+        assertEquals(60_000, BtidalpoolRetryPolicy.nextDelayMillis(1, 60_000, jitterMillis = 0))
+        assertEquals(30_000, BtidalpoolRetryPolicy.nextDelayMillis(2, null, jitterMillis = 0))
+        assertEquals(60_000, BtidalpoolRetryPolicy.nextDelayMillis(3, null, jitterMillis = 0))
+    }
+
+    private data class ReadyFixture(
+        val auth: BtidalpoolAuthRepository,
+        val scope: BtidalpoolOutboxRepository.Scope,
+        val outbox: BtidalpoolOutboxRepository,
+        val payload: File,
+        val row: BtidalpoolUploadEntity,
+    )
+
+    private fun readyFixture(
+        filename: String,
+        expectsPermanentFailure: Boolean = false,
+    ): ReadyFixture {
+        val authState = BtidalpoolAuthRepository.AuthState("token", "refresh", "one@example.com")
+        val auth = mockk<BtidalpoolAuthRepository>()
+        every { auth.current() } returns authState
+        val scope = BtidalpoolOutboxRepository.Scope("production", "account-one")
+        val outbox = mockk<BtidalpoolOutboxRepository>()
+        every { outbox.scope(authState, false) } returns scope
+        coEvery { outbox.recoverInterrupted(scope) } returns Unit
+        val payload = File(tempDir, filename).apply { writeText("[]") }
+        val row = row(payload)
+        coEvery { outbox.readyChunks(scope) } returns listOf(row)
+        every { outbox.privacyPolicyFingerprint(row.batchId) } returns TEST_POLICY
+        coEvery { outbox.markInProgress(row) } returns Unit
+        if (expectsPermanentFailure) {
+            coEvery { outbox.markPermanentFailure(row, any()) } returns Unit
+            coEvery { outbox.earliestRetryAt(scope) } returns null
+        } else {
+            coEvery { outbox.markRetryable(row, any(), any()) } returns Unit
+        }
+        return ReadyFixture(auth, scope, outbox, payload, row)
+    }
+
+    private fun row(payload: File, id: String = "row") = BtidalpoolUploadEntity(
+        id = id,
+        batchId = "batch",
+        sourceLogName = "source.jsonl",
+        sourceSha256 = "source",
+        chunkIndex = 0,
+        chunkCount = 1,
+        chunkSha256 = "chunk",
+        destination = "production",
+        accountKey = "account-one",
+        payloadPath = payload.absolutePath,
+        payloadBytes = payload.length(),
+        deviceCount = 2,
+        createdAtMs = 1,
+        updatedAtMs = 1,
+    )
+
+    private fun interactor(
+        btides: BTIDESRepository = mockk(relaxed = true),
+        exporter: ExportBTIDESInteractor = mockk(relaxed = true),
+        auth: BtidalpoolAuthRepository = mockk(relaxed = true),
+        outbox: BtidalpoolOutboxRepository = mockk(relaxed = true),
+        uploader: BtidalpoolResumableUploader = mockk(relaxed = true),
+        privacy: BtidalpoolUploadPrivacyValidator = allowingPrivacyValidator(),
+    ) = UploadToBtidalpoolInteractor(
+        btidesRepository = btides,
+        exportBTIDESInteractor = exporter,
+        authRepository = auth,
+        outboxRepository = outbox,
+        resumableUploader = uploader,
+        privacyValidator = privacy,
+    )
+
+    private fun allowingPrivacyValidator() = mockk<BtidalpoolUploadPrivacyValidator>().also {
+        every { it.currentPolicyFingerprint() } returns TEST_POLICY
+        coEvery { it.validate(any(), any()) } returns
+            BtidalpoolUploadPrivacyValidator.Validation.Safe
+    }
+
+    private companion object {
+        const val TEST_POLICY =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
 }

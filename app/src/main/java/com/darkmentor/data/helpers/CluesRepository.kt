@@ -64,17 +64,6 @@ class CluesRepository(
         return ensureLoaded()[normalizeUuid(uuid)]
     }
 
-    /** Returns true if any UUID belongs to a company whose name contains [companyContains]. */
-    fun anyUuidIsCompany(uuids: Collection<String>, companyContains: String): Boolean {
-        val map = ensureLoaded()
-        val needle = companyContains.lowercase()
-        for (u in uuids) {
-            val e = map[normalizeUuid(u)] ?: continue
-            if ((e.company ?: "").lowercase().contains(needle)) return true
-        }
-        return false
-    }
-
     private fun parse(text: String): Map<String, Entry> {
         val arr = json.parseToJsonElement(text).jsonArray
         val out = LinkedHashMap<String, Entry>(arr.size * 2)

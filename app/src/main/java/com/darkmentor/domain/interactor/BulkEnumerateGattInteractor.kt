@@ -412,7 +412,7 @@ class BulkEnumerateGattInteractor(
                                         // (was a wasted alloc per char read on the bulk-enum hot path).
                                         val bytes = event.value
                                         // Trim NULs that some peers append, then decode as UTF-8.
-                                        val name = String(bytes, Charsets.UTF_8).trimEnd(' ').trim()
+                                        val name = String(bytes, Charsets.UTF_8).trimEnd('\u0000').trim()
                                         if (name.isNotEmpty()) {
                                             devicesRepository.setNameIfBetter(device.address, name)
                                             // A Galaxy / iPhone device that didn't advertise its name is

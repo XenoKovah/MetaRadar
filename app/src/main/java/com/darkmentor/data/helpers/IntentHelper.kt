@@ -25,12 +25,6 @@ class IntentHelper(
      */
     private val pendingConsumers = mutableMapOf<Int, (result: Uri?) -> Unit>()
 
-    fun selectDirectory(onResult: (directoryPath: Uri?) -> Unit) {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-        activityProvider.requireActivity().startActivityForResult(intent, ACTIVITY_RESULT_SELECT_DIRECTORY)
-        pendingConsumers[ACTIVITY_RESULT_SELECT_DIRECTORY] = onResult
-    }
-
     fun selectFile(onResult: (filePath: Uri?) -> Unit) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -147,7 +141,6 @@ class IntentHelper(
     }
 
     companion object {
-        private const val ACTIVITY_RESULT_SELECT_DIRECTORY = 1
         private const val ACTIVITY_RESULT_SELECT_FILE = 2
         private const val ACTIVITY_RESULT_CREATE_FILE = 3
 

@@ -11,17 +11,17 @@ import kotlin.math.cos
  * friend's house) out of the public BTIDALPOOL upload. Up to [MAX_ZONES] are stored (see
  * [com.darkmentor.data.repo.SettingsRepository]).
  *
- * During a BTIDALPOOL upload, any device whose strongest-RSSI GPS sample — the only coordinate the
- * exporter emits per device (one `GPSArray` entry, see [com.darkmentor.data.btides.BTIDESRepository])
- * — falls inside ANY zone is omitted from the export ENTIRELY (whole-device drop, for privacy).
- * Manual on-device exports are unaffected; exclusion is upload-only.
+ * During a BTIDALPOOL upload, any device with ANY recorded GPS sample inside a zone is omitted
+ * from the export ENTIRELY (whole-device drop, for privacy). This deliberately checks the full
+ * location history rather than only the strongest-RSSI coordinate emitted in `GPSArray`, so a
+ * weaker observation inside a sensitive location cannot leak through. Manual on-device exports
+ * are unaffected; exclusion is upload-only.
  *
  * Serialised polymorphically exactly like [DeviceFilter]: each subclass carries a @SerialName
  * discriminator, so kotlinx.serialization round-trips a `List<ExclusionZone>` as a JSON array of
  * tagged objects with no custom serializer.
  *
- * Scope note: containment is evaluated against the single strongest-RSSI coordinate the exporter
- * emits, not the device's full location history.
+ * Scope note: containment is evaluated against the device's full recorded location history.
  */
 @Serializable
 sealed class ExclusionZone {

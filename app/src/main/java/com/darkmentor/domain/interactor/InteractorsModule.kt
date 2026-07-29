@@ -24,13 +24,11 @@ object InteractorsModule {
         factory { CreateBTIDESFileInteractor(get(), get()) }
         factory { ExportBTIDESInteractor(get(), get(), get()) }
         factory { ClearBTIDESLogInteractor(get()) }
-        factory { UploadToBtidalpoolInteractor(get(), get(), get(), get(), get()) }
+        factory { UploadToBtidalpoolInteractor(get(), get(), get(), get(), get(), get()) }
         single { VendorIdentifier(get()) }
         factory { BulkEnumerateGattInteractor(get(), get(), get(), get(), get(), get(), get()) }
         factory { CheckDeviceLocationHistoryInteractor(get()) }
         factory { CheckUserLocationHistoryInteractor(get()) }
-        factory { GetAppUsageDaysInteractor(get()) }
-        factory { SaveFirstAppLaunchTimeInteractor(get()) }
         factory { SaveOrMergeBatchInteractor(get(), get(), get(), get(), get()) }
         factory { GetDatabaseInfoInteractor(get(), get()) }
     }

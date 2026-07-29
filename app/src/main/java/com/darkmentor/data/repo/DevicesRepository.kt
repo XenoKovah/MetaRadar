@@ -188,13 +188,6 @@ class DevicesRepository(
         }
     }
 
-    suspend fun saveDevice(data: DeviceData) {
-        withContext(Dispatchers.IO) {
-            deviceDao.insert(data.toData())
-            notifyLastBatchListener()
-        }
-    }
-
     /**
      * Persist a fresh SDP service-class UUID list for [address]. No-op if the row doesn't
      * exist (e.g. user wiped the DB between SDP fetch and result delivery). Treats UUIDs as
@@ -293,15 +286,6 @@ class DevicesRepository(
     suspend fun getDeviceByAddress(address: String): DeviceData? {
         return withContext(Dispatchers.IO) {
             deviceDao.findByAddress(address)?.toDomainWithAirDrop()
-        }
-    }
-
-    suspend fun getAirdropByKnownAddress(address: String): AppleAirDrop? {
-        return withContext(Dispatchers.IO) {
-            appleContactsDao.getByAddress(address)
-                .map { it.toDomain() }
-                .takeIf { it.isNotEmpty() }
-                ?.let { AppleAirDrop(it) }
         }
     }
 

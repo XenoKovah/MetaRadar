@@ -14,8 +14,6 @@ import com.darkmentor.R
 import com.darkmentor.data.repo.JournalRepository
 import com.darkmentor.dateTimeStringFormat
 import com.darkmentor.domain.model.JournalEntry
-import com.darkmentor.ui.ScreenNavigationCommands
-import com.darkmentor.utils.navigation.Router
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -25,7 +23,6 @@ import kotlin.math.min
 
 class JournalViewModel(
     private val journalRepository: JournalRepository,
-    private val router: Router,
     private val context: Application,
 ) : ViewModel() {
 
@@ -34,18 +31,6 @@ class JournalViewModel(
 
     init {
         observeJournal()
-    }
-
-    fun onEntryClick(journalEntry: JournalEntry) {
-        // do nothing
-    }
-
-    fun onJournalListItemClick(payload: String?) {
-        if (payload != null) {
-            router.navigate(ScreenNavigationCommands.OpenDeviceDetailsScreen(payload))
-        } else {
-            Toast.makeText(context, context.getString(R.string.journal_device_was_removed), Toast.LENGTH_SHORT).show()
-        }
     }
 
     fun clearJournal() {
@@ -72,42 +57,9 @@ class JournalViewModel(
 
     private suspend fun mapJournalHistory(history: List<JournalEntry>): List<JournalEntryUiModel> {
         return withContext(Dispatchers.Default) {
-            history.asSequence()
-                .sortedByDescending { it.timestamp }
-                .map { map(it) }
-                .toList()
+            mapJournalHistoryNow(history)
         }
     }
-
-    private fun map(from: JournalEntry): JournalEntryUiModel {
-        return when (from.report) {
-            is JournalEntry.Report.Error -> mapReportError(from, from.report)
-        }
-    }
-
-    private fun mapReportError(
-        journalEntry: JournalEntry,
-        report: JournalEntry.Report.Error,
-    ): JournalEntryUiModel {
-        val title = if (report.title.length > MAX_ERROR_TITLE_LENGTH) {
-            report.title.substring(0 until MAX_ERROR_TITLE_LENGTH)
-        } else {
-            report.title
-        }
-        val description = report.stackTrace
-        return JournalEntryUiModel(
-            dateTime = journalEntry.timestamp.formattedDate(),
-            color = { MaterialTheme.colorScheme.error },
-            colorForeground = { MaterialTheme.colorScheme.onError },
-            title = title,
-            subtitle = description,
-            subtitleCollapsed = description.substring(0 until min(MAX_ERROR_DESCRIPTION_COLLAPSED_LENGTH, description.length)),
-            journalEntry = journalEntry,
-            items = null,
-        )
-    }
-
-    private fun Long.formattedDate() = dateTimeStringFormat("dd MMM yyyy, HH:mm")
 
     data class JournalEntryUiModel(
         val dateTime: String,
@@ -116,17 +68,41 @@ class JournalViewModel(
         val title: String,
         val subtitle: String?,
         val subtitleCollapsed: String?,
-        val items: List<ListItemUiModel>?,
-        val journalEntry: JournalEntry,
-    ) {
-        data class ListItemUiModel(
-            val displayName: String,
-            val payload: String?,
-        )
-    }
+    )
 
     companion object {
         private const val MAX_ERROR_TITLE_LENGTH = 256
         private const val MAX_ERROR_DESCRIPTION_COLLAPSED_LENGTH = 500
+
+        internal fun mapJournalHistoryNow(history: List<JournalEntry>): List<JournalEntryUiModel> {
+            return history.asSequence()
+                .sortedByDescending { it.timestamp }
+                .map(::map)
+                .toList()
+        }
+
+        private fun map(from: JournalEntry): JournalEntryUiModel {
+            return when (from.report) {
+                is JournalEntry.Report.Error -> mapReportError(from, from.report)
+            }
+        }
+
+        private fun mapReportError(
+            journalEntry: JournalEntry,
+            report: JournalEntry.Report.Error,
+        ): JournalEntryUiModel {
+            val title = report.title.take(MAX_ERROR_TITLE_LENGTH)
+            val description = report.stackTrace
+            return JournalEntryUiModel(
+                dateTime = journalEntry.timestamp.dateTimeStringFormat("dd MMM yyyy, HH:mm"),
+                color = { MaterialTheme.colorScheme.error },
+                colorForeground = { MaterialTheme.colorScheme.onError },
+                title = title,
+                subtitle = description,
+                subtitleCollapsed = description.take(
+                    min(MAX_ERROR_DESCRIPTION_COLLAPSED_LENGTH, description.length),
+                ),
+            )
+        }
     }
 }

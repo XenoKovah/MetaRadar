@@ -10,10 +10,12 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.darkmentor.data.database.dao.AppleContactDao
+import com.darkmentor.data.database.dao.BtidalpoolUploadDao
 import com.darkmentor.data.database.dao.DeviceDao
 import com.darkmentor.data.database.dao.JournalDao
 import com.darkmentor.data.database.dao.LocationDao
 import com.darkmentor.data.database.entity.AppleContactEntity
+import com.darkmentor.data.database.entity.BtidalpoolUploadEntity
 import com.darkmentor.data.database.entity.DeviceEntity
 import com.darkmentor.data.database.entity.DeviceToLocationEntity
 import com.darkmentor.data.database.entity.JournalEntryEntity
@@ -32,6 +34,7 @@ import java.io.File
         DeviceToLocationEntity::class,
         JournalEntryEntity::class,
         com.darkmentor.data.database.entity.CapturedAdvertFingerprintEntity::class,
+        BtidalpoolUploadEntity::class,
     ],
     autoMigrations = [
         AutoMigration(from = 7, to = 8),
@@ -40,7 +43,7 @@ import java.io.File
         AutoMigration(from = 11, to = 12),
     ],
     exportSchema = true,
-    version = 27,
+    version = 29,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +53,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun locationDao(): LocationDao
     abstract fun journalDao(): JournalDao
     abstract fun capturedAdvertFingerprintDao(): com.darkmentor.data.database.dao.CapturedAdvertFingerprintDao
+    abstract fun btidalpoolUploadDao(): BtidalpoolUploadDao
 
     suspend fun backupDatabase(toUri: Uri, context: Context) {
         Timber.i("Backup DB to file: ${toUri}")
@@ -137,6 +141,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_24_25,
                     MIGRATION_25_26,
                     MIGRATION_26_27,
+                    MIGRATION_27_28,
+                    MIGRATION_28_29,
                 )
                 .build()
             Timber.d("Database is ready!")
@@ -362,15 +368,139 @@ abstract class AppDatabase : RoomDatabase() {
             )
         }
 
+        /**
+         * Durable, destination/account-scoped BTIDALPOOL upload outbox. This migration only adds
+         * a table and indices; existing scan data, logs, settings, and credentials are untouched.
+         * The legacy filename-only uploaded_logs.txt marker is intentionally not imported because
+         * it cannot tell test DB from production or distinguish Google accounts.
+         */
+        val MIGRATION_27_28 = migration(27, 28) {
+            it.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `btidalpool_upload_outbox` (
+                    `id` TEXT NOT NULL,
+                    `batch_id` TEXT NOT NULL,
+                    `source_log_name` TEXT NOT NULL,
+                    `source_sha256` TEXT NOT NULL,
+                    `chunk_index` INTEGER NOT NULL,
+                    `chunk_count` INTEGER NOT NULL,
+                    `chunk_sha256` TEXT NOT NULL,
+                    `destination` TEXT NOT NULL,
+                    `account_key` TEXT NOT NULL,
+                    `payload_path` TEXT NOT NULL,
+                    `payload_bytes` INTEGER NOT NULL,
+                    `device_count` INTEGER NOT NULL,
+                    `state` TEXT NOT NULL,
+                    `attempt_count` INTEGER NOT NULL,
+                    `next_attempt_at_ms` INTEGER NOT NULL,
+                    `last_error` TEXT,
+                    `created_at_ms` INTEGER NOT NULL,
+                    `updated_at_ms` INTEGER NOT NULL,
+                    `uploaded_at_ms` INTEGER,
+                    PRIMARY KEY(`id`)
+                )
+                """.trimIndent(),
+            )
+            it.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS `index_btidalpool_outbox_scope_state`
+                ON `btidalpool_upload_outbox`
+                (`destination`, `account_key`, `state`, `next_attempt_at_ms`)
+                """.trimIndent(),
+            )
+            it.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS `index_btidalpool_outbox_source_scope`
+                ON `btidalpool_upload_outbox`
+                (`source_sha256`, `destination`, `account_key`)
+                """.trimIndent(),
+            )
+            it.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS `index_btidalpool_outbox_chunk_scope`
+                ON `btidalpool_upload_outbox`
+                (`chunk_sha256`, `destination`, `account_key`)
+                """.trimIndent(),
+            )
+            it.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS `index_btidalpool_outbox_batch_chunk`
+                ON `btidalpool_upload_outbox` (`batch_id`, `chunk_index`)
+                """.trimIndent(),
+            )
+        }
+
+        /**
+         * Remove the retired favorites and metadata columns without touching any live device
+         * fields. Both columns were already write-only placeholders (`favorite = false`,
+         * `metadata = null`), but every `SELECT *` and upsert still paid to marshal them.
+         *
+         * Recreate the table instead of using ALTER TABLE DROP COLUMN because the app supports
+         * Android versions whose bundled SQLite predates DROP COLUMN support.
+         */
+        val MIGRATION_28_29 = migration(28, 29) {
+            it.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `device_new` (
+                    `address` TEXT NOT NULL,
+                    `name` TEXT,
+                    `last_detect_time_ms` INTEGER NOT NULL,
+                    `first_detect_time_ms` INTEGER NOT NULL,
+                    `detect_count` INTEGER NOT NULL,
+                    `custom_name` TEXT,
+                    `manufacturer_id` INTEGER,
+                    `manufacturer_name` TEXT,
+                    `last_seen_rssi` INTEGER,
+                    `system_address_type` INTEGER,
+                    `device_class` INTEGER,
+                    `is_paired` INTEGER NOT NULL,
+                    `service_uuids` TEXT NOT NULL DEFAULT '',
+                    `row_data_encoded` TEXT,
+                    `is_connectable` INTEGER NOT NULL,
+                    `transport` INTEGER NOT NULL DEFAULT 0,
+                    `sdp_uuids` TEXT NOT NULL DEFAULT '',
+                    `gatt_manufacturer_name` TEXT,
+                    PRIMARY KEY(`address`)
+                )
+                """.trimIndent(),
+            )
+            it.execSQL(
+                """
+                INSERT INTO `device_new` (
+                    address, name, last_detect_time_ms, first_detect_time_ms, detect_count,
+                    custom_name, manufacturer_id, manufacturer_name, last_seen_rssi,
+                    system_address_type, device_class, is_paired, service_uuids,
+                    row_data_encoded, is_connectable, transport, sdp_uuids,
+                    gatt_manufacturer_name
+                )
+                SELECT
+                    address, name, last_detect_time_ms, first_detect_time_ms, detect_count,
+                    custom_name, manufacturer_id, manufacturer_name, last_seen_rssi,
+                    system_address_type, device_class, is_paired, service_uuids,
+                    row_data_encoded, is_connectable, transport, sdp_uuids,
+                    gatt_manufacturer_name
+                FROM `device`
+                """.trimIndent(),
+            )
+            it.execSQL("DROP TABLE `device`;")
+            it.execSQL("ALTER TABLE `device_new` RENAME TO `device`;")
+            it.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS `index_device_last_detect_time_ms`
+                ON `device` (`last_detect_time_ms`)
+                """.trimIndent(),
+            )
+        }
+
         private fun migration(
             from: Int,
             to: Int,
             migrationFun: (database: SupportSQLiteDatabase) -> Unit
         ): Migration {
             return object : Migration(from, to) {
-                override fun migrate(database: SupportSQLiteDatabase) {
+                override fun migrate(db: SupportSQLiteDatabase) {
                     loadDatabase.value = true
-                    migrationFun.invoke(database)
+                    migrationFun.invoke(db)
                     loadDatabase.value = false
                 }
             }

@@ -99,6 +99,11 @@ class BleScannerHelper(
     // throw ConcurrentModificationException under sustained scan rates.
     private val batch: MutableMap<String, BleScanDevice> = ConcurrentHashMap()
     private var currentScanTimeMs: Long = System.currentTimeMillis()
+    private val scanLifecycleLock = Any()
+    private var scanLifecycleOwned = false
+    private var scanTeardownPending = false
+    private var activeScanGeneration = 0
+    private val nextScanGeneration = AtomicInteger(0)
 
     /**
      * When true, [scan] ignores the power-mode restricted BLE filter set and always scans
@@ -541,64 +546,9 @@ class BleScannerHelper(
         connections.remove(gatt.device.address)
     }
 
-    fun closeDeviceConnection(address: String) {
-        connections[address]?.let(::close)
-    }
-
     @SuppressLint("MissingPermission")
     fun isDeviceConnected(device: BluetoothDevice): Boolean {
         return requireBluetoothManager().getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-    }
-
-    @SuppressLint("MissingPermission")
-    fun isDeviceDisconnected(device: BluetoothDevice): Boolean {
-        return requireBluetoothManager().getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_DISCONNECTED
-    }
-
-    @SuppressLint("MissingPermission")
-    suspend fun hardDisconnectDevice(device: BluetoothDevice, tag: String = TAG_CONNECT) {
-        return callbackFlow<Unit> {
-            Timber.tag(tag).i("Trying to close connection to device ${device.address}")
-            val gatt = device.connectGatt(appContext, false, object : BluetoothGattCallback() {
-                override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                    super.onConnectionStateChange(gatt, status, newState)
-                    Timber.tag(tag).i("Connection state change for device ${gatt.device.address}. Status: $status, newState: $newState")
-                    when (newState) {
-                        BluetoothProfile.STATE_CONNECTED -> {
-                            Timber.tag(tag).i("Try disconnect from ${gatt.device.address}")
-                            gatt.disconnect()
-                        }
-
-                        BluetoothProfile.STATE_DISCONNECTED -> {
-                            Timber.tag(tag).i("Disconnected. Closing connection ${gatt.device.address}")
-                            gatt.close()
-                            trySend(Unit)
-                            this@callbackFlow.close()
-                        }
-                    }
-                }
-            })
-
-            awaitClose {
-                if (isDeviceConnected(device)) {
-                    Timber.tag(tag).e("Device ${gatt.device.address} is still connected")
-                }
-            }
-        }.first()
-    }
-
-    @SuppressLint("MissingPermission")
-    suspend fun hardCloseAllConnections(tag: String = TAG_CONNECT) {
-        connections.values.forEach { close(it, tag) }
-        connections.clear()
-        val otherConnections = requireBluetoothManager().getConnectedDevices(BluetoothProfile.GATT)
-        Timber.tag(tag).i("Found ${otherConnections.size} other connections")
-        otherConnections.forEach { device ->
-            hardDisconnectDevice(device, tag)
-        }
-        System.gc()
-        val stillConnected = requireBluetoothManager().getConnectedDevices(BluetoothProfile.GATT)
-        Timber.tag(tag).i("Hard close all connections done. ${stillConnected.size} connections left")
     }
 
     /**
@@ -683,59 +633,90 @@ class BleScannerHelper(
             throw BluetoothIsNotInitialized()
         }
 
-        if (inProgress.value) {
+        val generation = synchronized(scanLifecycleLock) {
+            if (scanLifecycleOwned) {
+                null
+            } else {
+                scanLifecycleOwned = true
+                scanTeardownPending = false
+                activeScanGeneration = nextScanGeneration.incrementAndGet()
+                this@BleScannerHelper.scanListener = scanListener
+                inProgress.tryEmit(true)
+                activeScanGeneration
+            }
+        }
+        if (generation == null) {
             // Not actually a failure — happens normally when the Connect All candidate-poll
-            // ticks while an earlier scan window is still in flight. Demoted to debug so we
-            // don't spam logcat at red-error level for an expected race.
-            Timber.tag(TAG).d("Scan request ignored: previous scan is still in flight")
+            // ticks while an earlier scan window is still registered or flushing. Lifecycle
+            // ownership stays held until stopScan actually runs, preventing Android error 1
+            // ("Scan already started") during the delayed batch flush.
+            Timber.tag(TAG).d("Scan request ignored: previous scan is still registered or flushing")
         } else {
-            this@BleScannerHelper.scanListener = scanListener
             batch.clear()
-
-            inProgress.tryEmit(true)
             currentScanTimeMs = System.currentTimeMillis()
 
-            val powerMode = powerModeHelper.powerMode()
-            val keepScreenOn = powerMode.tryToTurnOnScreen && settingsRepository.getWakeUpScreenWhileScanning()
-            val scanFilters = if (powerMode.useRestrictedBleConfig && !keepScreenOn && !forceFullDiscovery) {
-                bleFiltersProvider.getBackgroundFilters()
-            } else {
-                // Match-all: full discovery in interactive power mode, or whenever the Connect All
-                // pane forces it (so candidates populate under Battery Saver / on an empty DB).
-                listOf(ScanFilter.Builder().build())
-            }
+            var scannerRegistered = false
+            try {
+                val powerMode = powerModeHelper.powerMode()
+                val keepScreenOn = powerMode.tryToTurnOnScreen && settingsRepository.getWakeUpScreenWhileScanning()
+                val scanFilters = if (powerMode.useRestrictedBleConfig && !keepScreenOn && !forceFullDiscovery) {
+                    bleFiltersProvider.getBackgroundFilters()
+                } else {
+                    // Match-all: full discovery in interactive power mode, or whenever the Connect All
+                    // pane forces it (so candidates populate under Battery Saver / on an empty DB).
+                    listOf(ScanFilter.Builder().build())
+                }
 
-            if (powerMode.tryToTurnOnScreen && settingsRepository.getWakeUpScreenWhileScanning()) {
-                Timber.tag(TAG).d("Will try to turn on screen for ${powerMode.scanDuration} ms")
-                powerModeHelper.wakeScreenTemporarily(powerMode.scanDuration)
-            }
+                if (powerMode.tryToTurnOnScreen && settingsRepository.getWakeUpScreenWhileScanning()) {
+                    Timber.tag(TAG).d("Will try to turn on screen for ${powerMode.scanDuration} ms")
+                    powerModeHelper.wakeScreenTemporarily(powerMode.scanDuration)
+                }
 
-            val scanSettings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                // Batch results into ~[SCAN_REPORT_DELAY_MS] windows. The system buffers
-                // advertisements and delivers them via [ScanCallback.onBatchScanResults] as
-                // a List<ScanResult> instead of one [onScanResult] per packet. In a dense
-                // (250+ device) environment this drops callback rate from ~2500/sec to
-                // ~2/sec — and with it ~100 MB/s of LOS allocation pressure. Trade-off: a
-                // newly-arrived device's first detection lands up to [SCAN_REPORT_DELAY_MS]
-                // later than otherwise; acceptable for this app's use case (the user sees
-                // the device populate within ~1 sec). Some devices don't support hardware
-                // batching; the framework falls back to software batching, which is
-                // functionally identical for our purposes.
-                .setReportDelay(SCAN_REPORT_DELAY_MS)
-                .build()
+                val scanSettings = ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    // Batch results into ~[SCAN_REPORT_DELAY_MS] windows. The system buffers
+                    // advertisements and delivers them via [ScanCallback.onBatchScanResults] as
+                    // a List<ScanResult> instead of one [onScanResult] per packet. In a dense
+                    // (250+ device) environment this drops callback rate from ~2500/sec to
+                    // ~2/sec — and with it ~100 MB/s of LOS allocation pressure. Trade-off: a
+                    // newly-arrived device's first detection lands up to [SCAN_REPORT_DELAY_MS]
+                    // later than otherwise; acceptable for this app's use case (the user sees
+                    // the device populate within ~1 sec). Some devices don't support hardware
+                    // batching; the framework falls back to software batching, which is
+                    // functionally identical for our purposes.
+                    .setReportDelay(SCAN_REPORT_DELAY_MS)
+                    .build()
 
-            // Refresh the bonded-addresses cache before each scan window starts. The
-            // [onScanResult] callback then does an O(1) Set lookup instead of an IPC into the
-            // Bluetooth process, avoiding a recurring 8s+ ANR on Android 14 when the BT stack
-            // is busy. We also subscribe to ACTION_BOND_STATE_CHANGED once so the cache stays
-            // current if the user pairs/unpairs while scanning.
-            refreshBondedAddresses()
-            ensureBondReceiverRegistered()
+                // Refresh the bonded-addresses cache before each scan window starts. The
+                // [onScanResult] callback then does an O(1) Set lookup instead of an IPC into the
+                // Bluetooth process, avoiding a recurring 8s+ ANR on Android 14 when the BT stack
+                // is busy. We also subscribe to ACTION_BOND_STATE_CHANGED once so the cache stays
+                // current if the user pairs/unpairs while scanning.
+                refreshBondedAddresses()
+                ensureBondReceiverRegistered()
 
-            withContext(Dispatchers.IO) {
-                requireScanner().startScan(scanFilters, scanSettings, callback)
-                handler.postDelayed({ cancelScanning(ScanResultInternal.Success) }, powerModeHelper.powerMode().scanDuration)
+                val startStillWanted = synchronized(scanLifecycleLock) {
+                    scanLifecycleOwned &&
+                        activeScanGeneration == generation &&
+                        !scanTeardownPending
+                }
+                if (!startStillWanted) return
+
+                withContext(Dispatchers.IO) {
+                    requireScanner().startScan(scanFilters, scanSettings, callback)
+                    scannerRegistered = true
+                    handler.postDelayed(
+                        { cancelScanning(ScanResultInternal.Success, generation) },
+                        powerMode.scanDuration,
+                    )
+                }
+            } catch (t: Throwable) {
+                if (scannerRegistered) {
+                    cancelScanning(ScanResultInternal.Canceled, generation)
+                } else {
+                    releaseScanLifecycle(generation)
+                }
+                throw t
             }
         }
     }
@@ -790,8 +771,20 @@ class BleScannerHelper(
     fun hasOpenGattConnections(): Boolean = connections.isNotEmpty()
 
     @SuppressLint("MissingPermission")
-    private fun cancelScanning(scanResult: ScanResultInternal) {
-        inProgress.tryEmit(false)
+    private fun cancelScanning(
+        scanResult: ScanResultInternal,
+        expectedGeneration: Int? = null,
+    ) {
+        val capturedListener = synchronized(scanLifecycleLock) {
+            if (!scanLifecycleOwned ||
+                scanTeardownPending ||
+                (expectedGeneration != null && expectedGeneration != activeScanGeneration)
+            ) {
+                return
+            }
+            scanTeardownPending = true
+            scanListener.also { scanListener = null }
+        }
 
         // With [SCAN_REPORT_DELAY_MS] > 0 the system buffers results in batch mode and
         // delivers them via [onBatchScanResults] only at flush time. Per Android docs the
@@ -820,11 +813,6 @@ class BleScannerHelper(
             // each startDiscovery, which is the only place that needs it.
         }
 
-        // Capture state locally so concurrent state mutation by a re-entered scan() can't
-        // surprise the deferred lambda. scanListener stays referenced through the closure
-        // even after we null it on the field.
-        val capturedListener = scanListener
-        scanListener = null
         handler.postDelayed({
             // Only NOW do we stopScan — by this point the system flush from above has had
             // [BATCH_FLUSH_GRACE_MS] to deliver via onBatchScanResults, and the consumer
@@ -836,10 +824,12 @@ class BleScannerHelper(
                     Timber.tag(TAG).d(e, "stopScan threw during cancelScanning postDelayed")
                 }
             }
+            val completedBatch = batch.values.toList()
+            releaseScanLifecycle(expectedGeneration ?: activeScanGeneration)
             when (scanResult) {
                 is ScanResultInternal.Success -> {
-                    Timber.tag(TAG).d("BLE Scan finished ${batch.count()} devices found")
-                    capturedListener?.onSuccess(batch.values.toList())
+                    Timber.tag(TAG).d("BLE Scan finished ${completedBatch.size} devices found")
+                    capturedListener?.onSuccess(completedBatch)
                 }
                 is ScanResultInternal.Failure -> {
                     capturedListener?.onFailure(BLEScanFailure(scanResult.errorCode, BleScanErrorMapper.map(scanResult.errorCode)))
@@ -849,6 +839,16 @@ class BleScannerHelper(
                 }
             }
         }, BATCH_FLUSH_GRACE_MS)
+    }
+
+    private fun releaseScanLifecycle(generation: Int) {
+        synchronized(scanLifecycleLock) {
+            if (!scanLifecycleOwned || activeScanGeneration != generation) return
+            scanListener = null
+            inProgress.tryEmit(false)
+            scanTeardownPending = false
+            scanLifecycleOwned = false
+        }
     }
 
     private fun tryToInitBluetoothScanner() {

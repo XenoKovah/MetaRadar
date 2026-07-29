@@ -58,6 +58,33 @@ data class StrongestRssiLocation(
 )
 
 /**
+ * Coalesces hot-loop progress updates. Export still checks cancellation for every record, but UI
+ * and WorkManager observers see at most about seven callbacks per second plus forced endpoints.
+ */
+private class ThrottledProgress(
+    private val callback: (suspend (Long, Long) -> Unit)?,
+) {
+    private var lastDispatchNanos = Long.MIN_VALUE
+
+    suspend fun emit(processed: Long, total: Long, force: Boolean = false) {
+        val target = callback ?: return
+        val now = System.nanoTime()
+        if (
+            force ||
+            lastDispatchNanos == Long.MIN_VALUE ||
+            now - lastDispatchNanos >= PROGRESS_INTERVAL_NANOS
+        ) {
+            lastDispatchNanos = now
+            target(processed, total)
+        }
+    }
+
+    companion object {
+        private const val PROGRESS_INTERVAL_NANOS = 150_000_000L
+    }
+}
+
+/**
  * Persists BLE advertisement scans and GATT observations to disk in BTIDES-compatible form.
  *
  * Live capture appends one JSONL record per advertisement / GATT event to a single log file.
@@ -346,55 +373,6 @@ class BTIDESRepository(
         writerStateLock.withLock { rotateActiveLocked() }
     }
 
-    /**
-     * Delete a specific archive file (and its sidecar index, if any). No-op for the active log.
-     */
-    suspend fun deleteArchive(archive: File) = withContext(Dispatchers.IO) {
-        if (archive == logFile) return@withContext
-        runCatching { archive.delete() }
-        val idx = File(btidesDir, archive.nameWithoutExtension + "." + ARCHIVE_IDX_EXT)
-        runCatching { idx.delete() }
-    }
-
-    private val uploadedMarkerFile: File get() = File(btidesDir, UPLOADED_MARKER_NAME)
-    private val uploadedMarkerLock = Mutex()
-
-    /**
-     * Basenames of archives already uploaded to BTIDALPOOL. The upload path skips these so a
-     * successful upload no longer deletes the on-device data — it just records that the log was
-     * sent and won't re-send it. Recorded in a sidecar marker file alongside the logs.
-     */
-    suspend fun uploadedLogNames(): Set<String> = withContext(Dispatchers.IO) {
-        uploadedMarkerLock.withLock {
-            runCatching {
-                uploadedMarkerFile.readLines().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.toSet()
-            }.getOrDefault(emptySet())
-        }
-    }
-
-    /**
-     * Record [archive] as uploaded WITHOUT deleting it — the file and its sidecar index stay on the
-     * device, so the data is preserved and still exportable / re-uploadable. Idempotent; never
-     * marks the live active log.
-     */
-    suspend fun markUploaded(archive: File) = withContext(Dispatchers.IO) {
-        if (archive.name == logFile.name) return@withContext
-        uploadedMarkerLock.withLock {
-            val existing = runCatching { uploadedMarkerFile.readLines().map { it.trim() } }.getOrDefault(emptyList())
-            if (archive.name !in existing) {
-                runCatching {
-                    uploadedMarkerFile.parentFile?.mkdirs()
-                    uploadedMarkerFile.appendText(archive.name + "\n")
-                }
-            }
-        }
-    }
-
-    /** Forget all upload marks (e.g. when the user clears every log). */
-    suspend fun clearUploadedMarks() = withContext(Dispatchers.IO) {
-        uploadedMarkerLock.withLock { runCatching { uploadedMarkerFile.delete() } }
-    }
-
     /** Total bytes across the active log + every rotated archive. */
     suspend fun totalLogSizeBytes(): Long = withContext(Dispatchers.IO) {
         listLogs().sumOf { it.file.length() }
@@ -444,14 +422,6 @@ class BTIDESRepository(
             // The next writer iteration will reopen the index stream in append mode.
         }
         Timber.tag(TAG).i("Sidecar index rebuild complete (%d bytes)", indexFile.length())
-    }
-
-    /**
-     * Path that ADB can pull without root: /sdcard/Android/data/<pkg>/files/btides_log.btides
-     */
-    fun externalExportFile(): File? {
-        val dir = context.getExternalFilesDir(null) ?: return null
-        return File(dir, EXPORT_FILE_NAME)
     }
 
     /**
@@ -661,11 +631,6 @@ class BTIDESRepository(
         return session.buffer.size
     }
 
-    /** True when the address has an active in-memory GATT session. */
-    suspend fun hasGattSession(bdaddr: String): Boolean = sessionsLock.withLock {
-        gattSessions.containsKey(bdaddr.uppercase())
-    }
-
     private suspend fun appendGattRecord(bdaddr: String, bdaddrRand: Int, gattArray: JsonArray) {
         val record = buildJsonObject {
             put("bdaddr", bdaddr.uppercase())
@@ -840,6 +805,7 @@ class BTIDESRepository(
         // Defaulted so non-upload callers (and tests) that don't set zones are unaffected.
         exclusionCoordsLookup: suspend (String) -> List<Pair<Double, Double>> = { emptyList() },
     ): Int = withContext(Dispatchers.IO) {
+        val progress = ThrottledProgress(onProgress)
         // Snapshot the log size at export start. Live capture continues writing past this
         // boundary; we just don't see those new records in the export. The previous design
         // held the global writeLock for the whole multi-second export, which froze every
@@ -859,16 +825,16 @@ class BTIDESRepository(
         }
         if (sourceSize == 0L) {
             out.bufferedWriter().use { it.write("[]\n") }
-            onProgress?.invoke(1L, 1L)
+            progress.emit(1L, 1L, force = true)
             return@withContext 0
         }
         val totalBytes = sourceSize * 2L
         val tempDir = File(context.cacheDir, "btides_export_tmp_${System.currentTimeMillis()}")
         tempDir.mkdirs()
         try {
-            onProgress?.invoke(0L, totalBytes)
+            progress.emit(0L, totalBytes, force = true)
             val devFiles = routeLogToPerDeviceTempFiles(src, tempDir, sourceSize) { bytes ->
-                onProgress?.invoke(bytes.coerceAtMost(sourceSize), totalBytes)
+                progress.emit(bytes.coerceAtMost(sourceSize), totalBytes)
             }
             // Hoisted to the outer try so the written-device count is in scope for the return below.
             var idx = 0
@@ -879,7 +845,7 @@ class BTIDESRepository(
                 for ((key, devFile) in devFiles) {
                     val acc = mergeOneDeviceFromFile(devFile, key) { lineBytes ->
                         pass2Bytes += lineBytes
-                        onProgress?.invoke(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
+                        progress.emit(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
                     }
                     // Look up the strongest-RSSI location for this device. Fail-soft: any lookup
                     // failure or missing data is silently ignored (older detections pre-migration
@@ -905,7 +871,7 @@ class BTIDESRepository(
                 if (idx > 0) writer.write("\n")
                 writer.write("]\n")
                 writer.flush()
-                onProgress?.invoke(totalBytes, totalBytes)
+                progress.emit(totalBytes, totalBytes, force = true)
             } finally {
                 writer.close()
             }
@@ -914,6 +880,132 @@ class BTIDESRepository(
             idx
         } finally {
             runCatching { tempDir.deleteRecursively() }
+        }
+    }
+
+    data class UploadChunkFile(
+        val file: File,
+        val index: Int,
+        val deviceCount: Int,
+    )
+
+    /**
+     * Export one immutable JSONL archive as bounded, compact BTIDES JSON-array chunks.
+     *
+     * Chunk boundaries are selected from the *actual UTF-8 serialized device records*, not from
+     * the source JSONL size. That makes the server's raw-JSON limit an enforced invariant and
+     * also repairs previously-created archives that are already larger than one server request.
+     * A device record is never split across chunks because each chunk must remain a standalone
+     * schema-valid BTIDES document.
+     */
+    suspend fun exportUploadChunks(
+        outputDir: File,
+        strongestRssiLookup: suspend (String) -> StrongestRssiLocation? = { null },
+        onProgress: (suspend (bytesProcessed: Long, totalBytes: Long) -> Unit)? = null,
+        sourceFile: File,
+        exclusionZones: List<ExclusionZone> = emptyList(),
+        exclusionCoordsLookup: suspend (String) -> List<Pair<Double, Double>> = { emptyList() },
+        targetChunkBytes: Long = TARGET_UPLOAD_CHUNK_BYTES,
+        hardMaxChunkBytes: Long = SERVER_MAX_UPLOAD_BYTES,
+    ): List<UploadChunkFile> = withContext(Dispatchers.IO) {
+        val progress = ThrottledProgress(onProgress)
+        require(targetChunkBytes in 1 until hardMaxChunkBytes) {
+            "target chunk size must be positive and below the server maximum"
+        }
+        val sourceSize = if (sourceFile.exists()) sourceFile.length() else 0L
+        if (sourceSize == 0L) return@withContext emptyList()
+        outputDir.mkdirs()
+        val routeDir = File(context.cacheDir, "btides_chunk_route_${System.nanoTime()}").also { it.mkdirs() }
+        val recordFile = File(routeDir, "device_record.tmp")
+        val totalBytes = sourceSize * 2L
+        val results = mutableListOf<UploadChunkFile>()
+
+        var chunkFile: File? = null
+        var chunkWriter: BufferedWriter? = null
+        var chunkBytes = 0L
+        var chunkDeviceCount = 0
+
+        fun openChunk() {
+            check(chunkWriter == null)
+            chunkFile = File(outputDir, "chunk_${results.size.toString().padStart(4, '0')}.btides")
+            chunkWriter = chunkFile!!.outputStream().bufferedWriter(Charsets.UTF_8)
+            chunkWriter!!.write("[")
+            chunkBytes = 1L
+            chunkDeviceCount = 0
+        }
+
+        fun finishChunk() {
+            val writer = chunkWriter ?: return
+            writer.write("]\n")
+            writer.close()
+            val file = checkNotNull(chunkFile)
+            check(file.length() <= hardMaxChunkBytes) {
+                "BTIDES chunk ${file.name} is ${file.length()} bytes, above $hardMaxChunkBytes"
+            }
+            results += UploadChunkFile(file, results.size, chunkDeviceCount)
+            chunkWriter = null
+            chunkFile = null
+            chunkBytes = 0L
+            chunkDeviceCount = 0
+        }
+
+        try {
+            progress.emit(0, totalBytes, force = true)
+            val devFiles = routeLogToPerDeviceTempFiles(sourceFile, routeDir, sourceSize) { bytes ->
+                progress.emit(bytes.coerceAtMost(sourceSize), totalBytes)
+            }
+            var pass2Bytes = 0L
+            for ((key, devFile) in devFiles) {
+                val acc = mergeOneDeviceFromFile(devFile, key) { lineBytes ->
+                    pass2Bytes += lineBytes
+                    progress.emit(sourceSize + pass2Bytes.coerceAtMost(sourceSize), totalBytes)
+                }
+                val strongest = runCatching { strongestRssiLookup(acc.bdaddr) }.getOrNull()
+                if (exclusionZones.isNotEmpty()) {
+                    val coords = runCatching { exclusionCoordsLookup(acc.bdaddr) }.getOrNull().orEmpty()
+                    if (coords.any { (lat, lng) -> exclusionZones.any { it.contains(lat, lng) } }) {
+                        continue
+                    }
+                }
+
+                recordFile.outputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.writeJsonElementCompactStreaming(acc.toJsonObject(strongest))
+                }
+                val recordBytes = recordFile.length()
+                val minimumStandaloneBytes = 1L + recordBytes + 2L // '[' + record + "]\n"
+                require(minimumStandaloneBytes <= hardMaxChunkBytes) {
+                    "One BTIDES device record for ${acc.bdaddr} is $minimumStandaloneBytes bytes; " +
+                        "the server accepts at most $hardMaxChunkBytes bytes per request"
+                }
+
+                if (chunkWriter == null) openChunk()
+                val separatorBytes = if (chunkDeviceCount == 0) 0L else 1L
+                val projectedBytes = chunkBytes + separatorBytes + recordBytes + 2L
+                if (chunkDeviceCount > 0 && projectedBytes > targetChunkBytes) {
+                    finishChunk()
+                    openChunk()
+                }
+                if (chunkDeviceCount > 0) {
+                    chunkWriter!!.write(",")
+                    chunkBytes += 1
+                }
+                recordFile.bufferedReader(Charsets.UTF_8).use { reader ->
+                    reader.copyTo(chunkWriter!!)
+                }
+                chunkBytes += recordBytes
+                chunkDeviceCount++
+                currentCoroutineContext().ensureActive()
+            }
+            finishChunk()
+            progress.emit(totalBytes, totalBytes, force = true)
+            results
+        } catch (t: Throwable) {
+            runCatching { chunkWriter?.close() }
+            outputDir.listFiles()?.forEach { runCatching { it.delete() } }
+            throw t
+        } finally {
+            runCatching { recordFile.delete() }
+            runCatching { routeDir.deleteRecursively() }
         }
     }
 
@@ -958,6 +1050,32 @@ class BTIDESRepository(
         write("\n")
         write(baseIndent)
         write("]")
+    }
+
+    /** Compact counterpart used only for upload chunks; streams leaves to avoid one giant String. */
+    private fun BufferedWriter.writeJsonElementCompactStreaming(value: JsonElement) {
+        when (value) {
+            is JsonObject -> {
+                write("{")
+                value.entries.forEachIndexed { index, (key, child) ->
+                    if (index > 0) write(",")
+                    write(json.encodeToString(JsonElement.serializer(), JsonPrimitive(key)))
+                    write(":")
+                    writeJsonElementCompactStreaming(child)
+                }
+                write("}")
+            }
+            is JsonArray -> {
+                write("[")
+                value.forEachIndexed { index, child ->
+                    if (index > 0) write(",")
+                    writeJsonElementCompactStreaming(child)
+                }
+                write("]")
+            }
+            is JsonNull -> write("null")
+            is JsonPrimitive -> write(json.encodeToString(JsonElement.serializer(), value))
+        }
     }
 
     suspend fun exportTo(
@@ -1046,17 +1164,6 @@ class BTIDESRepository(
                     (it.name.endsWith("." + ARCHIVE_LOG_EXT) || it.name.endsWith("." + ARCHIVE_IDX_EXT))
             }
             ?.forEach { runCatching { it.delete() } }
-    }
-
-    suspend fun logFileSizeBytes(): Long = withContext(Dispatchers.IO) {
-        // Flush so the on-disk size reflects everything queued up to this point. The settings
-        // screen polls this on every entry — flushing here is the cheapest way to make the
-        // displayed size match user expectation without polling the writer's internal counter.
-        writerStateLock.withLock {
-            runCatching { logStream?.flush() }
-        }
-        val f = logFile
-        if (f.exists()) f.length() else 0L
     }
 
     /**
@@ -1404,25 +1511,20 @@ class BTIDESRepository(
         private const val RECORD_TYPE_EIR = "E"
         private const val RECORD_TYPE_HCI = "H"
         private const val RECORD_TYPE_OTHER = "O"
-        const val EXPORT_FILE_NAME = "btides_log.btides"
         private const val BTIDES_DIR = "btides"
         private const val FIRST_CAPTURE_FILE_NAME = "btides_log.first_capture_ms"
         private const val ARCHIVE_LOG_EXT = "jsonl"
         private const val ARCHIVE_IDX_EXT = "idx.jsonl"
         // Sidecar marker: basenames of archives already uploaded to BTIDALPOOL (one per line). The
         // upload path skips these instead of deleting them, so uploaded data stays on the device.
-        private const val UPLOADED_MARKER_NAME = "uploaded_logs.txt"
         private const val EXPORT_EXT = "btides"
         private const val MS_PER_DAY = 86_400_000L
-        // Auto-rotate the active BTIDES log once it crosses this byte threshold. Sized to
-        // keep merged exports comfortably under the BTIDALPOOL server's per-upload cap
-        // (currently 50 MB) — the merged JSON output is roughly the same size as the source
-        // jsonl for typical captures, so 40 MB of jsonl source ≈ 40-45 MB exported. With
-        // logs bounded this small the multi-archive "Upload all" path produces lots of small
-        // requests instead of one giant one — the server's `json.loads()` heap blowup
-        // (~4-5x parsed-tree expansion) stays modest, and a transient network drop only
-        // costs us one chunk worth of upload time.
-        private const val MAX_ACTIVE_LOG_BYTES = 40L * 1024 * 1024
+        // Keep future archives modest even though upload export now enforces its limit from the
+        // actual serialized chunks. Existing larger archives are safe: exportUploadChunks splits
+        // them at device boundaries. Six MiB leaves expansion headroom and reduces retransmit cost.
+        private const val MAX_ACTIVE_LOG_BYTES = 6L * 1024 * 1024
+        const val TARGET_UPLOAD_CHUNK_BYTES = 8L * 1024 * 1024
+        const val SERVER_MAX_UPLOAD_BYTES = 10L * 1024 * 1024 - 1L
         // Short TTL: filter chip evaluation runs per scan-batch, but a fresh GATT enumeration
         // arrives much less often than scan batches. 5s makes the cache hot during
         // recompositions while still picking up new GATT records soon after they land.

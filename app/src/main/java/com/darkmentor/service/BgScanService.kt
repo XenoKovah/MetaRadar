@@ -156,30 +156,35 @@ class BgScanService : Service() {
             handler.post(nextBrEdrInquiryRunnable)
         } else {
             Timber.d("Background service launched")
-            try {
-                startForeground(
-                    NotificationsHelper.FOREGROUND_NOTIFICATION_ID,
-                    notificationsHelper.buildForegroundNotification(
-                        NotificationsHelper.ServiceNotificationContent.NoDataYet,
-                        createCloseServiceIntent(this)
-                    ),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-                )
-            } catch (e: Exception) {
-                reportError(e)
-                Toast.makeText(this, R.string.unable_to_run_service_erro_toast, Toast.LENGTH_LONG).show()
-                stopSelf()
-            }
-
+            // Android 14+ validates the connectedDevice/location FGS prerequisites inside
+            // startForeground. Check runtime BLE/location permissions first so a fresh install
+            // records one actionable permission message instead of a SecurityException followed
+            // by a second permission error.
             permissionHelper.checkOrRequestPermission(
                 onRequestPermissions = { _, _, _ ->
-                    reportError(IllegalStateException("BLE Service is started but permissins are not granted"))
+                    reportError(IllegalStateException("BLE Service is started but permissions are not granted"))
                     stopSelf()
                 },
-                onPermissionGranted = {
+                onPermissionGranted = permissionGranted@{
+                    try {
+                        startForeground(
+                            NotificationsHelper.FOREGROUND_NOTIFICATION_ID,
+                            notificationsHelper.buildForegroundNotification(
+                                NotificationsHelper.ServiceNotificationContent.NoDataYet,
+                                createCloseServiceIntent(this),
+                            ),
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+                        )
+                    } catch (e: Exception) {
+                        reportError(e)
+                        Toast.makeText(this, R.string.unable_to_run_service_erro_toast, Toast.LENGTH_LONG).show()
+                        stopSelf()
+                        return@permissionGranted
+                    }
                     locationProvider.startLocationFetching()
                     scan()
-                }
+                },
             )
         }
 

@@ -91,6 +91,15 @@ class BtidalpoolAuthRepository(
         data class Invalid(val reason: String) : SignInOutcome()
     }
 
+    sealed class RefreshOutcome {
+        data class Success(val state: AuthState) : RefreshOutcome()
+        data class InvalidGrant(val message: String) : RefreshOutcome()
+        data class TransientFailure(
+            val message: String,
+            val retryAfterMillis: Long? = null,
+        ) : RefreshOutcome()
+    }
+
     /**
      * Parse the JSON the user pasted, validate it against Google's userinfo endpoint (with one
      * refresh attempt on failure), then probe the BTIDALPOOL upload server, and persist on
@@ -107,7 +116,7 @@ class BtidalpoolAuthRepository(
      * couldn't reach BTIDALPOOL to double-check. We persist on both Valid branches so the user
      * ends up signed in (and can upload once the server is reachable again).
      */
-    suspend fun signInWithPastedJson(pasted: String, useTestDb: Boolean): SignInOutcome = withContext(Dispatchers.IO) {
+    suspend fun signInWithPastedJson(pasted: String): SignInOutcome = withContext(Dispatchers.IO) {
         val parsed = parseTokenBlob(pasted)
             ?: return@withContext SignInOutcome.Invalid("Pasted text is not a valid token JSON.")
         val verified = try {
@@ -118,7 +127,7 @@ class BtidalpoolAuthRepository(
             Timber.d(e, "BTIDALPOOL token failed Google validation")
             return@withContext SignInOutcome.Invalid(e.message ?: "Token validation failed.")
         }
-        when (probeUploadServer(verified, useTestDb)) {
+        when (probeUploadServer(verified)) {
             ProbeResult.REJECTED -> SignInOutcome.Invalid("The BTIDALPOOL server rejected these credentials.")
             ProbeResult.ACCEPTED -> {
                 persist(verified)
@@ -138,7 +147,7 @@ class BtidalpoolAuthRepository(
      * [signInWithPastedJson], persisting on success. The exchanged tokens are web-client tokens,
      * so the existing [refresh] proxy keeps working unchanged.
      */
-    suspend fun signInWithServerAuthCode(authCode: String, useTestDb: Boolean): SignInOutcome = withContext(Dispatchers.IO) {
+    suspend fun signInWithServerAuthCode(authCode: String): SignInOutcome = withContext(Dispatchers.IO) {
         val exchanged = try {
             client.exchangeServerAuthCode(authCode)
         } catch (ce: CancellationException) {
@@ -156,7 +165,7 @@ class BtidalpoolAuthRepository(
             Timber.d(e, "BTIDALPOOL token failed Google validation")
             return@withContext SignInOutcome.Invalid(e.message ?: "Token validation failed.")
         }
-        when (probeUploadServer(verified, useTestDb)) {
+        when (probeUploadServer(verified)) {
             ProbeResult.REJECTED -> SignInOutcome.Invalid("The BTIDALPOOL server rejected these credentials.")
             ProbeResult.ACCEPTED -> {
                 persist(verified)
@@ -180,9 +189,9 @@ class BtidalpoolAuthRepository(
      *                              server-availability problems, NOT bad credentials, so they
      *                              must not be reported as a rejection.
      */
-    private suspend fun probeUploadServer(state: AuthState, useTestDb: Boolean): ProbeResult {
+    private suspend fun probeUploadServer(state: AuthState): ProbeResult {
         return try {
-            when (client.checkHash(ALL_ZERO_SHA1, state.token, state.refreshToken, useTestDb)) {
+            when (client.checkHash(ALL_ZERO_SHA1, state.token)) {
                 BtidalpoolClient.CheckHashResult.NotPresent,
                 BtidalpoolClient.CheckHashResult.AlreadyPresent -> ProbeResult.ACCEPTED
                 BtidalpoolClient.CheckHashResult.AuthFailed -> ProbeResult.REJECTED
@@ -197,22 +206,36 @@ class BtidalpoolAuthRepository(
     }
 
     /**
-     * Force-refresh the cached token. Returns the new state on success, or null and clears the
-     * cache on failure (e.g., refresh token revoked by the user on Google's side).
+     * Force-refresh the cached token. Only a definitive invalid-grant response clears cached
+     * credentials; timeouts, rate limits, and helper-server failures preserve them for retry.
      */
-    suspend fun refresh(): AuthState? = withContext(Dispatchers.IO) {
-        val cur = state.value ?: return@withContext null
-        val refreshed = client.refreshToken(cur.refreshToken)
-        if (refreshed == null) {
-            Timber.w("BTIDALPOOL token refresh failed; clearing cached credentials")
-            signOut()
-            return@withContext null
+    suspend fun refresh(): RefreshOutcome = withContext(Dispatchers.IO) {
+        val cur = state.value
+            ?: return@withContext RefreshOutcome.InvalidGrant("No cached BTIDALPOOL credentials")
+        when (val refreshed = client.refreshToken(cur.refreshToken)) {
+            is BtidalpoolClient.TokenRefreshResult.Success -> {
+                // The refresh endpoint returns the same email account; reuse the cached email
+                // rather than re-querying Google's userinfo (saves a round-trip).
+                val newState = AuthState(
+                    refreshed.tokens.token,
+                    refreshed.tokens.refreshToken,
+                    cur.email,
+                )
+                persist(newState)
+                RefreshOutcome.Success(newState)
+            }
+            is BtidalpoolClient.TokenRefreshResult.InvalidGrant -> {
+                Timber.w("BTIDALPOOL refresh credential was rejected; clearing cached credentials")
+                signOut()
+                RefreshOutcome.InvalidGrant(refreshed.message)
+            }
+            is BtidalpoolClient.TokenRefreshResult.TransientFailure -> {
+                // Critical distinction: a timeout, 429, or helper-server 5xx does not revoke the
+                // user's refresh token. Keep credentials so WorkManager can retry later.
+                Timber.w("BTIDALPOOL token refresh temporarily unavailable: %s", refreshed.message)
+                RefreshOutcome.TransientFailure(refreshed.message, refreshed.retryAfterMillis)
+            }
         }
-        // The refresh endpoint returns the same email account; reuse the cached email rather
-        // than re-querying Google's userinfo (saves a round-trip).
-        val newState = AuthState(refreshed.token, refreshed.refreshToken, cur.email)
-        persist(newState)
-        newState
     }
 
     fun signOut() {
@@ -233,8 +256,13 @@ class BtidalpoolAuthRepository(
             return initial.copy(email = email)
         }
         Timber.d("BTIDALPOOL userinfo lookup failed; attempting refresh")
-        val refreshed = client.refreshToken(initial.refreshToken)
-            ?: throw IllegalStateException("Token validation failed and refresh was rejected. Sign in again.")
+        val refreshed = when (val result = client.refreshToken(initial.refreshToken)) {
+            is BtidalpoolClient.TokenRefreshResult.Success -> result.tokens
+            is BtidalpoolClient.TokenRefreshResult.InvalidGrant ->
+                throw IllegalStateException("Token refresh was rejected. Sign in again.")
+            is BtidalpoolClient.TokenRefreshResult.TransientFailure ->
+                throw IllegalStateException("Token validation service is temporarily unavailable.")
+        }
         val email = client.fetchUserEmail(refreshed.token)
             ?: throw IllegalStateException("Token validation failed even after refresh. Sign in again.")
         return AuthState(refreshed.token, refreshed.refreshToken, email)

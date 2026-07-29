@@ -1,7 +1,9 @@
 package com.darkmentor.data.btidalpool
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -9,14 +11,22 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.json.JSONObject
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import timber.log.Timber
-import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
-import javax.net.ssl.HttpsURLConnection
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -28,18 +38,58 @@ import javax.net.ssl.X509TrustManager
  *
  * The upload server speaks the BTPL codec — a zstd-compressed CBOR envelope wrapped in a 9-byte
  * "BTPL" frame (see [BtidalpoolCodec]) — over `Content-Type: application/x-btidalpool-cbor-zstd`.
- * Requests carry `{ auth: {token, refresh_token, use_test_db}, payload: {cmd: "upload",
- * btides_json: <raw JSON bytes>} }`; the server dedups content itself (returning a
- * `duplicate_upload` error we treat as success), so there is no separate client-side hash
- * pre-flight.
+ * The app uses only the unified `/v4` interface. Google credentials are exchanged once per
+ * short-lived BTIDALPOOL session; upload/query requests carry only that session token.
  *
  * Two TLS configurations because the two endpoints use different certificate authorities and the
  * upload server's self-signed cert isn't in the system trust store. The 7653 refresh proxy and the
  * Google userinfo lookup use the standard system trust store.
  */
-class BtidalpoolClient(
-    private val context: Context,
+class BtidalpoolClient private constructor(
+    private val context: Context?,
+    private val injectedUploadClient: OkHttpClient?,
+    private val v4Url: String,
+    private val retryRuntime: BtidalpoolRetryRuntime,
 ) {
+    constructor(context: Context) : this(
+        context = context,
+        injectedUploadClient = null,
+        v4Url = V4_URL,
+        retryRuntime = SystemBtidalpoolRetryRuntime,
+    )
+
+    internal constructor(
+        uploadClient: OkHttpClient,
+        v4Url: String,
+        retryRuntime: BtidalpoolRetryRuntime,
+    ) : this(
+        context = null,
+        injectedUploadClient = uploadClient,
+        v4Url = v4Url,
+        retryRuntime = retryRuntime,
+    )
+
+    private data class PinnedTls(
+        val socketFactory: javax.net.ssl.SSLSocketFactory,
+        val trustManager: X509TrustManager,
+    )
+
+    private val v4MediaType: MediaType = BtidalpoolCodec.V4_CONTENT_TYPE.toMediaType()
+    private val pinnedTls: PinnedTls by lazy { buildPinnedTls() }
+    private val uploadHttpClient: OkHttpClient by lazy {
+        injectedUploadClient ?: OkHttpClient.Builder()
+            .sslSocketFactory(pinnedTls.socketFactory, pinnedTls.trustManager)
+            // The server certificate is pinned byte-for-byte below. Preserve the existing
+            // deployment's hostname behavior until its self-signed certificate carries SANs.
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(5, TimeUnit.MINUTES)
+            .readTimeout(5, TimeUnit.MINUTES)
+            .callTimeout(6, TimeUnit.MINUTES)
+            // Upload retry policy lives in the durable outbox. Avoid an invisible second POST.
+            .retryOnConnectionFailure(false)
+            .build()
+    }
 
     /** Result of a check-hash query. The upload path no longer uses this (the server dedups on
      *  upload); it survives only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]. */
@@ -50,125 +100,330 @@ class BtidalpoolClient(
         data class Failed(val httpCode: Int, val body: String) : CheckHashResult()
     }
 
+    data class BusyRetryState(
+        val httpStatus: Int,
+        val completedAttempts: Int,
+        val delayMillis: Long,
+    ) {
+        val message: String
+            get() = "Server busy; retrying in ${((delayMillis + 999L) / 1_000L)} s…"
+    }
+
     sealed class UploadResult {
         object Success : UploadResult()
         object AlreadyPresent : UploadResult()
         object AuthFailed : UploadResult()
-        data class Failed(val httpCode: Int, val body: String) : UploadResult()
+        data class RetryableFailure(
+            val httpCode: Int,
+            val body: String,
+            val retryAfterMillis: Long? = null,
+        ) : UploadResult()
+        data class RetryExhausted(
+            val httpCode: Int,
+            val body: String,
+        ) : UploadResult()
+        data class PermanentFailure(val httpCode: Int, val body: String) : UploadResult()
+    }
+
+    /** Unified result surface for every BTIDALPOOL capability exposed by `/v4`. */
+    sealed class V4Result {
+        data class Session(val token: String, val expiresAtUnix: Long) : V4Result()
+        data class Ok(val message: String) : V4Result()
+        data class Manifest(
+            val uploadId: String,
+            val missingChunks: List<Int>,
+            val receipt: BtidalpoolCodec.UploadReceipt?,
+        ) : V4Result()
+        data class Chunk(val uploadId: String, val index: Int, val alreadyPresent: Boolean) : V4Result()
+        data class Status(
+            val uploadId: String,
+            val missingChunks: List<Int>,
+            val receipt: BtidalpoolCodec.UploadReceipt?,
+        ) : V4Result()
+        data class Finalized(val receipt: BtidalpoolCodec.UploadReceipt) : V4Result()
+        data class LegacyQuery(val records: Long, val btidesJson: ByteArray) : V4Result()
+        data class NativeQuery(val query: BtidalpoolCodec.V4NativeQueryResult) : V4Result()
+        data class Error(
+            val httpCode: Int,
+            val kind: String?,
+            val message: String,
+            val missingChunks: List<Int> = emptyList(),
+            val retryExhausted: Boolean = false,
+        ) : V4Result()
+        data class TransportFailure(val message: String) : V4Result()
     }
 
     /** Opaque pair returned from [refreshToken]. */
     data class RefreshedTokens(val token: String, val refreshToken: String)
 
-    /** Transport-level result of a single framed POST: HTTP code, response Content-Type, raw body. */
-    private data class RawResponse(val code: Int, val contentType: String, val body: ByteArray)
+    sealed class TokenRefreshResult {
+        data class Success(val tokens: RefreshedTokens) : TokenRefreshResult()
+        data class InvalidGrant(val httpCode: Int, val message: String) : TokenRefreshResult()
+        data class TransientFailure(
+            val httpCode: Int,
+            val message: String,
+            val retryAfterMillis: Long? = null,
+        ) : TokenRefreshResult()
+    }
 
-    /**
-     * Check whether the server holds content with canonical SHA1 [sha1], as a `cmd:"check_hash"`
-     * BTPL frame. The upload path no longer calls this (the server dedups on upload); it remains
-     * only as the sign-in connectivity/auth probe in [BtidalpoolAuthRepository]: `unauthorized`
-     * maps to [CheckHashResult.AuthFailed] (bad creds), any other non-OK framed result or a
-     * transport error maps to [CheckHashResult.Failed] (treated as server-unreachable, not a
-     * rejection).
-     */
+    /** Transport-level result of a single framed POST: HTTP code, response Content-Type, raw body. */
+    private data class RawResponse(
+        val code: Int,
+        val contentType: String,
+        val body: ByteArray,
+        val retryAfterMillis: Long?,
+        val overloadExhausted: Boolean = false,
+    )
+
+    /** Authenticate through v4, then use `check_hash` as the sign-in connectivity probe. */
     suspend fun checkHash(
         sha1: String,
-        token: String,
-        refreshToken: String,
-        useTestDb: Boolean,
+        googleAccessToken: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
     ): CheckHashResult = withContext(Dispatchers.IO) {
-        val frame = try {
-            BtidalpoolCodec.encodeCheckHashFrame(token, refreshToken, useTestDb, sha1)
-        } catch (t: Throwable) {
-            return@withContext CheckHashResult.Failed(-1, "could not encode check_hash frame: ${t.message}")
+        repeat(2) { sessionAttempt ->
+            when (val session = createV4Session(googleAccessToken, onBusyRetry)) {
+                is V4Result.Session -> when (
+                    val checked = v4CheckHash(session.token, sha1, onBusyRetry)
+                ) {
+                    is V4Result.Ok -> return@withContext CheckHashResult.NotPresent
+                    is V4Result.Error -> when (checked.kind) {
+                        "duplicate_upload" ->
+                            return@withContext CheckHashResult.AlreadyPresent
+                        "session_expired" -> if (sessionAttempt == 0) {
+                            return@repeat
+                        } else {
+                            return@withContext CheckHashResult.Failed(
+                                checked.httpCode,
+                                checked.message,
+                            )
+                        }
+                        "unauthorized" ->
+                            return@withContext CheckHashResult.AuthFailed
+                        else ->
+                            return@withContext CheckHashResult.Failed(
+                                checked.httpCode,
+                                checked.message,
+                            )
+                    }
+                    is V4Result.TransportFailure ->
+                        return@withContext CheckHashResult.Failed(-1, checked.message)
+                    else ->
+                        return@withContext CheckHashResult.Failed(
+                            -1,
+                            "unexpected v4 check_hash response",
+                        )
+                }
+                is V4Result.Error -> {
+                    if (session.kind == "unauthorized") {
+                        return@withContext CheckHashResult.AuthFailed
+                    }
+                    return@withContext CheckHashResult.Failed(
+                        session.httpCode,
+                        session.message,
+                    )
+                }
+                is V4Result.TransportFailure ->
+                    return@withContext CheckHashResult.Failed(-1, session.message)
+                else ->
+                    return@withContext CheckHashResult.Failed(
+                        -1,
+                        "unexpected v4 create_session response",
+                    )
+            }
         }
-        val raw = postFrame(UPLOAD_URL, frame, null)
-        if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) {
-            val text = String(raw.body, Charsets.UTF_8).trim()
-            return@withContext CheckHashResult.Failed(raw.code, text.ifEmpty { "HTTP ${raw.code} (non-codec response)" })
+        CheckHashResult.Failed(-1, "v4 session expired twice during check_hash")
+    }
+
+    suspend fun createV4Session(
+        googleAccessToken: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4CreateSessionFrame(googleAccessToken),
+        onBusyRetry,
+    )
+
+    /** Whole-file upload through v4. Resumable uploads should use [v4Manifest]. */
+    suspend fun v4Upload(
+        sessionToken: String,
+        btidesJson: ByteArray,
+        useTestDb: Boolean,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4UploadFrame(sessionToken, btidesJson, useTestDb),
+        onBusyRetry,
+    )
+
+    suspend fun v4CheckHash(
+        sessionToken: String,
+        canonicalSha1: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4CheckHashFrame(sessionToken, canonicalSha1),
+        onBusyRetry,
+    )
+
+    suspend fun v4LegacyQuery(
+        sessionToken: String,
+        params: BtidalpoolCodec.QueryParams,
+        useTestDb: Boolean,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4LegacyQueryFrame(sessionToken, params, useTestDb),
+        onBusyRetry,
+    )
+
+    suspend fun v4NativeQuery(
+        sessionToken: String,
+        params: BtidalpoolCodec.QueryParams,
+        useTestDb: Boolean,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4NativeQueryFrame(sessionToken, params, useTestDb),
+        onBusyRetry,
+    )
+
+    suspend fun v4Manifest(
+        sessionToken: String,
+        contentSha256: String,
+        totalSize: Long,
+        chunkSha256: List<String>,
+        useTestDb: Boolean,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4ManifestFrame(
+            sessionToken,
+            contentSha256,
+            totalSize,
+            chunkSha256,
+            useTestDb,
+        ),
+        onBusyRetry,
+    )
+
+    suspend fun v4PutChunk(
+        sessionToken: String,
+        uploadId: String,
+        index: Int,
+        data: ByteArray,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4PutChunkFrame(sessionToken, uploadId, index, data),
+        onBusyRetry,
+    )
+
+    suspend fun v4Status(
+        sessionToken: String,
+        uploadId: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4StatusFrame(sessionToken, uploadId),
+        onBusyRetry,
+    )
+
+    suspend fun v4Finalize(
+        sessionToken: String,
+        uploadId: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)? = null,
+    ): V4Result = postV4(
+        BtidalpoolCodec.encodeV4FinalizeFrame(sessionToken, uploadId),
+        onBusyRetry,
+    )
+
+    private suspend fun postV4(
+        frame: ByteArray,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)?,
+    ): V4Result = withContext(Dispatchers.IO) {
+        val raw = try {
+            postFrame(
+                frame.toRequestBody(v4MediaType),
+                v4Url,
+                BtidalpoolCodec.V4_CONTENT_TYPE,
+                onBusyRetry,
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: IOException) {
+            return@withContext V4Result.TransportFailure(e.message ?: e::class.java.simpleName)
         }
         val wire = try {
-            BtidalpoolCodec.decodeResponse(raw.body)
+            if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) null
+            else BtidalpoolCodec.decodeV4Response(raw.body)
         } catch (t: Throwable) {
-            return@withContext CheckHashResult.Failed(raw.code, "malformed response frame: ${t.message}")
+            return@withContext V4Result.Error(
+                raw.code,
+                null,
+                "malformed response frame: ${t.message}",
+                retryExhausted = raw.overloadExhausted,
+            )
+        }
+        if (wire == null) {
+            return@withContext V4Result.Error(
+                raw.code,
+                null,
+                raw.textOrHttpError(),
+                retryExhausted = raw.overloadExhausted,
+            )
+        }
+        if (raw.overloadExhausted) {
+            return@withContext V4Result.Error(
+                raw.code,
+                wire.kind,
+                "Server busy; retry limit reached (${wire.message.orEmpty()})",
+                wire.missingChunks,
+                retryExhausted = true,
+            )
         }
         when (wire.result) {
-            "ok" -> CheckHashResult.NotPresent
-            "err" -> when (wire.kind) {
-                "duplicate_upload" -> CheckHashResult.AlreadyPresent
-                "unauthorized" -> CheckHashResult.AuthFailed
-                else -> CheckHashResult.Failed(raw.code, "${wire.kind ?: "err"}: ${wire.message ?: ""}".trim())
+            "session" -> {
+                val token = wire.token
+                val expires = wire.expiresAtUnix
+                if (token.isNullOrBlank() || expires == null) {
+                    V4Result.Error(raw.code, null, "session response omitted credentials")
+                } else {
+                    V4Result.Session(token, expires)
+                }
             }
-            else -> CheckHashResult.Failed(raw.code, "unexpected result '${wire.result}'")
+            "ok" -> V4Result.Ok(wire.message.orEmpty())
+            "manifest" -> {
+                val id = wire.uploadId
+                if (id.isNullOrBlank()) V4Result.Error(raw.code, null, "manifest omitted upload_id")
+                else V4Result.Manifest(id, wire.missingChunks, wire.receipt)
+            }
+            "chunk" -> {
+                val id = wire.uploadId
+                val index = wire.index
+                if (id.isNullOrBlank() || index == null) {
+                    V4Result.Error(raw.code, null, "chunk acknowledgement was incomplete")
+                } else {
+                    V4Result.Chunk(id, index, wire.alreadyPresent ?: false)
+                }
+            }
+            "status" -> {
+                val id = wire.uploadId
+                if (id.isNullOrBlank()) V4Result.Error(raw.code, null, "status omitted upload_id")
+                else V4Result.Status(id, wire.missingChunks, wire.receipt)
+            }
+            "finalized" -> wire.receipt?.let(V4Result::Finalized)
+                ?: V4Result.Error(raw.code, null, "finalize omitted receipt")
+            "query_result" -> V4Result.LegacyQuery(
+                wire.records ?: 0L,
+                wire.btidesJson ?: byteArrayOf(),
+            )
+            "native_query_result" -> wire.query?.let(V4Result::NativeQuery)
+                ?: V4Result.Error(raw.code, null, "native query omitted result data")
+            "err" -> V4Result.Error(
+                raw.code,
+                wire.kind,
+                wire.message ?: wire.kind ?: "BTIDALPOOL error",
+                wire.missingChunks,
+            )
+            else -> V4Result.Error(raw.code, null, "unexpected result '${wire.result}'")
         }
     }
 
-    /**
-     * Upload [btidesFile] to the Rust pool server as a BTPL frame. The whole file is read into
-     * memory and CBOR+zstd-framed (the old :3567 path streamed; the codec can't), so files above
-     * [MAX_UPLOAD_BYTES] are refused up-front — both to honour the server's cap and to avoid an
-     * OOM building an oversize frame. The server dedups, so a re-upload comes back as
-     * [UploadResult.AlreadyPresent] rather than an error.
-     *
-     * [onProgress] reports `(bytesSent, totalBytes)` over the compressed frame as it streams to the
-     * socket, so the UI bar advances 0 → 1 across the network phase.
-     */
-    suspend fun uploadFile(
-        btidesFile: File,
-        token: String,
-        refreshToken: String,
-        useTestDb: Boolean,
-        onProgress: (suspend (bytesSent: Long, totalBytes: Long) -> Unit)? = null,
-    ): UploadResult = withContext(Dispatchers.IO) {
-        val fileLen = btidesFile.length()
-        if (fileLen > MAX_UPLOAD_BYTES) {
-            Timber.w(
-                "BTIDES file %s is %d bytes (> %d cap); refusing :3568 upload",
-                btidesFile.name, fileLen, MAX_UPLOAD_BYTES,
-            )
-            return@withContext UploadResult.Failed(
-                413,
-                "File is $fileLen bytes; BTIDALPOOL caps a single upload at $MAX_UPLOAD_BYTES " +
-                    "bytes (~10 MiB). Upload more often so each log stays small.",
-            )
-        }
-        val jsonBytes = btidesFile.readBytes()
-        val frame = try {
-            BtidalpoolCodec.encodeUploadFrame(token, refreshToken, useTestDb, jsonBytes)
-        } catch (t: Throwable) {
-            Timber.e(t, "Failed to build BTPL upload frame for %s", btidesFile.name)
-            return@withContext UploadResult.Failed(-1, "could not encode upload frame: ${t.message}")
-        }
-        mapUploadResponse(postFrame(UPLOAD_URL, frame, onProgress))
-    }
-
-    /** Translate a framed POST result into an [UploadResult]. */
-    private fun mapUploadResponse(raw: RawResponse): UploadResult {
-        // Per the protocol a genuine codec reply — success OR a structured error — carries the
-        // codec Content-Type even on 4xx/5xx. Anything else (text/plain: 405/415/413/429/malformed
-        // body) is a transport-layer error we surface verbatim.
-        if (!raw.contentType.startsWith(BtidalpoolCodec.CONTENT_TYPE)) {
-            val text = String(raw.body, Charsets.UTF_8).trim()
-            return UploadResult.Failed(raw.code, text.ifEmpty { "HTTP ${raw.code} (non-codec response)" })
-        }
-        val wire = try {
-            BtidalpoolCodec.decodeResponse(raw.body)
-        } catch (t: Throwable) {
-            Timber.e(t, "Malformed BTPL response frame (HTTP %d)", raw.code)
-            return UploadResult.Failed(raw.code, "malformed response frame: ${t.message}")
-        }
-        return when (wire.result) {
-            "ok" -> UploadResult.Success
-            "err" -> when (wire.kind) {
-                // Server already holds this content — same terminal "don't re-send" outcome.
-                "duplicate_upload" -> UploadResult.AlreadyPresent
-                // Token rejected — the interactor refreshes and retries once.
-                "unauthorized" -> UploadResult.AuthFailed
-                else -> UploadResult.Failed(raw.code, "${wire.kind ?: "err"}: ${wire.message ?: ""}".trim())
-            }
-            else -> UploadResult.Failed(raw.code, "unexpected result '${wire.result}': ${wire.message ?: ""}".trim())
-        }
-    }
+    private fun RawResponse.textOrHttpError(): String =
+        String(body, Charsets.UTF_8).trim().ifEmpty { "HTTP $code" }
 
     /**
      * Verify the access token by fetching the authenticated user's email from Google's userinfo
@@ -203,9 +458,10 @@ class BtidalpoolClient(
     /**
      * Exchange a refresh token for a fresh access token via the BTIDALPOOL refresh proxy (which
      * holds the OAuth client_secret server-side). Uses the LetsEncrypt-validated trust store.
-     * Returns null on any error.
+     * Returns a typed result so invalid grants are not confused with transient server/network
+     * failures.
      */
-    suspend fun refreshToken(refreshToken: String): RefreshedTokens? = withContext(Dispatchers.IO) {
+    suspend fun refreshToken(refreshToken: String): TokenRefreshResult = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("refresh_token", refreshToken)
             put("client_id", BtidalpoolAuthRepository.CLIENT_ID)
@@ -225,20 +481,39 @@ class BtidalpoolClient(
                 if (code != 200) {
                     val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
                     Timber.w("refresh returned HTTP %d: %s", code, err)
-                    return@withContext null
+                    val message = err.ifBlank { "refresh HTTP $code" }
+                    return@withContext when {
+                        code == 400 || code == 401 || code == 403 ->
+                            TokenRefreshResult.InvalidGrant(code, message)
+                        code == 408 || code == 429 || code in 500..599 ->
+                            TokenRefreshResult.TransientFailure(
+                                code,
+                                message,
+                                BtidalpoolOverloadRetry.parseRetryAfterMillis(
+                                    conn.getHeaderField("Retry-After"),
+                                    retryRuntime.wallClockMillis(),
+                                ),
+                            )
+                        else -> TokenRefreshResult.TransientFailure(code, message)
+                    }
                 }
                 val resp = conn.inputStream.bufferedReader().use { it.readText() }
                 val obj: JsonObject = Json.parseToJsonElement(resp).jsonObject
                 val newToken = obj["token"]?.jsonPrimitive?.contentOrNull
                 val newRefresh = obj["refresh_token"]?.jsonPrimitive?.contentOrNull
-                if (newToken.isNullOrBlank() || newRefresh.isNullOrBlank()) null
-                else RefreshedTokens(newToken, newRefresh)
+                if (newToken.isNullOrBlank() || newRefresh.isNullOrBlank()) {
+                    TokenRefreshResult.TransientFailure(code, "refresh response omitted credentials")
+                } else {
+                    TokenRefreshResult.Success(RefreshedTokens(newToken, newRefresh))
+                }
             } finally {
                 conn.disconnect()
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             Timber.w(t, "refresh request failed")
-            null
+            TokenRefreshResult.TransientFailure(-1, t.message ?: t::class.java.simpleName)
         }
     }
 
@@ -287,53 +562,87 @@ class BtidalpoolClient(
     }
 
     /**
-     * POST a BTPL [frame] to the upload server, validating the server's TLS cert against the pinned
-     * `btidalpool_server.crt`. With FixedLengthStreamingMode set, the frame flows straight to the
-     * socket in 64KB chunks (so [onProgress] can advance the UI) without HttpsURLConnection
-     * buffering it. Reads the full response body — codec frame or text/plain transport error — for
-     * the caller to classify.
+     * POST one BTPL request through the reusable OkHttp connection pool. Cancelling the coroutine
+     * cancels the in-flight socket call. Reads the small response frame (or text transport error)
+     * for the caller to classify.
      */
     @Throws(IOException::class)
     private suspend fun postFrame(
-        urlStr: String,
-        frame: ByteArray,
-        onProgress: (suspend (bytesSent: Long, totalBytes: Long) -> Unit)?,
+        body: RequestBody,
+        endpoint: String,
+        mediaType: String,
+        onBusyRetry: (suspend (BusyRetryState?) -> Unit)?,
     ): RawResponse {
-        val url = URL(urlStr)
-        val conn = (url.openConnection() as HttpsURLConnection).apply {
-            sslSocketFactory = pinnedSocketFactory()
-            hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
-            requestMethod = "POST"
-            connectTimeout = 30_000
-            // Long enough for a slow-Wi-Fi upload to finish without the connection dropping.
-            readTimeout = 5 * 60_000
-            doOutput = true
-            setRequestProperty("Content-Type", BtidalpoolCodec.CONTENT_TYPE)
-            setRequestProperty("Accept", BtidalpoolCodec.CONTENT_TYPE)
-            setFixedLengthStreamingMode(frame.size.toLong())
-        }
-        return try {
-            val total = frame.size.toLong()
-            conn.outputStream.use { out ->
-                var sent = 0
-                while (sent < frame.size) {
-                    val n = minOf(64 * 1024, frame.size - sent)
-                    out.write(frame, sent, n)
-                    sent += n
-                    onProgress?.invoke(sent.toLong(), total)
-                }
+        val startedAt = retryRuntime.monotonicMillis()
+        var completedAttempts = 0
+        var busyReported = false
+        while (true) {
+            val request = Request.Builder()
+                .url(endpoint)
+                .header("Content-Type", mediaType)
+                .header("Accept", mediaType)
+                .post(body)
+                .build()
+            val raw = uploadHttpClient.newCall(request).awaitResponse().use { response ->
+                RawResponse(
+                    code = response.code,
+                    contentType = response.header("Content-Type").orEmpty(),
+                    body = response.body.bytes(),
+                    retryAfterMillis = BtidalpoolOverloadRetry.parseRetryAfterMillis(
+                        response.header("Retry-After"),
+                        retryRuntime.wallClockMillis(),
+                    ),
+                )
             }
-            val code = conn.responseCode
-            val ctype = conn.contentType ?: ""
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val respBody = stream?.use { it.readBytes() } ?: ByteArray(0)
-            RawResponse(code, ctype, respBody)
-        } finally {
-            conn.disconnect()
+            completedAttempts += 1
+            if (!BtidalpoolOverloadRetry.isOverload(raw.code)) {
+                if (busyReported) onBusyRetry?.invoke(null)
+                return raw
+            }
+
+            val decision = BtidalpoolOverloadRetry.decision(
+                completedAttempts = completedAttempts,
+                elapsedMillis = (retryRuntime.monotonicMillis() - startedAt).coerceAtLeast(0L),
+                retryAfterMillis = raw.retryAfterMillis,
+                jitterUnit = retryRuntime.jitterUnit(),
+            ) ?: run {
+                if (busyReported) onBusyRetry?.invoke(null)
+                return raw.copy(overloadExhausted = true)
+            }
+            busyReported = true
+            onBusyRetry?.invoke(
+                BusyRetryState(
+                    httpStatus = raw.code,
+                    completedAttempts = completedAttempts,
+                    delayMillis = decision.delayMillis,
+                ),
+            )
+            // kotlinx.coroutines delay is cancellation-aware. Tests inject the same contract.
+            retryRuntime.sleep(decision.delayMillis)
         }
     }
 
-    private fun pinnedSocketFactory(): javax.net.ssl.SSLSocketFactory {
+    private suspend fun Call.awaitResponse(): Response =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { cancel() }
+            enqueue(
+                object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (continuation.isActive) continuation.resumeWith(Result.failure(e))
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.success(response))
+                        } else {
+                            response.close()
+                        }
+                    }
+                },
+            )
+        }
+
+    private fun buildPinnedTls(): PinnedTls {
         val pinned = loadPinnedCertificate()
         // Custom trust manager that accepts only the pinned cert (by equality on the encoded
         // form). Standard X509TrustManager checks chain, hostname, etc. — we deliberately bypass
@@ -353,28 +662,21 @@ class BtidalpoolClient(
         }
         val ctx = SSLContext.getInstance("TLS")
         ctx.init(null, arrayOf<TrustManager>(tm), java.security.SecureRandom())
-        return ctx.socketFactory
+        return PinnedTls(ctx.socketFactory, tm)
     }
 
     private fun loadPinnedCertificate(): X509Certificate {
-        return context.assets.open(PINNED_CERT_ASSET).use {
+        return checkNotNull(context).assets.open(PINNED_CERT_ASSET).use {
             CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
         }
     }
 
     companion object {
-        private const val UPLOAD_URL = "https://btidalpool.ddns.net:3568/"
+        private const val V4_URL = "https://btidalpool.ddns.net:3568/v4"
         private const val REFRESH_URL = "https://btidalpool.ddns.net:7653/refresh"
         // Phone-app SSO: exchanges a native Google serverAuthCode for tokens (see [exchangeServerAuthCode]).
         private const val EXCHANGE_URL = "https://btidalpool.ddns.net:7653/exchange_app"
         private const val USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
         private const val PINNED_CERT_ASSET = "btidalpool_server.crt"
-
-        /**
-         * Hard cap on a single upload's raw BTIDES JSON. The Rust server rejects larger bodies, and
-         * — unlike the streaming :3567 path — the CBOR+zstd frame is built fully in memory, so we
-         * refuse oversize files up-front rather than risk an OOM. 10 MiB matches the server limit.
-         */
-        private const val MAX_UPLOAD_BYTES = 10L * 1024 * 1024
     }
 }

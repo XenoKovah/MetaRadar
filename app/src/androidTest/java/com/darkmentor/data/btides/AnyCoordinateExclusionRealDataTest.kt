@@ -1,11 +1,13 @@
 package com.darkmentor.data.btides
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.darkmentor.data.repo.LocationRepository
 import com.darkmentor.data.repo.SettingsRepository
 import com.darkmentor.domain.model.ExclusionZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
@@ -17,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.koin.java.KoinJavaComponent
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * On-device, end-to-end confirmation that the BTIDALPOOL upload export drops a device if ANY
@@ -73,49 +76,83 @@ class AnyCoordinateExclusionRealDataTest {
         var totDevices = 0; var totShouldExclude = 0; var totLeaked = 0
         var totWeakOnly = 0; var totUploadedInZone = 0; var anyChecked = false
 
-        for (log in btides.listLogs()) {
-            // Enumerate this log's devices via an unfiltered export.
-            val baseline = ByteArrayOutputStream()
-            btides.exportTo(baseline, strongest, null, sourceFile = log.file)
-            val devices = bdaddrsIn(baseline.toString(Charsets.UTF_8.name()))
-            if (devices.isEmpty()) continue
+        val qaRoot = File(
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
+            "btidalpool_gps_exclusion_qa_${System.nanoTime()}",
+        ).also { it.mkdirs() }
+        try {
+            for ((logIndex, log) in btides.listLogs().withIndex()) {
+                // Enumerate this log's devices via an unfiltered export.
+                val baseline = ByteArrayOutputStream()
+                btides.exportTo(baseline, strongest, null, sourceFile = log.file)
+                val devices = bdaddrsIn(baseline.toString(Charsets.UTF_8.name()))
+                if (devices.isEmpty()) continue
 
-            // Which devices have ANY coordinate in a zone — and of those, how many have their
-            // strongest OUTSIDE every zone (the ones the old strongest-only rule would have leaked)?
-            val shouldExclude = ArrayList<String>()
-            var weakOnly = 0
-            for (addr in devices) {
-                val coords = coordsLookup(addr)
-                if (coords.any { (la, ln) -> inAnyZone(la, ln) }) {
-                    shouldExclude.add(addr)
-                    val s = strongest(addr)
-                    if (s == null || !inAnyZone(s.lat, s.lng)) weakOnly++
+                // Which devices have ANY coordinate in a zone — and of those, how many have their
+                // strongest OUTSIDE every zone (the old strongest-only rule would have leaked)?
+                val shouldExclude = ArrayList<String>()
+                var weakOnly = 0
+                for (addr in devices) {
+                    val coords = coordsLookup(addr)
+                    if (coords.any { (la, ln) -> inAnyZone(la, ln) }) {
+                        shouldExclude.add(addr)
+                        val s = strongest(addr)
+                        if (s == null || !inAnyZone(s.lat, s.lng)) weakOnly++
+                    }
                 }
+
+                // The exact v4 upload-bound chunk export (zones + all-coordinate exclusion).
+                val chunks = btides.exportUploadChunks(
+                    outputDir = File(qaRoot, "log_$logIndex"),
+                    strongestRssiLookup = strongest,
+                    sourceFile = log.file,
+                    exclusionZones = zones,
+                    exclusionCoordsLookup = coordsLookup,
+                )
+                val out = JsonArray(
+                    chunks.flatMap { chunk ->
+                        json.parseToJsonElement(chunk.file.readText()).jsonArray
+                    },
+                ).toString()
+
+                val leaked = shouldExclude.filter { out.contains(it) }
+                val uploadedInZone = uploadedCoordsIn(out)
+                    .filter { (la, ln) -> inAnyZone(la, ln) }
+                println(
+                    "ANYCOORD log=${log.file.name} devices=${devices.size} " +
+                        "should_exclude=${shouldExclude.size} weak_only=$weakOnly " +
+                        "leaked=${leaked.size} uploaded_in_zone=${uploadedInZone.size}",
+                )
+
+                assertEquals(
+                    "device(s) with an in-zone coordinate leaked: ${leaked.take(5)}",
+                    0,
+                    leaked.size,
+                )
+                assertEquals(
+                    "uploaded coordinate(s) fall inside a zone: ${uploadedInZone.take(3)}",
+                    0,
+                    uploadedInZone.size,
+                )
+
+                totDevices += devices.size
+                totShouldExclude += shouldExclude.size
+                totLeaked += leaked.size
+                totWeakOnly += weakOnly
+                totUploadedInZone += uploadedInZone.size
+                if (shouldExclude.isNotEmpty()) anyChecked = true
             }
-
-            // The real upload-bound export (zones + all-coordinate exclusion).
-            val filtered = ByteArrayOutputStream()
-            btides.exportTo(
-                filtered, strongest, null,
-                sourceFile = log.file,
-                exclusionZones = zones,
-                exclusionCoordsLookup = coordsLookup,
-            )
-            val out = filtered.toString(Charsets.UTF_8.name())
-
-            val leaked = shouldExclude.filter { out.contains(it) }
-            val uploadedInZone = uploadedCoordsIn(out).filter { (la, ln) -> inAnyZone(la, ln) }
-            println("ANYCOORD log=${log.file.name} devices=${devices.size} should_exclude=${shouldExclude.size} weak_only=$weakOnly leaked=${leaked.size} uploaded_in_zone=${uploadedInZone.size}")
-
-            assertEquals("device(s) with an in-zone coordinate leaked into the upload: ${leaked.take(5)}", 0, leaked.size)
-            assertEquals("uploaded coordinate(s) fall inside a zone: ${uploadedInZone.take(3)}", 0, uploadedInZone.size)
-
-            totDevices += devices.size; totShouldExclude += shouldExclude.size; totLeaked += leaked.size
-            totWeakOnly += weakOnly; totUploadedInZone += uploadedInZone.size
-            if (shouldExclude.isNotEmpty()) anyChecked = true
+        } finally {
+            qaRoot.deleteRecursively()
         }
-        println("ANYCOORD_SUMMARY devices=$totDevices should_exclude=$totShouldExclude weak_only=$totWeakOnly leaked=$totLeaked uploaded_in_zone=$totUploadedInZone")
-        assumeTrue("No captured device had a coordinate inside any zone — walk through a zone to exercise this.", anyChecked)
+        println(
+            "ANYCOORD_SUMMARY devices=$totDevices should_exclude=$totShouldExclude " +
+                "weak_only=$totWeakOnly leaked=$totLeaked uploaded_in_zone=$totUploadedInZone",
+        )
+        assumeTrue(
+            "No captured device had an in-zone coordinate — walk through a zone to exercise this.",
+            anyChecked,
+        )
         assertEquals("no in-zone-coordinate device may survive the upload", 0, totLeaked)
         assertEquals("no uploaded coordinate may fall in a zone", 0, totUploadedInZone)
     }

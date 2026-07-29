@@ -8,11 +8,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.Observer
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkInfo
 import com.darkmentor.BuildConfig
 import com.darkmentor.R
 import com.darkmentor.collectAsState
 import com.darkmentor.data.btidalpool.BtidalpoolAuthRepository
+import com.darkmentor.data.btidalpool.BtidalpoolUploadScheduler
+import com.darkmentor.data.btidalpool.BtidalpoolUploadWorker
 import com.darkmentor.data.helpers.IntentHelper
 import com.darkmentor.data.helpers.LocationProvider
 import com.darkmentor.data.helpers.PermissionHelper
@@ -60,7 +64,7 @@ class SettingsViewModel(
     private val btidesRepository: com.darkmentor.data.btides.BTIDESRepository,
     private val clearAllDevicesInteractor: ClearAllDevicesInteractor,
     private val btidalpoolAuthRepository: BtidalpoolAuthRepository,
-    private val uploadToBtidalpoolInteractor: UploadToBtidalpoolInteractor,
+    private val btidalpoolUploadScheduler: BtidalpoolUploadScheduler,
 ) : ViewModel() {
 
     var garbageRemovingInProgress: Boolean by mutableStateOf(false)
@@ -115,6 +119,8 @@ class SettingsViewModel(
     var btidalpoolUploadInProgress: Boolean by mutableStateOf(false)
     /** Reuses the BTIDES export progress signal — upload runs an export internally. */
     var btidalpoolUploadProgress: Float by mutableStateOf(0f)
+    /** Concise overload state; intentionally independent of credentials/authentication UI. */
+    var btidalpoolServerBusyMessage: String? by mutableStateOf(null)
     /** Mirrors the `--use-test-db` CLI flag; routes uploads to the server's alternate `bttest` DB. */
     var btidalpoolUseTestDb: Boolean by mutableStateOf(settingsRepository.getBtidalpoolUseTestDb())
 
@@ -136,8 +142,9 @@ class SettingsViewModel(
     var btidalpoolCredentialsDialogMessage: String? by mutableStateOf(null)
     /** True while a "Cancel current BTIDALPOOL upload?" confirmation dialog is showing. */
     var btidalpoolCancelDialogVisible: Boolean by mutableStateOf(false)
-    /** Job handle for the in-flight upload pass, so the cancel dialog can interrupt it. */
-    private var btidalpoolUploadJob: Job? = null
+    private var lastHandledUploadCompletionMs = 0L
+    private val btidalpoolWorkInfos = btidalpoolUploadScheduler.workInfos()
+    private val btidalpoolWorkObserver = Observer<List<WorkInfo>> { observeBtidalpoolWork(it) }
 
     val databaseInfo by getDatabaseInfoInteractor.execute().collectAsState(viewModelScope, null)
 
@@ -145,6 +152,7 @@ class SettingsViewModel(
         observeLocationData()
         observeSilentMode()
         observeBtidalpoolAuth()
+        btidalpoolWorkInfos.observeForever(btidalpoolWorkObserver)
         refreshBTIDESLogSize()
     }
 
@@ -176,10 +184,7 @@ class SettingsViewModel(
                 // Validates against Google AND probes the BTIDALPOOL upload server. Persists
                 // (flipping btidalpoolAuth non-null) on any Valid outcome — including when the
                 // upload server is unreachable, since Google already vouched for the token.
-                val outcome = btidalpoolAuthRepository.signInWithPastedJson(
-                    json,
-                    settingsRepository.getBtidalpoolUseTestDb(),
-                )
+                val outcome = btidalpoolAuthRepository.signInWithPastedJson(json)
                 // Close the paste dialog and report the verdict in a follow-up dialog. A Valid
                 // outcome persisted the token, so the upload UI renders underneath; an Invalid
                 // one persisted nothing, so the screen falls back to "Sign in with Google".
@@ -202,10 +207,7 @@ class SettingsViewModel(
         viewModelScope.launch {
             btidalpoolSignInInProgress = true
             try {
-                val outcome = btidalpoolAuthRepository.signInWithServerAuthCode(
-                    authCode,
-                    settingsRepository.getBtidalpoolUseTestDb(),
-                )
+                val outcome = btidalpoolAuthRepository.signInWithServerAuthCode(authCode)
                 btidalpoolCredentialsDialogMessage = messageFor(outcome)
             } finally {
                 btidalpoolSignInInProgress = false
@@ -276,9 +278,13 @@ class SettingsViewModel(
             btidalpoolCancelDialogVisible = true
             return
         }
-        runUpload { useTestDb, onProgress ->
-            uploadToBtidalpoolInteractor.executeCurrent(useTestDb, onProgress)
-        }
+        btidalpoolUploadScheduler.enqueue(
+            mode = UploadToBtidalpoolInteractor.Mode.CURRENT,
+            useTestDb = settingsRepository.getBtidalpoolUseTestDb(),
+            allowReupload = false,
+        )
+        btidalpoolUploadInProgress = true
+        btidalpoolUploadProgress = 0f
     }
 
     fun onUploadAllBtidalpoolClick() {
@@ -286,96 +292,60 @@ class SettingsViewModel(
             btidalpoolCancelDialogVisible = true
             return
         }
-        runUpload { useTestDb, onProgress ->
-            uploadToBtidalpoolInteractor.executeAll(useTestDb, reuploadAlreadyUploaded, onProgress)
-        }
+        btidalpoolUploadScheduler.enqueue(
+            mode = UploadToBtidalpoolInteractor.Mode.ALL,
+            useTestDb = settingsRepository.getBtidalpoolUseTestDb(),
+            allowReupload = reuploadAlreadyUploaded,
+        )
+        btidalpoolUploadInProgress = true
+        btidalpoolUploadProgress = 0f
     }
 
     fun onConfirmCancelBtidalpoolUpload() {
         btidalpoolCancelDialogVisible = false
-        btidalpoolUploadJob?.cancel()
+        btidalpoolUploadScheduler.cancel()
+        btidalpoolStatusDialogMessage = context.getString(R.string.btidalpool_upload_cancelled)
     }
 
     fun onDismissCancelBtidalpoolUpload() {
         btidalpoolCancelDialogVisible = false
     }
 
-    private fun runUpload(
-        block: suspend (
-            useTestDb: Boolean,
-            onProgress: suspend (bytesProcessed: Long, totalBytes: Long) -> Unit,
-        ) -> UploadToBtidalpoolInteractor.Outcome,
-    ) {
-        if (btidalpoolUploadInProgress) return
-        btidalpoolUploadJob = viewModelScope.launch {
-            btidalpoolUploadInProgress = true
-            btidalpoolUploadProgress = 0f
-            try {
-                val outcome = block(settingsRepository.getBtidalpoolUseTestDb()) { processed, total ->
-                    btidalpoolUploadProgress =
-                        if (total > 0L) (processed.toDouble() / total).toFloat().coerceIn(0f, 1f)
-                        else 0f
-                }
-                btidalpoolStatusDialogMessage = formatUploadOutcome(outcome)
-                refreshBTIDESLogSize()
-            } catch (ce: CancellationException) {
-                btidalpoolStatusDialogMessage = context.getString(R.string.btidalpool_upload_cancelled)
-                throw ce
-            } catch (e: Throwable) {
-                reportError(e)
-                btidalpoolStatusDialogMessage = context.getString(
-                    R.string.btidalpool_upload_failed_with_reason,
-                    e.message ?: e::class.java.simpleName,
-                )
-            } finally {
-                btidalpoolUploadInProgress = false
-                btidalpoolUploadProgress = 0f
-                btidalpoolUploadJob = null
+    private fun observeBtidalpoolWork(infos: List<WorkInfo>) {
+        val active = infos.lastOrNull { it.state == WorkInfo.State.RUNNING }
+            ?: infos.lastOrNull {
+                it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED
             }
+        btidalpoolUploadInProgress = active != null
+        btidalpoolUploadProgress = if (active == null) {
+            0f
+        } else {
+            active.progress.getInt(BtidalpoolUploadWorker.OUTPUT_PROGRESS_PERCENT, 0)
+                .coerceIn(0, 100) / 100f
         }
-    }
+        btidalpoolServerBusyMessage = active?.progress
+            ?.getString(BtidalpoolUploadWorker.OUTPUT_SERVER_BUSY_MESSAGE)
+            ?.takeIf { it.isNotBlank() }
+        if (active != null) return
 
-    /**
-     * Build a multi-line summary of an upload outcome. For single-log flows the message is
-     * one line; for multi-log flows we list each log's status on its own line so the user can
-     * tell at a glance which (if any) failed and would need a retry.
-     */
-    private fun formatUploadOutcome(outcome: UploadToBtidalpoolInteractor.Outcome): String {
-        if (outcome is UploadToBtidalpoolInteractor.Outcome.NotSignedIn) {
-            return context.getString(R.string.btidalpool_not_signed_in)
-        }
-        outcome as UploadToBtidalpoolInteractor.Outcome.WithResults
-        val results = outcome.results
-        // Side-effect: an auth failure on any log means the cached token is invalid; clear it
-        // so the next launch shows the Sign-in button.
-        if (results.any { it is UploadToBtidalpoolInteractor.LogResult.AuthFailed }) {
-            btidalpoolAuthRepository.signOut()
-        }
-        return results.joinToString(separator = "\n") { logResult ->
-            when (logResult) {
-                is UploadToBtidalpoolInteractor.LogResult.Success ->
-                    context.getString(
-                        R.string.btidalpool_upload_log_succeeded,
-                        logResult.logName, logResult.deviceCount,
-                    )
-                is UploadToBtidalpoolInteractor.LogResult.AlreadyOnServer ->
-                    context.getString(
-                        R.string.btidalpool_upload_log_already_present,
-                        logResult.logName,
-                    )
-                is UploadToBtidalpoolInteractor.LogResult.AuthFailed ->
-                    context.getString(R.string.btidalpool_upload_log_auth_failed, logResult.logName)
-                is UploadToBtidalpoolInteractor.LogResult.EmptyLog ->
-                    context.getString(R.string.btidalpool_upload_log_empty, logResult.logName)
-                is UploadToBtidalpoolInteractor.LogResult.Failed -> {
-                    Timber.w("BTIDALPOOL upload failed for %s: %s", logResult.logName, logResult.message)
-                    context.getString(
-                        R.string.btidalpool_upload_log_failed,
-                        logResult.logName, logResult.message,
-                    )
-                }
+        val newestTerminal = infos
+            .filter {
+                it.outputData.getBoolean(BtidalpoolUploadWorker.OUTPUT_TERMINAL, false)
             }
-        }
+            .maxByOrNull {
+                it.outputData.getLong(BtidalpoolUploadWorker.OUTPUT_COMPLETED_AT_MS, 0L)
+            }
+            ?: return
+        val completedAt = newestTerminal.outputData.getLong(
+            BtidalpoolUploadWorker.OUTPUT_COMPLETED_AT_MS,
+            0L,
+        )
+        if (completedAt <= lastHandledUploadCompletionMs) return
+        lastHandledUploadCompletionMs = completedAt
+        newestTerminal.outputData.getString(BtidalpoolUploadWorker.OUTPUT_MESSAGE)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { btidalpoolStatusDialogMessage = it }
+        refreshBTIDESLogSize()
     }
 
     fun onRemoveGarbageClick() {
@@ -512,8 +482,12 @@ class SettingsViewModel(
         viewModelScope.launch {
             btidesInProgress = true
             try {
+                if (mode == ClearBTIDESLogInteractor.Mode.ALL) {
+                    // A user who explicitly clears all source logs must not have previously
+                    // spooled derived chunks upload later in the background.
+                    btidalpoolUploadScheduler.cancelAndClearOutbox()
+                }
                 clearBTIDESLogInteractor.execute(mode)
-                if (mode == ClearBTIDESLogInteractor.Mode.ALL) btidesRepository.clearUploadedMarks()
                 val msg = when (mode) {
                     ClearBTIDESLogInteractor.Mode.CURRENT -> R.string.btides_current_log_was_cleared
                     ClearBTIDESLogInteractor.Mode.ALL -> R.string.btides_all_logs_were_cleared
@@ -525,6 +499,11 @@ class SettingsViewModel(
             }
             btidesInProgress = false
         }
+    }
+
+    override fun onCleared() {
+        btidalpoolWorkInfos.removeObserver(btidalpoolWorkObserver)
+        super.onCleared()
     }
 
     /** Public so the Settings screen can re-poll the size each time it re-enters composition. */

@@ -6,19 +6,15 @@
     <string name="cancel">Cancel</string>
     <string name="confirm">Confirm</string>
     <string name="back">Back</string>
-    <string name="save">Save</string>
-    <string name="close">Close</string>
     <string name="understood">Understood</string>
     <string name="delete">Delete</string>
     <string name="edit">Edit</string>
     <string name="select">Select</string>
     <string name="clear">Clear</string>
-    <string name="fetch">Fetch</string>
     <string name="decline">Decline</string>
     <string name="ok">OK</string>
     <string name="turn_on">Turn on</string>
     <string name="report">Report</string>
-    <string name="accept">Accept</string>
     <string name="preparing_database">Optimizing database, it might take a minute…</string>
 
     <plurals name="day">
@@ -94,7 +90,7 @@
     <string name="btidalpool_credentials_dialog_title">BTIDALPOOL credentials</string>
     <string name="btidalpool_credentials_valid">Credentials valid</string>
     <string name="btidalpool_credentials_invalid">Credentials invalid</string>
-    <string name="btidalpool_credentials_valid_server_unreachable">Credentials valid.\n\nBut the BTIDALPOOL upload server (port 3567) couldn\'t be reached, so it may be temporarily down. You\'re signed in — uploads will work once it\'s reachable again.</string>
+    <string name="btidalpool_credentials_valid_server_unreachable">Credentials valid.\n\nBut the BTIDALPOOL upload server (port 3568) couldn\'t be reached, so it may be temporarily down. You\'re signed in — uploads will work once it\'s reachable again.</string>
     <string name="btidalpool_google_signin_failed">Google sign-in failed. Check your connection and that Google Play services is up to date, then try again.</string>
     <string name="btidalpool_sign_in_manual_button">Paste token manually</string>
     <string name="btidalpool_validating">Validating credentials…</string>
@@ -106,15 +102,14 @@
     <string name="btidalpool_use_test_db_subtitle">Route uploads to the server\'s alternate bttest database instead of the production pool. Mirrors the BTIDES_to_BTIDALPOOL.py --use-test-db flag.</string>
     <string name="btidalpool_upload_current_button">Upload current BTIDES log to BTIDALPOOL</string>
     <string name="btidalpool_upload_all_button">Upload all BTIDES logs to BTIDALPOOL</string>
-    <string name="btidalpool_upload_failed_with_reason">BTIDALPOOL upload failed: %1$s</string>
+    <string name="btidalpool_upload_notification_channel">BTIDALPOOL uploads</string>
+    <string name="btidalpool_upload_notification_title">Uploading to BTIDALPOOL</string>
+    <string name="btidalpool_upload_notification_preparing">Preparing durable upload chunks…</string>
+    <string name="btidalpool_upload_notification_progress">Upload progress: %1$d%%</string>
+    <string name="btidalpool_server_busy_retrying">Server busy; retrying in %1$d s…</string>
     <string name="btidalpool_status_dialog_title">BTIDALPOOL upload</string>
     <string name="btidalpool_status_dialog_ok">OK</string>
     <string name="btidalpool_not_signed_in">Sign in with Google before uploading.</string>
-    <string name="btidalpool_upload_log_succeeded">%1$s — uploaded (%2$d devices)</string>
-    <string name="btidalpool_upload_log_already_present">%1$s — already on server</string>
-    <string name="btidalpool_upload_log_auth_failed">%1$s — auth failed; sign in again</string>
-    <string name="btidalpool_upload_log_empty">%1$s — empty, nothing to upload</string>
-    <string name="btidalpool_upload_log_failed">%1$s — failed: %2$s</string>
     <string name="btidalpool_upload_cancel_title">Cancel BTIDALPOOL upload?</string>
     <string name="btidalpool_upload_cancel_subtitle">Stop the in-progress upload. Already-uploaded archives stay on the server; the rest will need a retry.</string>
     <string name="btidalpool_upload_cancelled">BTIDALPOOL upload cancelled</string>
@@ -158,12 +153,8 @@
     <string name="connect_all_empty">No devices have completed service discovery yet.</string>
     <string name="connect_all_candidates_count">%1$d potentially connectable devices visible (%2$d vendor-filtered)</string>
     <string name="menu_connect_all">Connect All</string>
-    <string name="journal_open_button">Open Error Logs</string>
-    <string name="journal_block_description">View background errors recorded by the scanner / GATT / export pipelines.</string>
     <!-- GPS exclusion zones -->
     <string name="exclusion_zones_block_title">GPS exclusion zones</string>
-    <string name="exclusion_zones_block_description">Define up to 3 map areas (circles or squares) whose detections are excluded from BTIDALPOOL uploads. Manual exports are unaffected.</string>
-    <string name="exclusion_zones_open_button">Manage exclusion zones</string>
     <string name="exclusion_zones_screen_title">GPS exclusion zones</string>
     <string name="exclusion_zones_adjust_label">Adjust exclusion zone</string>
     <string name="exclusion_zones_save">Save zone</string>
@@ -259,7 +250,6 @@
     <string name="select_location_radius">Radius: %.1f m.</string>
 
     <!-- Select filter -->
-    <string name="select_filter">Select Filter</string>
     <string name="filter_by_name">By Name</string>
     <string name="filter_by_name_description">Triggers when the device name matches the specified substring or regex</string>
     <string name="filter_by_address">By Address</string>
@@ -289,7 +279,6 @@
     <!-- Filter UI -->
     <string name="add_filter">Add filter</string>
     <string name="filter_unknown">Unknown filter</string>
-    <string name="time_placeholder">HH:MM</string>
     <string name="filter_unknown_title">Current filter is not supported by your app version</string>
     <string name="placeholder_device_name">Device name (or regex)</string>
     <string name="ignore_case">Ignore case</string>
@@ -301,7 +290,6 @@
     <string name="to_time">To time</string>
     <string name="is_paired">Is paired</string>
     <string name="filter_user_location_if_no_location">Skip filter if location is not available (otherwise default value is false)</string>
-    <string name="change">Change</string>
     <string name="filter_location_has_data">Location selected. Radius: %.1f m</string>
     <string name="filter_location_no_data">Select target location</string>
     <string name="address_type_public_tag" translatable="false">Public</string>
@@ -327,7 +315,6 @@
     <string name="not_samsung">Not Samsung</string>
     <string name="filter_gatt">GATT</string>
     <string name="uuid_name_unknown">Unknown</string>
-    <string name="report_the_problem">We are sorry to hear this. You can provide your feedback in the GitHub issues</string>
     <string name="current_batch_title">Devices around you</string>
     <string name="current_batch_empty">No devices have been found yet</string>
     <string name="current_batch_empty_filtered">None of the devices found match the filters</string>
@@ -344,7 +331,6 @@
     <string name="device_details_last_detection">Last detection</string>
     <string name="device_details_most_recent_rssi">Most recent RSSI</string>
     <string name="device_details_rssi_dbm">%1$d dBm</string>
-    <string name="device_details_dialog_time_period_selected">%s (selected)</string>
     <string name="change_history_period_dialog">Change location history period</string>
     <string name="device_details_history_period">"History period: %s"</string>
     <string name="device_details_history_period_subtitle">Showing big location history may affect map performance</string>
@@ -357,7 +343,6 @@
     <string name="device_history_pint_style_markers">Markers</string>
     <string name="device_history_pint_style_path">Path</string>
     <string name="device_history_pint_style_hide_markers">Hide non-best-fit markers</string>
-    <string name="time_ago">%s ago</string>
     <string name="lifetime_data_last_update">Max duration seen: %1$s | last update: %2$s ago</string>
     <string name="lifetime_data">Max duration seen: %1$s</string>
     <string name="device_list_placeholder">No data yet. To start scanning, click on the Scan button</string>
@@ -373,7 +358,6 @@
     <string name="active_mode_show_all">Show all %s online devices</string>
     <string name="active_mode_capped">Showing %1$d of %2$d — use search/filter chips above to narrow further.</string>
     <string name="device_is_online">Online</string>
-    <string name="services_and_characteristics_discovered">%1$d services / %2$d characteristics discovered</string>
     <plurals name="device_details_raw_data">
         <item quantity="zero">No advertisement records</item>
         <item quantity="one">%d advertisement record</item>
@@ -420,7 +404,6 @@
     <string name="ble_scanner_is_started_but_no_data">BLE scanner is started but there is no data yet</string>
     <string name="known_devices_around">%s known devices around</string>
     <string name="total_devices_around">%s total devices around</string>
-    <string name="there_are_no_devices_around">There are no known devices around</string>
     <string name="app_service_title">@string/app_name</string>
     <string name="app_service_title_power_saving">%s · Power saving</string>
     <string name="scanner_notification_channel_name">Background scan service notification</string>
@@ -436,7 +419,6 @@
     <string name="background_location_hide_button">Hide it</string>
 
     <!-- Journal -->
-    <string name="journal_device_was_removed">Such device was removed from the database</string>
     <string name="journal_placeholder">No error log entries. The Error Logs records background errors thrown by the scanner / GATT / export pipelines so you can see what went wrong without attaching a debugger. Empty is good — it means nothing has failed.</string>
     <string name="journal_header_subtitle">Background errors thrown by the scanner / GATT / export pipelines.</string>
     <string name="journal_clear_button">Clear</string>
@@ -465,8 +447,6 @@
 
     <string name="bluetooth_status_paired">Bonded</string>
     <string name="bluetooth_status_paired_description">A link key for this device is stored on the phone (the BR/EDR or LE pairing was completed previously).</string>
-
-    <string name="unlowful_usage_disclaimer">This project is developed solely for educational, security research, and personal investigative purposes. The author does not endorse or encourage any use of this software for unlawful or unethical activities. You are solely responsible for ensuring your use of this tool complies with all applicable laws and regulations.</string>
 
     <string name="what_is_this_app_for_title">What is this app for</string>
     <string name="what_is_this_app_for_long">Bluetooth Low Energy (BLE) is a widely used wireless protocol that powers a huge variety of devices around you — from headphones, smartwatches, and fitness trackers to AirTags, IoT devices, game controllers, and even modern intimate gadgets. BLE devices communicate by broadcasting small packets of data, which can include device identifiers, metadata, and other information necessary for connectivity.\n\nThese broadcasts, while essential for device functionality, can also be used to track your presence and movements. For example, a cheap pair of wireless headphones may expose a persistent identifier publicly. Anyone listening to BLE packets nearby — whether governments, companies, or malicious actors — could potentially use that information to track you without your consent.\n\nFortunately, many modern devices implement privacy features in BLE to prevent tracking, such as randomized addresses and limited advertising. DM BT helps you distinguish between devices that protect your privacy and those that might be trackable. By analyzing BLE traffic in your surroundings, the app gives you insight into which devices are safe to use.\n\nBeyond analysis, DM BT can help protect you in real-time. The app can alert you when a suspicious device is nearby or if a device is moving with you over time, giving you an early warning against potential stalking or unwanted tracking. You can configure alerts based on device identifiers, types, or behaviors to fit your security needs.\n\nBy making this app, the goal is to empower you with knowledge and control over the BLE devices in your environment. Understanding which devices are broadcasting trackable information and which are privacy-conscious allows you to make informed decisions about what you use, wear, and interact with daily.</string>

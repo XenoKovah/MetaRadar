@@ -144,6 +144,7 @@ android {
             it.systemProperty("net.bytebuddy.experimental", "true")
         }
     }
+
 }
 
 repositories {
@@ -157,25 +158,23 @@ dependencies {
     // kotlin
     implementation(libs.ktx)
     implementation(libs.kotlin.coroutines)
-    implementation(libs.kotlin.annotation.processing)
     implementation(libs.kotlin.serialization.json)
     // BTIDALPOOL Rust server (:3568) speaks CBOR-over-zstd in a "BTPL" frame. CBOR via
     // kotlinx-serialization (same 1.6.3 train as -json); zstd via the zstd-jni *AAR* — the .aar
     // (not the .jar) ships the Android arm64-v8a/armeabi-v7a/x86/x86_64 native .so files.
     implementation(libs.kotlin.serialization.cbor)
     implementation("com.github.luben:zstd-jni:1.5.7-11@aar")
+    implementation(libs.okhttp)
 
     // android general
     implementation(libs.appcompat)
     implementation(libs.core.splashscreen)
     implementation(libs.work.ktx)
-    implementation(libs.concurrent.futures)
     implementation(libs.concurrent.futures.ktx)
 
     // di
     implementation(libs.koin)
     implementation(libs.koin.android)
-    implementation(libs.koin.android.compat)
     implementation(libs.koin.android.compose)
 
     // android jetpack
@@ -185,26 +184,18 @@ dependencies {
     // compose
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
-    implementation(libs.compose.tooling)
     implementation(libs.lifecycle.compose)
     implementation(libs.compose.activity)
     implementation(libs.compose.dialogs)
     implementation(libs.compose.dialogs.datetime)
-    implementation(libs.compose.flow.row)
-    implementation(libs.ktx)
     debugImplementation(libs.compose.tooling)
-    implementation(libs.compose.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.animation)
     implementation(libs.compose.material.icons)
 
     // room
     implementation(libs.room.runtime)
-    annotationProcessor(libs.room.ksp)
     ksp(libs.room.ksp)
-
-    // di
-    implementation(libs.dagger)
 
     // Map
     implementation(libs.map)
@@ -224,6 +215,8 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.ktx.testing)
     testImplementation(libs.ktx.testing.core)
+    testImplementation(libs.kotlin.coroutines.test)
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.3.0")
     // zstd-jni *jar* (desktop natives) so JVM unit tests can exercise the BTPL codec's real
     // zstd round-trip — the app uses the @aar variant, which ships only Android .so files.
     testImplementation("com.github.luben:zstd-jni:1.5.7-11")

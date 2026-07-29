@@ -29,18 +29,6 @@ class JournalRepository(database: AppDatabase) {
         }
     }
 
-    suspend fun getAllEntries(): List<JournalEntry> {
-        return withContext(Dispatchers.IO) {
-            journalDao.getAll().map { it.toDomain() }
-        }
-    }
-
-    suspend fun getEntryById(id: Int): JournalEntry? {
-        return withContext(Dispatchers.IO) {
-            journalDao.getById(id)?.toDomain()
-        }
-    }
-
     suspend fun clearAll() {
         withContext(Dispatchers.IO) {
             journalDao.deleteAll()

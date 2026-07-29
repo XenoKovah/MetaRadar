@@ -81,7 +81,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.accompanist.flowlayout.FlowRow
 import com.vanpra.composematerialdialogs.rememberMaterialDialogState
 import com.darkmentor.R
 import com.darkmentor.bottomRight

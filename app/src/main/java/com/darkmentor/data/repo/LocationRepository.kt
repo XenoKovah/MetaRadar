@@ -83,6 +83,29 @@ class LocationRepository(
         }
     }
 
+    /** Bulk equivalent of [getStrongestRssiLocation], keyed by normalized uppercase address. */
+    suspend fun getAllStrongestRssiLocations(): Map<String, RssiLocationRow> {
+        return withContext(Dispatchers.IO) {
+            locationDao.getAllStrongestRssiLocations().associate { row ->
+                row.deviceAddress.uppercase() to row.withoutAddress()
+            }
+        }
+    }
+
+    /**
+     * Every location sample grouped by normalized address. Used only when upload exclusion zones
+     * are enabled; one Room query replaces the previous query-per-device export loop.
+     */
+    suspend fun getAllRssiLocationsByAddress(): Map<String, List<RssiLocationRow>> {
+        return withContext(Dispatchers.IO) {
+            locationDao.getAllAddressedRssiLocations()
+                .groupBy(
+                    keySelector = { it.deviceAddress.uppercase() },
+                    valueTransform = { it.withoutAddress() },
+                )
+        }
+    }
+
     /**
      * The most recently recorded GPS fix (max `time`), or null if none has ever been saved. Used
      * to seed the exclusion-zone map on the place the user last collected data.

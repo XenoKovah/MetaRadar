@@ -235,13 +235,6 @@ class MainViewModel(
         settingsRepository.setPermissionsIntroWasShown(true)
     }
 
-    fun checkAndShowAboutApp() {
-        if (!settingsRepository.getWhatIsThisAppForWasShown()) {
-            router.navigate(ScreenNavigationCommands.OpenAboutScreen)
-            settingsRepository.setWhatIsThisAppForWasShown(true)
-        }
-    }
-
     private fun observeScanInProgress() {
         viewModelScope.launch {
             BgScanService.state

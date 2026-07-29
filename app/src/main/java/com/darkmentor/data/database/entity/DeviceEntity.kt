@@ -19,9 +19,6 @@ data class DeviceEntity(
     @ColumnInfo(name = "first_detect_time_ms") val firstDetectTimeMs: Long,
     @ColumnInfo(name = "detect_count") val detectCount: Int,
     @ColumnInfo(name = "custom_name") val customName: String? = null,
-    // Orphaned: the favorites feature was removed in this branch but the column stays so we
-    // don't need a Room migration. Always written as false; never read by domain code.
-    @ColumnInfo(name = "favorite") val favorite: Boolean = false,
     @ColumnInfo(name = "manufacturer_id") val manufacturerId: Int? = null,
     @ColumnInfo(name = "manufacturer_name") val manufacturerName: String? = null,
     @ColumnInfo(name = "last_seen_rssi") val lastSeenRssi: Int? = null,
@@ -30,7 +27,6 @@ data class DeviceEntity(
     @ColumnInfo(name = "is_paired") val isPaired: Boolean = false,
     @ColumnInfo(name = "service_uuids", defaultValue = "") val serviceUuids: List<String>,
     @ColumnInfo(name = "row_data_encoded") val rowDataEncoded: String? = null,
-    @ColumnInfo(name = "metadata") val metadata: String? = null,
     @ColumnInfo(name = "is_connectable") val isConnectable: Boolean = false,
     // Stores Transport.ordinal — 0=LE, 1=BREDR, 2=DUAL. Default 0 (LE) is the historical
     // fallback for newly-inserted rows whose transport hasn't yet been classified by a real

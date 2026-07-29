@@ -3,13 +3,14 @@ package com.darkmentor.ui.filter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import com.google.accompanist.flowlayout.FlowRow
 import com.darkmentor.domain.model.ExtendedAddressInfo
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -334,7 +335,11 @@ object FilterScreen {
                 ExtendedAddressInfo.BleAddressType.RESOLVABLE_PRIVATE to R.string.address_type_resolvable_private_tag,
                 ExtendedAddressInfo.BleAddressType.NON_RESOLVABLE_PRIVATE to R.string.address_type_non_resolvable_tag,
             )
-            FlowRow(modifier = Modifier.fillMaxWidth(), mainAxisSpacing = 8.dp, crossAxisSpacing = 4.dp) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 choices.forEach { (type, labelRes) ->
                     val name = type.name
                     val selected = name in filter.selectedTypeNames

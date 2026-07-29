@@ -69,14 +69,6 @@ class PermissionHelper(
         fetchBackgroundLocationPermission()
     }
 
-    fun openAppPermissions() {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.fromParts("package", context.packageName, null)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        activityProvider.requireActivity().startActivity(intent)
-    }
-
     fun requestWriteSettingsPermission() {
         val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
             data = "package:${context.packageName}".toUri()
@@ -101,10 +93,6 @@ class PermissionHelper(
 
     fun blePermissionsAllowed(): Boolean {
         return BLE_PERMISSIONS.all { checkPermission(it) }
-    }
-
-    fun checkAllPermissions(): Boolean {
-        return (BLE_PERMISSIONS + BACKGROUND_LOCATION).all { checkPermission(it) }
     }
 
     fun observeBackgroundLocationPermission(): Flow<Boolean> {

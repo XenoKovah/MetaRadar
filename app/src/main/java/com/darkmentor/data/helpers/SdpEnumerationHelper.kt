@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Semaphore
@@ -44,12 +45,18 @@ class SdpEnumerationHelper(
     private val receiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != BluetoothDevice.ACTION_UUID) return
-            val device: BluetoothDevice = intent
-                .getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            val device: BluetoothDevice = IntentCompat.getParcelableExtra(
+                intent,
+                BluetoothDevice.EXTRA_DEVICE,
+                BluetoothDevice::class.java,
+            )
                 ?: return
-            val rawUuids: List<ParcelUuid> = intent
-                .getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID, ParcelUuid::class.java)
-                ?.toList()
+            val rawUuids: List<ParcelUuid> = IntentCompat.getParcelableArrayExtra(
+                intent,
+                BluetoothDevice.EXTRA_UUID,
+                ParcelUuid::class.java,
+            )
+                ?.filterIsInstance<ParcelUuid>()
                 .orEmpty()
             val key = device.address.uppercase()
             val deferred = pending.remove(key) ?: return

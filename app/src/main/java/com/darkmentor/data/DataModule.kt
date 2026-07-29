@@ -4,6 +4,11 @@ import android.content.Context
 import android.content.Context.MODE_PRIVATE
 import com.darkmentor.data.btidalpool.BtidalpoolAuthRepository
 import com.darkmentor.data.btidalpool.BtidalpoolClient
+import com.darkmentor.data.btidalpool.BtidalpoolOutboxRepository
+import com.darkmentor.data.btidalpool.BtidalpoolResumableStateStore
+import com.darkmentor.data.btidalpool.BtidalpoolResumableUploader
+import com.darkmentor.data.btidalpool.BtidalpoolUploadScheduler
+import com.darkmentor.data.btidalpool.BtidalpoolUploadPrivacyValidator
 import com.darkmentor.data.btides.BTIDESRepository
 import com.darkmentor.data.database.AppDatabase
 import com.darkmentor.data.helpers.ActivityProvider
@@ -59,6 +64,18 @@ class DataModule(
         }
         single { SettingsRepository(get()) }
         single { AppDatabase.build(get(), appDatabaseName) }
+        single { get<AppDatabase>().btidalpoolUploadDao() }
+        single { BtidalpoolResumableStateStore(get<Context>()) }
+        single {
+            BtidalpoolOutboxRepository(
+                get(),
+                get(),
+                get<BtidalpoolResumableStateStore>(),
+            )
+        }
+        single { BtidalpoolResumableUploader(get(), get(), get()) }
+        single { BtidalpoolUploadPrivacyValidator(get(), get()) }
+        single { BtidalpoolUploadScheduler(get(), get()) }
         single { DevicesRepository(get()) }
         single { CapturedAdvertFingerprintRepository(get()) }
         single { PermissionHelper(get(), get(), get()) }

@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import com.darkmentor.domain.model.BleScanDevice
 import kotlinx.coroutines.suspendCancellableCoroutine
 import timber.log.Timber
@@ -214,12 +215,20 @@ class BrEdrDiscoveryHelper(
     @SuppressLint("MissingPermission")
     private fun handleFound(intent: Intent) {
         val device: BluetoothDevice =
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            IntentCompat.getParcelableExtra(
+                intent,
+                BluetoothDevice.EXTRA_DEVICE,
+                BluetoothDevice::class.java,
+            )
                 ?: return
         val rssi: Int = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, MIN_RSSI).toInt()
         val name: String? = intent.getStringExtra(BluetoothDevice.EXTRA_NAME) ?: device.name
         val cls: BluetoothClass? =
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_CLASS, BluetoothClass::class.java)
+            IntentCompat.getParcelableExtra(
+                intent,
+                BluetoothDevice.EXTRA_CLASS,
+                BluetoothClass::class.java,
+            )
                 ?: device.bluetoothClass
 
         // Some Android Bluetooth stacks (observed on a B160V / BLU View 5) leak LE-only
